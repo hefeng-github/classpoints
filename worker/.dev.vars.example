@@ -1,0 +1,19 @@
+# 本地开发用的密钥。复制成 .dev.vars 再用：
+#   cp .dev.vars.example .dev.vars
+#
+# .dev.vars 已在 .gitignore 里，不会进版本库 —— 密钥这种东西一旦提交，
+# 就不是"删掉那次提交"能解决的，得让所有人都当它已经泄露。
+#
+# 部署到 Cloudflare 时不用这个文件，改用 secret：
+#   npx wrangler secret put TOKEN_SECRET
+#   npx wrangler secret put BOOTSTRAP_SECRET
+#
+# 生成一个像样的密钥：
+#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+TOKEN_SECRET = "dev-only-change-me-please-32-bytes-min"
+
+# 可选：建班口令。本地不设就是"不限（但有数量和频率上限）"。
+# BOOTSTRAP_SECRET = ""
+
+# 可选：允许跨域读取的来源，逗号分隔。
+# ALLOWED_ORIGINS = "http://localhost:5173"

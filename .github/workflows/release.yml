@@ -1,0 +1,166 @@
+# 班级积分系统 · 正式版发布
+#
+# 和 build.yml 刻意分开：日常 push 只做编译与测试，**永远不产生正式版**。
+# 正式版必须由人在 Actions 页面手动点一次「Run workflow」并填版本号才会发 ——
+# 自动更新只认 v主.次.修，一旦有自动流程随手打了个 beta 标签，
+# 全校的机器都会去装一个没验过的包。
+#
+# 产物挂在公开分发仓库（CNB）的两个标签下：
+#   v<版本>   安装包 + 便携包 + SHA256SUMS（内容永不变，可长期缓存）
+#   stable    release-manifest.json（固定入口，每次发布覆盖同名附件）
+#
+# 需要的仓库配置：
+#   secrets.CNB_TOKEN   仓库访问令牌（repo-release:rw），只用于上传，不进客户端
+#   vars.CNB_REPO       分发仓库路径，形如 <用户>/<仓库>
+#   vars.UPDATE_FEED    分发仓库根地址，形如 https://cnb.cool/<用户>/<仓库>
+#                       编译进安装包，客户端据此直连下载；仓库里不写死真实路径
+
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '正式版本号（三段数字，如 1.2.0）'
+        required: true
+        type: string
+      notes:
+        description: '这一版改了什么（会显示在更新提示里）'
+        required: false
+        default: ''
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: 打包并发布正式版
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: 取源码
+        uses: actions/checkout@v4
+
+      - name: 装 .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 校验版本号与配置
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_REPO: ${{ vars.CNB_REPO }}
+          UPDATE_FEED: ${{ vars.UPDATE_FEED }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$VERSION" =~ ^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$ ]]; then
+            echo "::error::版本号必须是三段数字（主.次.修），当前是 '$VERSION'"
+            exit 1
+          fi
+          for pair in "CNB_TOKEN:$CNB_TOKEN" "CNB_REPO:$CNB_REPO" "UPDATE_FEED:$UPDATE_FEED"; do
+            name="${pair%%:*}"; value="${pair#*:}"
+            if [ -z "$value" ]; then
+              echo "::error::缺少仓库配置 $name，发布正式版前必须配好"
+              exit 1
+            fi
+          done
+          # 更新地址必须是公开版本库的 https 根地址，不能带 /api/ 或令牌
+          case "$UPDATE_FEED" in
+            https://*) ;;
+            *) echo "::error::UPDATE_FEED 必须是 https:// 开头的地址"; exit 1 ;;
+          esac
+          echo "版本 $VERSION · 分发到 $CNB_REPO"
+
+      - name: 单元测试（发布前的最后一道闸）
+        run: dotnet run --project tools/tests -c Release
+
+      - name: 发布应用（把版本与更新地址编译进去）
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+          UPDATE_FEED: ${{ vars.UPDATE_FEED }}
+        run: |
+          .\scripts\publish.ps1 -Runtime win-x64 -Configuration Release `
+            -Version $env:VERSION -UpdateFeed $env:UPDATE_FEED
+
+      - name: 编译安装包（Inno Setup）
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          .\scripts\pack-installer.ps1 -Version $env:VERSION -NoPublish
+
+      - name: 生成更新清单与校验文件
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          python3 scripts/make-release-manifest.py \
+            --version "$VERSION" \
+            --setup "dist/ClassPoints-Setup-$VERSION.exe" \
+            --portable "dist/ClassPoints-win-x64.zip" \
+            --notes "$NOTES" \
+            --out dist/release-manifest.json \
+            --sums dist/SHA256SUMS.txt
+          cat dist/release-manifest.json
+
+      - name: 上传到 CNB · 正式版本标签
+        shell: bash
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_REPO: ${{ vars.CNB_REPO }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          export CNB_TAG="v$VERSION"
+          export CNB_NAME="班级积分 v$VERSION"
+          export CNB_BODY="正式版本 v$VERSION。安装包与便携包见附件，SHA256SUMS.txt 可核对完整性。"
+          bash scripts/upload-cnb-release.sh \
+            "dist/ClassPoints-Setup-$VERSION.exe" \
+            "dist/ClassPoints-win-x64.zip" \
+            dist/SHA256SUMS.txt \
+            dist/release-manifest.json
+
+      - name: 上传到 CNB · stable 清单入口
+        shell: bash
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_REPO: ${{ vars.CNB_REPO }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # 这一步放最后：清单一旦挂上去，所有客户端立刻能看到新版本。
+          # 前面的安装包没传完就更新 stable，会让人下到一个 404 的地址。
+          export CNB_TAG=stable
+          export CNB_NAME="正式版更新通道"
+          export CNB_BODY="客户端固定读取这一份清单。当前正式版本 v$VERSION。"
+          bash scripts/upload-cnb-release.sh dist/release-manifest.json
+
+      - name: 清理旧版本（保留 stable 与最近 3 个正式版）
+        shell: bash
+        continue-on-error: true
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_REPO: ${{ vars.CNB_REPO }}
+          CNB_KEEP_MAJOR: '3'
+        run: bash scripts/prune-cnb-releases.sh
+
+      - name: 留一份产物在 GitHub Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClassPoints-Release-${{ inputs.version }}
+          path: |
+            dist/ClassPoints-Setup-${{ inputs.version }}.exe
+            dist/ClassPoints-win-x64.zip
+            dist/release-manifest.json
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 90
