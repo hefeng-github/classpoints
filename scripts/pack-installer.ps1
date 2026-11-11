@@ -69,7 +69,11 @@ function Find-Iscc {
         (Join-Path $env:LOCALAPPDATA 'Programs/Inno Setup 6/ISCC.exe')
     ) | Where-Object { $_ -and (Test-Path $_) }
 
-    if ($candidates) { return (Resolve-Path $candidates[0]).Path }
+    # 管道过滤后如果只命中一个，$candidates 会被展开成字符串而不是数组，
+    # 那时 $candidates[0] 取的是首字符（'C'），Resolve-Path 会去找 "C" 这个路径。
+    # GitHub 的 windows runner 正好只命中一个，于是报 "Cannot find path ...\C"。
+    # 显式 @() 兜成数组再取，才有稳定的「第一个」。
+    if ($candidates) { return (Resolve-Path (@($candidates)[0])).Path }
 
     # 装在非默认位置时兜底扫一遍
     foreach ($base in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
