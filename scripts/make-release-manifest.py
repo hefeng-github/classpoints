@@ -27,6 +27,15 @@ import os
 import re
 import sys
 
+# Windows 上 Python 的 stdout 跟着系统代码页走（英文系统是 cp1252），一 print 中文就
+# 抛 UnicodeEncodeError。GitHub 的 windows runner 恰好是英文系统：清单和校验文件
+# 其实都已经写好了，最后几行摘要把整步弄红。这里把输出流强制成 UTF-8，不靠外部环境变量。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):  # 老版本 Python 或被重定向成不可配置的流
+        pass
+
 VERSION_RE = re.compile(r"^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$")
 MAX_ASSET_BYTES = 1024 * 1024 * 1024
 
