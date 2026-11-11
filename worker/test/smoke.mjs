@@ -6,7 +6,7 @@
  * 这不是单元测试，是"接口契约还算不算数"的回归：
  * 客户端 C# 那边的 payload 形状一改，这里就该红。
  */
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes, pbkdf2Sync } from 'node:crypto';
 
 const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:8787/api/v1';
 
@@ -301,7 +301,132 @@ const stillActiveA = await call('GET', '/sync?since=0&limit=500', { token: acces
 const activeA = (stillActiveA.data?.periods ?? []).filter((p) => p.status === 'active');
 check('A 班的 active 周期不受 B 班影响', activeA.length === 1 && activeA[0].id === newPeriodId, JSON.stringify(activeA.map((p) => p.id)));
 
-console.log('\n10) 收尾');
+console.log('\n10) 角色鉴权（输谁的口令就是谁）');
+
+/** 从 JWT 里读 claims，确认服务端签出来的角色真的是那个角色 */
+const claimsOf = (token) => {
+  const p = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+  return JSON.parse(Buffer.from(p, 'base64').toString('utf8'));
+};
+
+/** 客户端 PasswordHasher 的同款格式：pbkdf2$轮数$base64盐$base64密钥 */
+const pinHash = (pin, iterations = 120000) => {
+  const salt = randomBytes(16);
+  const key = pbkdf2Sync(pin, salt, iterations, 32, 'sha256');
+  return `pbkdf2$${iterations}$${salt.toString('base64')}$${key.toString('base64')}`;
+};
+
+// 单独开一个班：角色用例必须和前面的数据隔开，否则 403 会把别的用例带崩
+const roleClass = await call('POST', '/classes', {
+  body: { name: '角色测试班', ownerName: '李老师', ownerPin: '135790', kind: 'desk' },
+});
+check('建班返回 201', roleClass.status === 201, `status=${roleClass.status} ${JSON.stringify(roleClass.data)}`);
+const roleCode = roleClass.data?.code;
+const ownerAccess = roleClass.data?.access;
+check('建班令牌带 role=owner', claimsOf(ownerAccess ?? '').role === 'owner', claimsOf(ownerAccess ?? '').role);
+
+const monitorId = uuid();
+const officerId = uuid();
+const mkMember = await call('POST', '/members', {
+  token: ownerAccess,
+  body: {
+    action: 'upsert',
+    member: { id: monitorId, displayName: '班长小林', role: 1, pinHash: pinHash('246810'), rev: 1, createdAt: now, updatedAt: now },
+  },
+});
+check('建班长成员', mkMember.status === 200, `status=${mkMember.status} ${JSON.stringify(mkMember.data)}`);
+const mkOfficer = await call('POST', '/members', {
+  token: ownerAccess,
+  body: {
+    action: 'upsert',
+    member: { id: officerId, displayName: '班委小周', role: 2, pinHash: pinHash('112233'), rev: 1, createdAt: now, updatedAt: now },
+  },
+});
+check('建班委成员', mkOfficer.status === 200, `status=${mkOfficer.status}`);
+
+// 班长拿自己的口令配对：以前这里会签成 owner，现在必须是 co_owner
+const monitorPair = await call('POST', '/pair', { body: { code: roleCode, secret: '246810', kind: 'desk' } });
+check('班长口令能配对', monitorPair.status === 200, `status=${monitorPair.status} ${JSON.stringify(monitorPair.data)}`);
+check('配对结果 role=co_owner', monitorPair.data?.role === 'co_owner', monitorPair.data?.role);
+const monitorAccess = monitorPair.data?.access;
+const monitorRefresh = monitorPair.data?.refresh;
+check('班长令牌 claims 里也是 co_owner', claimsOf(monitorAccess ?? '').role === 'co_owner');
+
+// 班主任与班长同权：班长能做所有管理动作
+const rolePeriodId = uuid();
+const monitorPeriod = await call('POST', '/periods', {
+  token: monitorAccess,
+  body: { period: { id: rolePeriodId, name: '第 1 周期', termKey: 'P1', startAt: now, status: 'active', createdAt: now } },
+});
+check('班长能建周期（与班主任同权）', monitorPeriod.status === 200, `status=${monitorPeriod.status}`);
+const roleStudentId = uuid();
+const monitorStudent = await call('POST', '/students', {
+  token: monitorAccess,
+  body: { action: 'upsert', student: { id: roleStudentId, name: '班长加的人', seatNo: 9, active: true, rev: 1, createdAt: now, updatedAt: now } },
+});
+check('班长能改名单', monitorStudent.status === 200 && monitorStudent.data?.applied === true, JSON.stringify(monitorStudent.data));
+
+// 班委拿自己的口令配对 → officer
+const officerPair = await call('POST', '/pair', { body: { code: roleCode, secret: '112233', kind: 'board' } });
+check('班委口令能配对', officerPair.status === 200, `status=${officerPair.status}`);
+check('配对结果 role=officer', officerPair.data?.role === 'officer', officerPair.data?.role);
+const officerAccess = officerPair.data?.access;
+let officerRefresh = officerPair.data?.refresh;
+
+// 班委碰定义类数据：一律 403，而且错误码要能认出来
+const deniedCases = [
+  ['POST /students', () => call('POST', '/students', { token: officerAccess, body: { action: 'upsert', student: { id: uuid(), name: '不该成功', rev: 1 } } })],
+  ['POST /members', () => call('POST', '/members', { token: officerAccess, body: { action: 'upsert', member: { id: uuid(), displayName: 'x', role: 2, rev: 1 } } })],
+  ['POST /periods', () => call('POST', '/periods', { token: officerAccess, body: { period: { id: uuid(), name: 'x', termKey: 'x' } } })],
+  ['POST /periods/reset', () => call('POST', '/periods/reset', { token: officerAccess, body: { phase: 'request' } })],
+  ['POST /exams', () => call('POST', '/exams', { token: officerAccess, body: { exam: { id: uuid(), name: 'x' } } })],
+  ['PATCH /students/:id', () => call('PATCH', `/students/${uuid()}`, { token: officerAccess, body: { name: 'x' } })],
+];
+for (const [name, run] of deniedCases) {
+  const r = await run();
+  check(`班委被拒：${name}`, r.status === 403 && r.data?.error === 'forbidden_role', `status=${r.status} ${JSON.stringify(r.data)}`);
+}
+
+// 但记分和读数据必须照旧 —— 班委的全部工作就靠这两件
+const scoreBatch = uuid();
+const officerScore = await call('POST', '/entries', {
+  token: officerAccess,
+  body: {
+    entries: [{
+      id: uuid(), batchId: scoreBatch, periodId: rolePeriodId, studentId: roleStudentId, ruleId: 'r1',
+      ruleLabel: '回答问题', ruleDeltaDefault: 2, delta: 2, source: 'rule',
+      operatorId: officerId, operatorName: '班委小周', identifyMethod: 'nfc',
+      occurredAt: now, createdAt: now,
+    }],
+  },
+});
+check('班委能记分', officerScore.status === 200 && officerScore.data?.inserted === 1, JSON.stringify(officerScore.data));
+const officerPull = await call('GET', '/sync?since=0&limit=50', { token: officerAccess });
+check('班委能拉数据（看不见名单就没法记分）', officerPull.status === 200);
+
+// 撤销必须放行：本地规则允许班委 5 分钟内撤掉自己刚记的那批，
+// 云端要是比本地严，就会出现"界面上撤了、账对不上"
+const officerReverse = await call('POST', `/entries/batch/${scoreBatch}/reverse`, {
+  token: officerAccess,
+  body: { operatorId: officerId, operatorName: '班委小周' },
+});
+check('班委能撤销自己记的一批', officerReverse.status === 200 && officerReverse.data?.reversed === 1, JSON.stringify(officerReverse.data));
+
+// 续期不能把角色洗回班主任 —— 这是最容易漏的一处
+const officerRefreshed = await call('POST', '/refresh', { body: { refresh: officerRefresh } });
+check('班委刷新后仍是 officer', officerRefreshed.data?.role === 'officer' && claimsOf(officerRefreshed.data?.access ?? '').role === 'officer', JSON.stringify(officerRefreshed.data?.role));
+officerRefresh = officerRefreshed.data?.refresh;
+const monitorRefreshed = await call('POST', '/refresh', { body: { refresh: monitorRefresh } });
+check('班长刷新后仍是 co_owner', monitorRefreshed.data?.role === 'co_owner', monitorRefreshed.data?.role);
+
+// 把班委成员删掉：他手上那台设备下一轮续期就该断，而不是继续用 12 小时
+const removeOfficer = await call('POST', '/members', { token: ownerAccess, body: { action: 'delete', member: { id: officerId } } });
+check('删除班委成员', removeOfficer.status === 200, `status=${removeOfficer.status}`);
+const afterRevoke = await call('POST', '/refresh', { body: { refresh: officerRefresh } });
+check('成员被删后刷新被拒', afterRevoke.status === 401, `status=${afterRevoke.status}`);
+check('错误码是 member_revoked', afterRevoke.data?.error === 'member_revoked', afterRevoke.data?.error);
+
+console.log('\n11) 收尾');
 const pong = await call('GET', '/ping', { token: access });
 check('GET /ping 通', pong.status === 200 && pong.data?.ok === true);
 
@@ -311,7 +436,7 @@ check('POST /signout 撤销设备', out.status === 200);
 const afterOut = await call('GET', '/ping', { token: access });
 check('撤销后 access 仍可解析（到期自然失效），refresh 已废', afterOut.status === 200);
 
-console.log('\n11) 安全加固');
+console.log('\n12) 安全加固');
 
 // 客户端是桌面程序，不需要跨域。响应里不该出现 access-control-allow-origin，
 // 除非部署者显式配了 ALLOWED_ORIGINS。

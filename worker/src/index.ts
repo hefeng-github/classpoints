@@ -4,7 +4,7 @@
  *
  * 十个接口，一个都不多：
  *   POST /api/v1/classes            建班（向导第 1 步，全程只调用一次）
- *   POST /api/v1/pair               班级码 + 密码 → token 对
+ *   POST /api/v1/pair               班级码 + 口令 → token 对（角色跟着口令走）
  *   POST /api/v1/refresh            静默续期
  *   POST /api/v1/signout            退出登录（撤销设备）
  *   GET  /api/v1/sync?since=&limit= 增量拉取
@@ -15,13 +15,19 @@
  *   POST /api/v1/periods/reset      两阶段重置
  * 另加 GET /api/v1/ping 给唤醒探测用（一体机休眠后 TCP 假活，这个端点比任何离线逻辑都先写）。
  *
+ * 权限分两档（见 auth.ts 的 requireManager / canManage）：
+ *   - 任意已配对身份：读（/sync /ping）、记分（/entries）、撤销（/entries/batch/:id/reverse）
+ *   - 班主任与班长：其余全部写入（名单、规则、成员、周期、考试、折算方案）
+ * 撤销之所以不下放给"仅管理"，是因为本地规则允许班委在 5 分钟内撤掉自己刚记的那批；
+ * 云端要是比本地严，就会出现"界面上撤了、同步时被拒"，账对不上。
+ *
  * 自动更新**不在这里**：客户端直连公开版本库（CNB）的 Release 附件读清单和安装包。
  * 这一层不持有任何 CNB 凭据，也不替谁代理下载 —— 少一个能读私有库的长期令牌，
  * 就少一处要盯的泄露面。
  */
 import type { Env } from './types';
 import { HttpError, fail, harden, json, preflight, readJson } from './util';
-import { requireAuth } from './auth';
+import { requireAuth, requireManager } from './auth';
 import { ping, createClass, pair, refresh, signOut } from './routes/classes';
 import { postEntries, reverseBatch } from './routes/entries';
 import { putSchemeWeights, resolveEntity, upsertEntity } from './routes/entities';
@@ -126,7 +132,7 @@ async function route(request: Request, env: Env): Promise<Response> {
 
     case 'exams':
       if (method === 'POST') {
-        const claims = await requireAuth(env, request);
+        const claims = await requireManager(env, request);
         await assertNotResetting(env, claims.cid);
         return upsertExam(env, request);
       }
@@ -134,8 +140,12 @@ async function route(request: Request, env: Env): Promise<Response> {
 
     case 'periods':
       if (method === 'POST') {
-        if (second === 'reset') return resetPeriod(env, request);
-        const claims = await requireAuth(env, request);
+        // 重置周期会把整班流水归档，是这里最重的一个动作 —— 只给班主任和班长
+        if (second === 'reset') {
+          await requireManager(env, request);
+          return resetPeriod(env, request);
+        }
+        const claims = await requireManager(env, request);
         await assertNotResetting(env, claims.cid);
         return upsertPeriod(env, request);
       }
@@ -149,12 +159,12 @@ async function route(request: Request, env: Env): Promise<Response> {
   const spec = head ? resolveEntity(head) : null;
   if (spec) {
     if (method === 'POST' && !second) {
-      const claims = await requireAuth(env, request);
+      const claims = await requireManager(env, request);
       await assertNotResetting(env, claims.cid);
       return upsertEntity(env, request, head);
     }
     if (method === 'PATCH' && second) {
-      const claims = await requireAuth(env, request);
+      const claims = await requireManager(env, request);
       await assertNotResetting(env, claims.cid);
       // PATCH 的 id 走路径，body 里可能没有；这里必须新建一个对象，
       // 不能把 body 自己塞回自己（会变成循环引用，JSON.stringify 直接炸）
@@ -175,7 +185,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       return upsertEntity(env, replay, head);
     }
     if (method === 'POST' && second && third === 'weights') {
-      await requireAuth(env, request);
+      await requireManager(env, request);
       return putSchemeWeights(env, request, decodeURIComponent(second));
     }
   }

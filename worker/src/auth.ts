@@ -4,10 +4,14 @@
  *   换 Windows 用户就解不开 —— 这一层服务端不用管。
  * - 大屏端只在进管理模式时用密码，班委刷卡记分不碰密码。
  *
+ * 但"免密"不等于"免身份"：配对时输的是谁的口令，签出来的就是谁的角色，
+ * 之后每一次写入都按这个角色放行（见 requireManager）。客户端也有一份同样的
+ * 本地身份锁，两边必须是同一套规则，否则会出现"界面上能点、同步时被拒"。
+ *
  * 令牌是 HS256 的 JWT 简化版（header.payload.signature），不引库：
  * 只有本服务自己签、自己验，不需要 RS256，也不需要 JWKS。
  */
-import type { Claims, Env } from './types';
+import type { Claims, Env, Role } from './types';
 import { HttpError, b64urlDecode, b64urlEncode, now, randomHex, safeEqual } from './util';
 
 const HEADER = b64urlEncode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
@@ -47,6 +51,9 @@ export async function verifyToken(env: Env, token: string): Promise<Claims> {
     throw new HttpError(401, 'bad_token', '令牌内容不是合法 JSON');
   }
   if (claims.exp * 1000 < now()) throw new HttpError(401, 'token_expired', '令牌已过期，请刷新');
+  // 签名过了，内容仍然归一化一次：万一日后有人手写了一段缺 role 的 claims，
+  // 这里默认落到权限最低的那一档，而不是让它变成 undefined 一路放行。
+  claims.role = asRole(claims.role);
   return claims;
 }
 
@@ -59,6 +66,32 @@ export function bearer(request: Request): string {
 
 export async function requireAuth(env: Env, request: Request): Promise<Claims> {
   return verifyToken(env, bearer(request));
+}
+
+// ---------------- 角色 ----------------
+
+/** 认不出来的角色一律当班委：权限最低的那一档，宁可少给也不多给。 */
+export function asRole(v: unknown): Role {
+  return v === 'owner' || v === 'co_owner' ? v : 'officer';
+}
+
+/**
+ * 能不能管这个班的东西（名单、规则、成员、周期、考试、折算方案）。
+ * 班主任和班长同权 —— 和客户端 MemberRoleNames.CanManage 保持一致。
+ * 班委只记分，改不了任何"定义"类的数据。
+ */
+export const canManage = (role: Role): boolean => role === 'owner' || role === 'co_owner';
+
+/**
+ * 管理类接口的闸门。403 而不是 404：调用方本来就持有这个班的令牌，
+ * 班级存在与否早就知道了，藏也藏不住；这里要的是让界面能说清"身份不够"。
+ */
+export async function requireManager(env: Env, request: Request): Promise<Claims> {
+  const claims = await verifyToken(env, bearer(request));
+  if (!canManage(claims.role)) {
+    throw new HttpError(403, 'forbidden_role', '当前身份是班委，只能记分；改名单请用班主任或班长的密码');
+  }
+  return claims;
 }
 
 // ---------------- 口令哈希 ----------------
@@ -86,6 +119,66 @@ export async function verifyPassword(env: Env, password: string, hash: string, s
   const iterations = Number(env.PBKDF2_ITERATIONS || '100000');
   const got = await pbkdf2Hex(password, salt, iterations);
   return safeEqual(got, hash);
+}
+
+/**
+ * 校验成员口令。
+ *
+ * 和班主任密码不一样：成员的口令哈希是**客户端**算的，格式是
+ * `pbkdf2$轮数$base64盐$base64密钥`（见 Core/Security.cs 的 PasswordHasher），
+ * 轮数和盐都写在串里。好处是服务端不用另存一列盐；代价是每验一个人就要跑满
+ * 一次 PBKDF2 —— 一个 45 人的班全不匹配，就是 500 万轮哈希。
+ *
+ * 所以调用方要限个数（见 pair 里的 PAIR_MEMBER_SCAN），并且只在班主任口令
+ * 已经失配之后才走这条路：正常配对一次就命中，走不到这里。
+ */
+export async function verifyMemberPin(secret: string, stored: string | null): Promise<boolean> {
+  if (!stored) return false;
+  const parts = stored.split('$');
+  if (parts.length !== 4 || parts[0] !== 'pbkdf2') return false;
+
+  const iterations = Number(parts[1]);
+  // 上下界都是防呆：太小等于没哈希，太大会把 CPU 时间烧光（这里是客户端给的数，不能全信）
+  if (!Number.isFinite(iterations) || iterations < 1000 || iterations > 2_000_000) return false;
+
+  let salt: Uint8Array;
+  let expected: Uint8Array;
+  try {
+    salt = base64Bytes(parts[2]);
+    expected = base64Bytes(parts[3]);
+  } catch {
+    return false;
+  }
+  if (salt.length < 8 || expected.length < 16) return false;
+
+  const key = await crypto.subtle.importKey('raw', enc.encode(secret), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt, iterations },
+    key,
+    expected.length * 8,
+  );
+  // 转成十六进制再比：safeEqual 是逐字符比较，字节数组直接比会退化成引用比较
+  return safeEqual(hex(new Uint8Array(bits)), hex(expected));
+}
+
+const hex = (bytes: Uint8Array): string => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+const base64Bytes = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+const base64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes));
+
+/**
+ * 按客户端同款格式生成成员口令哈希。
+ *
+ * 建班时服务端要顺手写一条"班主任"成员行，那行的 pin_hash 会被同步到所有设备，
+ * 变成客户端校验管理密码的依据。所以这里必须用**客户端能解的格式**（PHC 串），
+ * 不能用班级密码那套 hex —— 否则设备拉下来之后，班主任在本地就再也输不对密码了。
+ */
+export async function hashPinPhc(password: string, iterations = 120_000): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, key, 256);
+  return `pbkdf2$${iterations}$${base64(salt)}$${base64(new Uint8Array(bits))}`;
 }
 
 export function sha256Hex(input: string): Promise<string> {

@@ -12,8 +12,12 @@
                                         + changelog（增量游标）
 ```
 
-- **鉴权**：`POST /classes` 建班返回 access（12 小时）+ refresh（90 天）；`POST /pair` 用班级码 + 密码配对第二台设备。
+- **鉴权**：`POST /classes` 建班返回 access（12 小时）+ refresh（90 天）；`POST /pair` 用班级码 + 口令配对设备。
   令牌是 HMAC-SHA256 签的紧凑 JWT，密码用 PBKDF2（Workers 免费版上限 10 万轮，正好够用）。
+- **角色**：`/pair` 试三种口令 —— 班主任密码、恢复码、成员自己的口令；最后一种签出该成员的真实角色
+  （`owner` / `co_owner` / `officer`）。写接口按角色分两档：记分、撤销、读取谁都能做，
+  名单 / 规则 / 成员 / 周期 / 考试 / 折算方案只有班主任和班长（`requireManager`）。
+  角色跟着成员行走：成员被删、被撤销或改了角色，他那台设备下一次续期就跟着变。
 - **幂等**：所有写操作以客户端生成的 UUIDv7 为主键，重复提交只更新不重复插入。
 - **并发**：每张表带 `rev`，客户端带着读到的 `rev` 写，服务端 `rev = rev + 1` 后比对，落后就 409。
 - **增量**：任何写入都往 `changelog` 追加一条，`GET /sync?since=<seq>` 按游标返回，客户端记 `next`。
@@ -126,17 +130,21 @@ custom_domain = true
 | --- | --- | --- |
 | GET | `/api/v1/ping` | 探活；带令牌时验令牌链路（一体机休眠后 TCP 假活，先打这个） |
 | POST | `/api/v1/classes` | 建班，返回班级码 + 双令牌（全程只调用一次） |
-| POST | `/api/v1/pair` | 班级码 + 密码（或恢复码）配对设备 |
-| POST | `/api/v1/refresh` | 换 access，refresh 一次一换 |
+| POST | `/api/v1/pair` | 班级码 + 口令（班主任密码 / 恢复码 / 成员口令）配对设备，角色跟着口令走 |
+| POST | `/api/v1/refresh` | 换 access，refresh 一次一换；顺带复核成员还在不在、角色变没变 |
 | POST | `/api/v1/signout` | 撤销本设备 refresh |
 | GET | `/api/v1/sync?since=&limit=` | 增量拉取，返回各实体当前状态 + `deleted` + `next` |
 | POST | `/api/v1/entries` | 流水批量入账 1–50 条，可同批带冲销行 |
 | POST | `/api/v1/entries/batch/:id/reverse` | 按批次整批撤销 |
-| POST | `/api/v1/exams` | 一场考试 + 全部成绩（整批一个事务） |
-| POST | `/api/v1/periods` | 周期 upsert |
-| POST | `/api/v1/periods/reset` | 两阶段重置（`request` / `renew` / `abort` / `commit`） |
-| POST/PATCH | `/api/v1/:entity` | `students` / `rules` / `members` / `note_templates` / `schemes` |
-| POST | `/api/v1/schemes/:id/weights` | 换整张考试权重表，不是逐条改 |
+| POST | `/api/v1/exams` | 一场考试 + 全部成绩（整批一个事务）🔒 |
+| POST | `/api/v1/periods` | 周期 upsert 🔒 |
+| POST | `/api/v1/periods/reset` | 两阶段重置（`request` / `renew` / `abort` / `commit`）🔒 |
+| POST/PATCH | `/api/v1/:entity` | `students` / `rules` / `members` / `note_templates` / `schemes` 🔒 |
+| POST | `/api/v1/schemes/:id/weights` | 换整张考试权重表，不是逐条改 🔒 |
+
+🔒 = 只给班主任和班长，班委令牌调用返回 `403 forbidden_role`。
+撤销（`/entries/batch/:id/reverse`）故意不设门槛：本地规则允许班委 5 分钟内撤掉自己刚记的那批，
+云端要是比本地严，就会出现"界面上撤了、账对不上"。
 
 所有写接口的请求体形状：`{ action: "upsert" | "delete" | "restore", <实体名>: { ... } }`，
 和客户端 `outbox.payload` 一字不差 —— 客户端把 payload 原样转发，不重新组装。

@@ -185,7 +185,7 @@ public sealed class SyncClient : IDisposable
                     foreach (var it in chunk) done.Add(it.Id);
                 else
                 {
-                    lastError = $"entries {(int)res.StatusCode} {text.Trim()}".Trim();
+                    lastError = Describe(text, $"entries {(int)res.StatusCode} 提交失败");
                     foreach (var it in chunk) failed.Add(it.Id);
                 }
             }
@@ -219,9 +219,16 @@ public sealed class SyncClient : IDisposable
             if (res.StatusCode == HttpStatusCode.Unauthorized) return (false, true, "令牌过期");
             if (res.IsSuccessStatusCode) return (true, false, null);
 
-            // 423 是"正在重置周期"，过几十秒再来；其余 4xx 是这条记录本身有问题，重试一万次也一样
+            // 423 是"正在重置周期"，过几十秒再来；其余 4xx 是这条记录本身有问题，重试一万次也一样。
             if (status == 423 || status >= 500)
                 return (false, false, $"{path} {status} {(string.IsNullOrWhiteSpace(text) ? "" : text.Trim())}".Trim());
+
+            // 403 单独处理：它不代表"这条记录有问题"，而是"这台机器现在是班委身份"。
+            // 直接丢掉的话，老师在界面上做的改动会静默消失 —— 本地还有，云端永远没有，
+            // 另一台设备上也看不到。所以留在队列里退避，等换回班主任/班长身份再补推。
+            if (status == 403)
+                return (false, false, Describe(text, "当前身份没有这个权限，这条改动还没同步到云端"));
+
             return (true, false, null);
         }
         catch (Exception ex)
@@ -229,6 +236,28 @@ public sealed class SyncClient : IDisposable
             Trace("!! " + ex.GetType().Name + ": " + ex.Message);
             return (false, false, ex.Message);
         }
+    }
+
+    /// <summary>
+    /// 把服务端的错误体整理成一句人话。云端 4xx 回的是 {error, message}，
+    /// 把整段 JSON 丢到界面角标上没人看得懂，但完全不说是哪条也不行。
+    /// </summary>
+    private static string Describe(string body, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return fallback;
+        try
+        {
+            if (JsonNode.Parse(body) is JsonObject obj)
+            {
+                var message = obj["message"]?.GetValue<string>();
+                if (!string.IsNullOrWhiteSpace(message)) return message;
+            }
+        }
+        catch (Exception)
+        {
+            // 不是 JSON 就原样带出去
+        }
+        return $"{fallback}（{body.Trim()}）";
     }
 
     /// <summary>
