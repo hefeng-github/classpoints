@@ -1075,19 +1075,14 @@ public sealed partial class DeskSettingsPage : Page
     {
         try
         {
-            var picker = new Windows.Storage.Pickers.FileOpenPicker();
-            picker.FileTypeFilter.Add(".zip");
-            WinRT.Interop.InitializeWithWindow.Initialize(picker,
-                WinRT.Interop.WindowNative.GetWindowHandle(App.Window!));
-
-            var file = await picker.PickSingleFileAsync();
-            if (file is null) return;
+            var path = FileDialogs.Open("选择整包备份", FileFilter.Zip);
+            if (path is null) return;
 
             var dialog = new ContentDialog
             {
                 XamlRoot = XamlRoot,
                 Title = "从整包恢复？",
-                Content = $"{file.Name}\n\n会先校验清单（校验码、表结构、条数、原库留档），" +
+                Content = $"{Path.GetFileName(path)}\n\n会先校验清单（校验码、表结构、条数、原库留档），" +
                           "四项都对上才替换。",
                 PrimaryButtonText = "校验并恢复",
                 CloseButtonText = "取消",
@@ -1096,9 +1091,9 @@ public sealed partial class DeskSettingsPage : Page
 
             if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
 
-            var check = Services.Backups.ImportPack(file.Path);
+            var check = Services.Backups.ImportPack(path);
             Shell?.Toast(check.Message, 10);
-            Services.Audit.Add("pack.import", null, file.Name, check.Message);
+            Services.Audit.Add("pack.import", null, Path.GetFileName(path), check.Message);
             if (check.Ok) Reload();
         }
         catch (Exception ex)
@@ -1192,26 +1187,17 @@ public sealed partial class DeskSettingsPage : Page
             }
         }
 
-        var picker = new Windows.Storage.Pickers.FileSavePicker
-        {
-            SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.Desktop,
-            SuggestedFileName = string.IsNullOrWhiteSpace(note.Text)
-                ? "classpoints"
-                : "classpoints-" + Services.ClassName,
-        };
-        picker.FileTypeChoices.Add("班级积分配置包", new List<string> { ".cpcfg" });
-        WinRT.Interop.InitializeWithWindow.Initialize(picker,
-            WinRT.Interop.WindowNative.GetWindowHandle(App.Window));
-
-        var file = await picker.PickSaveFileAsync();
-        if (file is null) return;
+        var target = FileDialogs.Save("导出配置包",
+            string.IsNullOrWhiteSpace(note.Text) ? "classpoints" : "classpoints-" + Services.ClassName,
+            FileFilter.Config, "cpcfg");
+        if (target is null) return;
 
         try
         {
             var bundle = Services.Config.Build(pin, admin, pass, (note.Text ?? "").Trim());
-            ConfigService.SaveAndKeep(bundle, file.Path);
-            Services.Audit.Add("config.export", null, null, $"{bundle.ClassName} → {file.Path}");
-            Shell?.Toast($"已导出到 {file.Path}" +
+            ConfigService.SaveAndKeep(bundle, target);
+            Services.Audit.Add("config.export", null, null, $"{bundle.ClassName} → {target}");
+            Shell?.Toast($"已导出到 {target}" +
                          (bundle.NeedsPassphrase ? "（含加密的配对口令）" : "（不含配对口令）"), 8);
         }
         catch (Exception ex)
@@ -1223,21 +1209,13 @@ public sealed partial class DeskSettingsPage : Page
 
     private async Task ImportBundleAsync()
     {
-        var picker = new Windows.Storage.Pickers.FileOpenPicker
-        {
-            SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.Desktop,
-        };
-        picker.FileTypeFilter.Add(".cpcfg");
-        WinRT.Interop.InitializeWithWindow.Initialize(picker,
-            WinRT.Interop.WindowNative.GetWindowHandle(App.Window));
-
-        var file = await picker.PickSingleFileAsync();
-        if (file is null) return;
+        var picked = FileDialogs.Open("导入配置包", FileFilter.Config);
+        if (picked is null) return;
 
         ConfigBundle bundle;
         try
         {
-            bundle = ConfigBundleFile.Load(file.Path);
+            bundle = ConfigBundleFile.Load(picked);
         }
         catch (Exception ex)
         {
@@ -1286,8 +1264,8 @@ public sealed partial class DeskSettingsPage : Page
         try
         {
             var result = await Services.Config.ApplyAsync(bundle, passphrase, "desk");
-            ConfigBundleFile.KeepCopy(bundle, file.Path);
-            Services.Audit.Add("config.import", null, null, $"{bundle.ClassName} ← {file.Path}");
+            ConfigBundleFile.KeepCopy(bundle, picked);
+            Services.Audit.Add("config.import", null, null, $"{bundle.ClassName} ← {picked}");
 
             Shell?.Toast(result.Message + (result.Pulled is null ? "" : "，" + result.Pulled), 8);
             Reload();

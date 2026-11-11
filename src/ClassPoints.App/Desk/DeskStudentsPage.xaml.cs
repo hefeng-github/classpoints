@@ -301,20 +301,12 @@ public sealed partial class DeskStudentsPage : Page
     {
         try
         {
-            var picker = new FileOpenPicker { SuggestedStartLocation = PickerLocationId.Desktop };
-            picker.FileTypeFilter.Add(".xlsx");
-            picker.FileTypeFilter.Add(".xlsm");
-            picker.FileTypeFilter.Add(".xls");
-            picker.FileTypeFilter.Add(".csv");
-            WinRT.Interop.InitializeWithWindow.Initialize(picker,
-                WinRT.Interop.WindowNative.GetWindowHandle(App.Window!));
+            var picked = FileDialogs.Open("导入名单", FileFilter.Sheet);
+            if (picked is null) return;
 
-            var file = await picker.PickSingleFileAsync();
-            if (file is null) return;
-
-            var grid = file.FileType.Equals(".csv", StringComparison.OrdinalIgnoreCase)
-                ? CsvFile.Read(file.Path)
-                : ExcelReader.Read(file.Path);
+            var grid = picked.EndsWith(".csv", StringComparison.OrdinalIgnoreCase)
+                ? CsvFile.Read(picked)
+                : ExcelReader.Read(picked);
 
             if (grid.RowCount == 0)
             {
@@ -358,7 +350,7 @@ public sealed partial class DeskStudentsPage : Page
             };
 
             var panel = new StackPanel { Spacing = 12, Width = 360 };
-            panel.Children.Add(new TextBlock { Text = file.Name, Style = Styled("DeskBodyText") });
+            panel.Children.Add(new TextBlock { Text = Path.GetFileName(picked), Style = Styled("DeskBodyText") });
             panel.Children.Add(nameCombo);
             panel.Children.Add(noCombo);
             panel.Children.Add(seatCombo);
@@ -411,7 +403,7 @@ public sealed partial class DeskStudentsPage : Page
             }
 
             Reload();
-            Services.Audit.Add("students.import_excel", null, file.Name, $"新增 {added}，跳过 {skipped}");
+            Services.Audit.Add("students.import_excel", null, Path.GetFileName(picked), $"新增 {added}，跳过 {skipped}");
             Shell?.Toast($"已新增 {added} 人" + (skipped > 0 ? $"，跳过 {skipped} 行（重名/表头）" : ""), 5);
         }
         catch (Exception ex)

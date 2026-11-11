@@ -516,20 +516,12 @@ public sealed partial class DeskExamsPage : Page
     {
         try
         {
-            var picker = new FileOpenPicker();
-            picker.FileTypeFilter.Add(".xlsx");
-            picker.FileTypeFilter.Add(".xlsm");
-            picker.FileTypeFilter.Add(".xls");
-            picker.FileTypeFilter.Add(".csv");
-            WinRT.Interop.InitializeWithWindow.Initialize(picker,
-                WinRT.Interop.WindowNative.GetWindowHandle(App.Window!));
+            var picked = FileDialogs.Open("导入成绩", FileFilter.Sheet);
+            if (picked is null) return;
 
-            var file = await picker.PickSingleFileAsync();
-            if (file is null) return;
-
-            var grid = file.FileType.Equals(".csv", StringComparison.OrdinalIgnoreCase)
-                ? CsvFile.Read(file.Path)
-                : ExcelReader.Read(file.Path);
+            var grid = picked.EndsWith(".csv", StringComparison.OrdinalIgnoreCase)
+                ? CsvFile.Read(picked)
+                : ExcelReader.Read(picked);
 
             if (grid.RowCount < 2)
             {
@@ -538,7 +530,7 @@ public sealed partial class DeskExamsPage : Page
             }
 
             var parsed = ScoreSheetParser.Parse(grid, _students);
-            await ShowImportDialogAsync(file.Name, file.Path, grid, parsed);
+            await ShowImportDialogAsync(Path.GetFileName(picked), picked, grid, parsed);
         }
         catch (Exception ex)
         {
@@ -783,27 +775,16 @@ public sealed partial class DeskExamsPage : Page
     {
         try
         {
-            var picker = new FileSavePicker
-            {
-                SuggestedFileName = $"{Services.ClassName}-总评-{DateTime.Today:yyyyMMdd}",
-            };
-            picker.FileTypeChoices.Add("Excel 工作簿", new List<string> { ".xlsx" });
-            WinRT.Interop.InitializeWithWindow.Initialize(picker,
-                WinRT.Interop.WindowNative.GetWindowHandle(App.Window!));
-
-            var file = await picker.PickSaveFileAsync();
-            if (file is null) return;
+            var path = FileDialogs.Save("导出 Excel",
+                $"{Services.ClassName}-总评-{DateTime.Today:yyyyMMdd}",
+                FileFilter.Excel, "xlsx");
+            if (path is null) return;
 
             var bundle = Services.BuildExportBundle(Services.Settings.AbsencePolicy, CollectIssues());
-            using (var stream = await file.OpenStreamForWriteAsync())
-            {
-                stream.SetLength(0);
-                var bytes = WorkbookBuilder.Build(bundle);
-                await stream.WriteAsync(bytes);
-            }
+            await File.WriteAllBytesAsync(path, WorkbookBuilder.Build(bundle));
 
-            Services.Audit.Add("export.excel", null, file.Name, "");
-            Shell?.Toast("已导出到 " + file.Path, 6);
+            Services.Audit.Add("export.excel", null, Path.GetFileName(path), "");
+            Shell?.Toast("已导出到 " + path, 6);
         }
         catch (Exception ex)
         {

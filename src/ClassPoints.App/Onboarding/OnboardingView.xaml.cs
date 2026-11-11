@@ -544,27 +544,18 @@ public sealed partial class OnboardingView : UserControl
         }));
     }
 
-    private async Task<string?> PickConfigFileAsync()
+    private Task<string?> PickConfigFileAsync()
     {
         try
         {
-            var picker = new Windows.Storage.Pickers.FileOpenPicker();
-            picker.FileTypeFilter.Add(ConfigBundle.Extension);
-            picker.FileTypeFilter.Add("*");
-            picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.DocumentsLibrary;
-
-            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(App.Window);
-            WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
-
-            var file = await picker.PickSingleFileAsync();
-            return file?.Path;
+            return Task.FromResult(FileDialogs.Open("选择配置包", FileFilter.Config));
         }
         catch (Exception ex)
         {
             Services.LogError("wizard-pick", ex);
             HintText.Text = "文件选择框打不开，把路径粘贴进上面的输入框就行。";
             HintText.Foreground = Pal.Warn;
-            return null;
+            return Task.FromResult<string?>(null);
         }
     }
 
@@ -962,19 +953,11 @@ public sealed partial class OnboardingView : UserControl
 
             try
             {
-                var picker = new Windows.Storage.Pickers.FileSavePicker
-                {
-                    SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.DocumentsLibrary,
-                    SuggestedFileName = $"恢复码-{_className}-{DateTime.Now:yyyyMMdd}",
-                };
-                picker.FileTypeChoices.Add("文本文件", new List<string> { ".txt" });
-                WinRT.Interop.InitializeWithWindow.Initialize(picker,
-                    WinRT.Interop.WindowNative.GetWindowHandle(App.Window));
+                var path = FileDialogs.Save("保存恢复码",
+                    $"恢复码-{_className}-{DateTime.Now:yyyyMMdd}", FileFilter.Text, "txt");
+                if (path is null) return;
 
-                var file = await picker.PickSaveFileAsync();
-                if (file is null) return;
-
-                await File.WriteAllTextAsync(file.Path, $"""
+                await File.WriteAllTextAsync(path, $"""
                     班级积分 · 恢复码
                     班级：{_className}
                     生成时间：{DateTime.Now:yyyy-MM-dd HH:mm}
@@ -982,10 +965,10 @@ public sealed partial class OnboardingView : UserControl
                     {_recoveryCode}
 
                     用途：忘记管理密码、或换一台电脑接管这个班时，用它重置。
-                    请抄一份纸质留存，别把它留在学生能看到的屏幕上。
+                    请抄一份纸质留存，不要留在学生能看到的屏幕上。
                     """);
 
-                HintText.Text = "已保存到 " + file.Path;
+                HintText.Text = "已保存到 " + path;
                 HintText.Foreground = Pal.Positive;
             }
             catch (Exception ex)

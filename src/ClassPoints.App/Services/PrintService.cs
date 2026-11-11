@@ -88,16 +88,12 @@ public static class PrintService
     {
         try
         {
-            var picker = new Windows.Storage.Pickers.FileSavePicker { SuggestedFileName = suggestedName };
-            picker.FileTypeChoices.Add("网页（可打印）", new List<string> { ".html" });
-            WinRT.Interop.InitializeWithWindow.Initialize(picker,
-                WinRT.Interop.WindowNative.GetWindowHandle(App.Window!));
+            var path = FileDialogs.Save("另存为网页", suggestedName,
+                new FileFilter("网页（可打印）", ["*.html"]), "html");
+            if (path is null) return null;
 
-            var file = await picker.PickSaveFileAsync();
-            if (file is null) return null;
-
-            await File.WriteAllTextAsync(file.Path, html, System.Text.Encoding.UTF8);
-            return file.Path;
+            await File.WriteAllTextAsync(path, html, System.Text.Encoding.UTF8);
+            return path;
         }
         catch (Exception ex)
         {
@@ -108,7 +104,7 @@ public static class PrintService
 
     private static async Task<Microsoft.Web.WebView2.Core.CoreWebView2?> EnsureAsync(WebView2 view)
     {
-        if (view.CoreWebView2 is null) await view.EnsureCoreWebView2Async();
+        if (view.CoreWebView2 is null) await WebViewHost.EnsureAsync(view);
 
         if (view.CoreWebView2 is null)
         {

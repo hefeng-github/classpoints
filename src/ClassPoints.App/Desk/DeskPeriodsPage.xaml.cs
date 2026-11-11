@@ -43,7 +43,7 @@ public sealed partial class DeskPeriodsPage : Page
             TotalPointsText.Text = totalPoints.ToString();
             PeriodIndexText.Text = archived.Count.ToString();
 
-            ResetHint.Text = $"归档包会写到：{ClassPoints.Data.Database.BackupRoot}";
+            ResetHint.Text = $"归档包会写到：{Services.Backups.BackupRoot}";
 
             RenderArchives();
         }
@@ -169,16 +169,10 @@ public sealed partial class DeskPeriodsPage : Page
     {
         try
         {
-            var picker = new Windows.Storage.Pickers.FileSavePicker
-            {
-                SuggestedFileName = $"{Services.ClassName}-{period.TitleText}-流水",
-            };
-            picker.FileTypeChoices.Add("Excel 工作簿", new List<string> { ".xlsx" });
-            WinRT.Interop.InitializeWithWindow.Initialize(picker,
-                WinRT.Interop.WindowNative.GetWindowHandle(App.Window!));
-
-            var file = await picker.PickSaveFileAsync();
-            if (file is null) return;
+            var path = FileDialogs.Save("导出周期流水",
+                $"{Services.ClassName}-{period.TitleText}-流水",
+                FileFilter.Excel, "xlsx");
+            if (path is null) return;
 
             var students = Services.Students.ListActive();
             var scheme = Services.Exams.ActiveScheme();
@@ -196,8 +190,8 @@ public sealed partial class DeskPeriodsPage : Page
                 Services.DeskOperator.DisplayName, DateTime.Now,
                 new[] { "这是历史周期「" + period.TitleText + "」的导出，不含当前周期的数据。" });
 
-            await File.WriteAllBytesAsync(file.Path, ClassPoints.Data.WorkbookBuilder.Build(bundle));
-            Shell?.Toast("已导出 " + file.Path, 5);
+            await File.WriteAllBytesAsync(path, ClassPoints.Data.WorkbookBuilder.Build(bundle));
+            Shell?.Toast("已导出 " + path, 5);
         }
         catch (Exception ex)
         {

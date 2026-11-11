@@ -48,7 +48,7 @@ public sealed partial class DeskPrintPage : Page
                 StudentCombo.Items.Add(new ComboBoxItem { Content = $"{s.Name}（{s.SeatText}）", Tag = s.Id });
             StudentCombo.SelectedIndex = 0;
 
-            await Preview.EnsureCoreWebView2Async();
+            await WebViewHost.EnsureAsync(Preview);
             if (Preview.CoreWebView2 is null)
             {
                 StatusText.Text = "预览要 Edge WebView2。Win10/11 一般自带，缺了去微软官网装。";
@@ -183,7 +183,7 @@ public sealed partial class DeskPrintPage : Page
     private string BuildArchive(PrintContext ctx, Period period, int studentCount)
     {
         var entries = Services.Entries.Entries(period.Id, 100_000);
-        var path = Path.Combine(Database.BackupRoot, $"归档-{period.Name}.xlsx");
+        var path = Path.Combine(Services.Backups.BackupRoot, $"归档-{period.Name}.xlsx");
         ArchiveHint.Text = $"当前周期「{period.Name}」，共 {entries.Count} 条记录、{studentCount} 名学生。" +
                            "封面校验码和归档包上的对上，就是同一份。";
 
