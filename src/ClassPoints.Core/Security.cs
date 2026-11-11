@@ -8,7 +8,14 @@ public static class PasswordHasher
 {
     private const int SaltSize = 16;
     private const int KeySize = 32;
-    private const int Iterations = 120_000;
+
+    /// <summary>
+    /// 迭代数定在 10 万，不是随手挑的：成员口令的哈希要同步到云端，而 Cloudflare Workers
+    /// 的 WebCrypto 对 PBKDF2 有硬上限 100000 轮，超过直接抛 NotSupportedError（任何套餐都不放宽）。
+    /// 曾经用 12 万，结果本地全部通过、线上建班第一下就 500 —— 因为本地 workerd 不检查这个上限。
+    /// 改大之前先确认服务端还验得了。
+    /// </summary>
+    private const int Iterations = 100_000;
 
     public static string Hash(string secret)
     {

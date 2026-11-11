@@ -243,11 +243,22 @@ custom_domain = true
 
 ### 7. 发布
 
+仓库里的 `wrangler.toml` 是**脱敏版**：`database_id` 是占位符、`[[routes]]` 注释掉了。
+这是故意的 —— 库 id 和自有域名属于"部署者自己知道就行"的信息，写进公开仓库等于
+把自己的用量账和攻击面一起交出去（`scripts/check-public-ready.sh` 也会直接判红）。
+
+真正部署用本机那份 `worker/wrangler.deploy.toml`（已在 `.gitignore` 里）：
+
 ```bash
-npx wrangler deploy
+cd worker
+npx wrangler deploy --config wrangler.deploy.toml
 ```
 
-输出里会告诉你最终地址。改了 `wrangler.toml` 之后重跑这一条即可。
+第一次创建这份文件：把 `wrangler.toml` 复制一份，填上自己的 `database_id`，再解注 `[[routes]]`。
+**已经绑定的每一条自定义域都必须写上** —— `deploy` 会用配置里的 routes 覆盖线上绑定，
+少写一条，那条域名当场解绑。
+
+输出里会告诉你最终地址。
 
 ### 8. 验证
 
@@ -284,9 +295,12 @@ curl -i https://classpoints.你的域名.com/api/v1/ping
 ```bash
 cd worker
 npm ci
-npx wrangler d1 migrations apply classpoints --remote   # 有新迁移才需要
-npx wrangler deploy
+npx wrangler d1 migrations apply classpoints --remote --config wrangler.deploy.toml  # 有新迁移才需要
+npx wrangler deploy --config wrangler.deploy.toml
 ```
+
+迁移只加列、带默认值，不锁表，随时可跑。但**先跑迁移再部署**：
+新代码会读新列，顺序反过来那几分钟里所有请求都会 500。
 
 **顺序不能颠倒**：服务端先上，客户端后升。云端要向后兼容，旧客户端才能继续用；
 反过来做，旧 Worker 遇到新字段会 400，两台设备当场都不能用。
@@ -296,8 +310,24 @@ npx wrangler deploy
 | 现象 | 原因 |
 | --- | --- |
 | `deploy` 报找不到 zone | 域名不在这个 Cloudflare 账号下，或者 NS 还没生效 |
-| `d1 migrations apply` 报找不到库 | `wrangler.toml` 里的 `database_id` 还是占位符 |
+| `d1 migrations apply` 报找不到库 | 配置里的 `database_id` 还是占位符 |
 | 教室那台一直"同步失败"，开发机好的 | 用的 `*.workers.dev` 域名被墙，绑自有域名 |
+| 建班/配对报 500，日志里是 `Pbkdf2 failed: iteration counts above 100000` | 迭代数撞了 Workers 的硬上限。见下面「10 万轮这条线」 |
+
+### 10 万轮这条线（PBKDF2）
+
+Cloudflare Workers 的 WebCrypto 对 PBKDF2 迭代数有**硬上限 100000**，超过直接抛
+`NotSupportedError`，不是 CPU 预算，任何套餐都不放宽。而**本地 workerd 不检查这个上限** ——
+所以它会以"本地全绿、线上第一下就 500"的方式出现。
+
+由此派生两条规矩：
+
+1. `PBKDF2_ITERATIONS`（服务端）和 `PasswordHasher.Iterations`（客户端）都不能高于 10 万。
+   两边要一致，否则客户端存下的成员口令哈希服务端算不出来。
+2. **已经存进库的、轮数超过 10 万的哈希，在 Workers 上永远验不过**（哈希不可降级）。
+   服务端遇到这种行按"口令不对"处理，不会抛 500 —— 但如果某个成员是这种旧哈希，
+   他自己的口令就刷不进来，得请班主任在客户端重新给他设一次口令（会生成新的 10 万轮哈希）。
+   班主任密码和恢复码不受影响。
 | 请求 500 而且只有走代理时出现 | 客户端默认 `UseProxy=false`；确实需要代理时设 `CP_SYNC_PROXY` |
 | 所有设备同时要求重新配对 | `TOKEN_SECRET` 换过，或者重新 `deploy` 时丢了 secret |
 
@@ -394,6 +424,7 @@ scripts/prune-cnb-releases.sh    清理 CNB 旧版本（保留 stable）
   越权的结果是**看不见**而不是报错：查不到、删不动、抢不到主键，
   接口返回 200/404 而不是 403 —— 403 等于告诉对方"这个 id 存在"。
 - 密码只在服务端做 PBKDF2，明文不落库、不入日志；客户端只存 DPAPI 加密的 refresh token。
+  迭代数顶在 10 万 —— 那是 Workers 运行时的硬上限，不是调参结果（见「10 万轮这条线」）。
 
 ### 安全上做了什么
 

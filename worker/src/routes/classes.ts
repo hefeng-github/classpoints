@@ -124,7 +124,8 @@ export async function createClass(env: Env, request: Request): Promise<Response>
   ]);
 
   const tokens = await issueDevice(env, classId, body.kind ?? 'board', 'owner', ownerId, body.deviceLabel ?? null);
-  return json({ classId, code, ownerId, ...tokens }, 201);
+  // role 和 /pair 的响应保持同一个形状：调用方不该为了读一个字段而区分两个端点
+  return json({ classId, code, ownerId, role: 'owner', memberId: ownerId, ...tokens }, 201);
 }
 
 interface PairIdentity {

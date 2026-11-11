@@ -48,6 +48,9 @@ was.json
 # 部署密钥本地留档（wrangler secret put 上传的那份），只在本机
 worker/.secret.local
 
+# 本机部署配置：带真实 D1 id 与自有域名，仓库里那份 wrangler.toml 保持占位符
+worker/wrangler.deploy.toml
+
 # 清缓存时挪出来的旧 obj/bin（MSBuild 会把工程目录里的 obj* 当源码扫，所以挪到仓库根）
 _stale/
 

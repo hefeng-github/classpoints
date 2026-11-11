@@ -13,7 +13,11 @@
 ```
 
 - **鉴权**：`POST /classes` 建班返回 access（12 小时）+ refresh（90 天）；`POST /pair` 用班级码 + 口令配对设备。
-  令牌是 HMAC-SHA256 签的紧凑 JWT，密码用 PBKDF2（Workers 免费版上限 10 万轮，正好够用）。
+  令牌是 HMAC-SHA256 签的紧凑 JWT，密码用 PBKDF2。
+- **PBKDF2 迭代数封顶 10 万**：这是 Workers 运行时的硬上限（超过抛 `NotSupportedError`，
+  任何套餐都不放宽），不是性能调参。**本地 workerd 不检查这个上限**，所以写大了不会在本地报错，
+  只会在部署后第一下建班时 500。客户端 `PasswordHasher.Iterations` 必须同步顶在 10 万，
+  否则它生成的成员口令哈希服务端算不出来。
 - **角色**：`/pair` 试三种口令 —— 班主任密码、恢复码、成员自己的口令；最后一种签出该成员的真实角色
   （`owner` / `co_owner` / `officer`）。写接口按角色分两档：记分、撤销、读取谁都能做，
   名单 / 规则 / 成员 / 周期 / 考试 / 折算方案只有班主任和班长（`requireManager`）。
@@ -60,11 +64,11 @@ npm run db:reset      # 把 .wrangler/state 挪走并重新应用迁移
 # 1. 登录
 npx wrangler login
 
-# 2. 建 D1 库，把输出的 database_id 填进 wrangler.toml
+# 2. 建 D1 库，把输出的 database_id 填进自己的部署配置
 npx wrangler d1 create classpoints
 
 # 3. 建表（远端）
-npx wrangler d1 migrations apply classpoints --remote
+npx wrangler d1 migrations apply classpoints --remote --config wrangler.deploy.toml
 
 # 4. 设令牌签名密钥（32 字节以上随机串，自己生成一个存好）
 npx wrangler secret put TOKEN_SECRET
@@ -73,8 +77,13 @@ npx wrangler secret put TOKEN_SECRET
 npx wrangler secret put BOOTSTRAP_SECRET
 
 # 5. 发布
-npx wrangler deploy
+npx wrangler deploy --config wrangler.deploy.toml
 ```
+
+`wrangler.toml` 是脱敏版（`database_id` 是占位符、路由注释掉了），给读代码的人看结构用。
+真正部署要一份本机的 `wrangler.deploy.toml`：复制 `wrangler.toml`、填真 id、解注 `[[routes]]`，
+并且**把已经绑定的每条自定义域都写上** —— deploy 会用配置里的 routes 覆盖线上绑定。
+这份文件已在 `.gitignore` 里。
 
 发布后会得到一个 `https://classpoints-api.<你的账号>.workers.dev` 地址，填到电脑端
 `设置 → 同步 → 服务器地址` 即可。第一台设备点「在这台电脑上建班」，拿到 8 位班级码给其它设备配对。
@@ -170,7 +179,7 @@ custom_domain = true
 
 ## 六、注意
 
-- 密码只在服务端做 PBKDF2，**明文不落库、不入日志**。
+- 密码只在服务端做 PBKDF2，**明文不落库、不入日志**。迭代数顶在 10 万，别往上调（见上）。
 - `TOKEN_SECRET` 换掉之后所有令牌立即失效，客户端会提示重新配对。
 - 这一层故意不存「总分」。总分是客户端 `SUM(delta)` 现算的，服务端存分数就等于埋一个必然对不上的冗余字段。
 - 5xx 一律只回 `{ error, requestId }`，原始报错（含表名、SQL 片段）只进 `wrangler tail`。

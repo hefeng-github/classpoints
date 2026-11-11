@@ -98,6 +98,22 @@ export async function requireManager(env: Env, request: Request): Promise<Claims
 
 const enc = new TextEncoder();
 
+/**
+ * Workers 运行时对 PBKDF2 迭代数的**硬上限**。
+ *
+ * 这不是性能建议，是平台拒收：crypto.subtle.deriveBits 收到超过 100000 轮会直接抛
+ * NotSupportedError（"iteration counts above 100000 are not supported"），任何套餐都不放宽。
+ * 本地 workerd 不做这个检查 —— 于是在开发机上一路绿灯，部署之后第一下建班就 500。
+ *
+ * 还有一条推论：**已经存进库的、轮数超过这个上限的哈希，在 Workers 上永远验不过。**
+ * 遇到这种行不要抛错（那会变成 500，看起来像整台服务器坏了），当成"口令不对"处理。
+ */
+export const PBKDF2_MAX_ITERATIONS = 100_000;
+
+/** 把轮数夹进运行时允许的区间：太小等于没哈希，超过上限平台直接拒收。 */
+const clampIterations = (n: number): number =>
+  Math.min(PBKDF2_MAX_ITERATIONS, Math.max(1000, Math.floor(Number.isFinite(n) ? n : PBKDF2_MAX_ITERATIONS)));
+
 export async function pbkdf2Hex(password: string, saltHex: string, iterations: number): Promise<string> {
   const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
   const salt = Uint8Array.from(saltHex.match(/.{2}/g)!.map((x) => parseInt(x, 16)));
@@ -111,12 +127,12 @@ export async function pbkdf2Hex(password: string, saltHex: string, iterations: n
 
 export async function hashPassword(env: Env, password: string): Promise<{ hash: string; salt: string }> {
   const salt = randomHex(16);
-  const iterations = Number(env.PBKDF2_ITERATIONS || '100000');
+  const iterations = clampIterations(Number(env.PBKDF2_ITERATIONS || '100000'));
   return { hash: await pbkdf2Hex(password, salt, iterations), salt };
 }
 
 export async function verifyPassword(env: Env, password: string, hash: string, salt: string): Promise<boolean> {
-  const iterations = Number(env.PBKDF2_ITERATIONS || '100000');
+  const iterations = clampIterations(Number(env.PBKDF2_ITERATIONS || '100000'));
   const got = await pbkdf2Hex(password, salt, iterations);
   return safeEqual(got, hash);
 }
@@ -138,8 +154,12 @@ export async function verifyMemberPin(secret: string, stored: string | null): Pr
   if (parts.length !== 4 || parts[0] !== 'pbkdf2') return false;
 
   const iterations = Number(parts[1]);
-  // 上下界都是防呆：太小等于没哈希，太大会把 CPU 时间烧光（这里是客户端给的数，不能全信）
-  if (!Number.isFinite(iterations) || iterations < 1000 || iterations > 2_000_000) return false;
+  // 下界防呆：太小等于没哈希。这里是客户端给的数，不能全信。
+  if (!Number.isFinite(iterations) || iterations < 1000) return false;
+  // 上界是平台限制，不是防呆：超过 100000 轮 Workers 直接抛 NotSupportedError。
+  // 返回 false 而不是让它抛 —— 抛出去就是 500，把"这个成员的口令验不了"
+  // 表现成"整台服务器坏了"，老师完全无从下手。
+  if (iterations > PBKDF2_MAX_ITERATIONS) return false;
 
   let salt: Uint8Array;
   let expected: Uint8Array;
@@ -174,11 +194,12 @@ const base64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes)
  * 变成客户端校验管理密码的依据。所以这里必须用**客户端能解的格式**（PHC 串），
  * 不能用班级密码那套 hex —— 否则设备拉下来之后，班主任在本地就再也输不对密码了。
  */
-export async function hashPinPhc(password: string, iterations = 120_000): Promise<string> {
+export async function hashPinPhc(password: string, iterations = PBKDF2_MAX_ITERATIONS): Promise<string> {
+  const iters = clampIterations(iterations);
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, key, 256);
-  return `pbkdf2$${iterations}$${base64(salt)}$${base64(new Uint8Array(bits))}`;
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: iters }, key, 256);
+  return `pbkdf2$${iters}$${base64(salt)}$${base64(new Uint8Array(bits))}`;
 }
 
 export function sha256Hex(input: string): Promise<string> {

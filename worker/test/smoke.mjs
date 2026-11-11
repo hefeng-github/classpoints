@@ -309,8 +309,11 @@ const claimsOf = (token) => {
   return JSON.parse(Buffer.from(p, 'base64').toString('utf8'));
 };
 
-/** 客户端 PasswordHasher 的同款格式：pbkdf2$轮数$base64盐$base64密钥 */
-const pinHash = (pin, iterations = 120000) => {
+/**
+ * 客户端 PasswordHasher 的同款格式：pbkdf2$轮数$base64盐$base64密钥。
+ * 默认 10 万轮 —— 和客户端一致，也是 Workers 运行时允许的上限（超过直接 NotSupportedError）。
+ */
+const pinHash = (pin, iterations = 100000) => {
   const salt = randomBytes(16);
   const key = pbkdf2Sync(pin, salt, iterations, 32, 'sha256');
   return `pbkdf2$${iterations}$${salt.toString('base64')}$${key.toString('base64')}`;
@@ -425,6 +428,25 @@ check('删除班委成员', removeOfficer.status === 200, `status=${removeOffice
 const afterRevoke = await call('POST', '/refresh', { body: { refresh: officerRefresh } });
 check('成员被删后刷新被拒', afterRevoke.status === 401, `status=${afterRevoke.status}`);
 check('错误码是 member_revoked', afterRevoke.data?.error === 'member_revoked', afterRevoke.data?.error);
+
+// 平台硬限制：Workers 的 WebCrypto 拒绝 10 万轮以上的 PBKDF2（NotSupportedError）。
+// 已经存进库的超限哈希在线上永远验不过 —— 期望行为是"当成口令不对"，不是抛成 500。
+// 本地 workerd 不检查这个上限，所以这里验的是代码分支（提前返回 false），
+// 真正的平台拦截只有在线上才看得见。
+const legacyId = uuid();
+await call('POST', '/members', {
+  token: ownerAccess,
+  body: {
+    action: 'upsert',
+    member: { id: legacyId, displayName: '旧哈希成员', role: 2, pinHash: pinHash('998877', 120000), rev: 1, createdAt: now, updatedAt: now },
+  },
+});
+const legacyPair = await call('POST', '/pair', { body: { code: roleCode, secret: '998877', kind: 'desk' } });
+check(
+  '超上限轮数的成员口令按“口令不对”处理（不是 500）',
+  legacyPair.status === 401,
+  `status=${legacyPair.status} ${JSON.stringify(legacyPair.data)}`,
+);
 
 console.log('\n11) 收尾');
 const pong = await call('GET', '/ping', { token: access });
