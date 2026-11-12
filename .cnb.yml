@@ -32,6 +32,16 @@ main:
             cd worker
             npm run typecheck
 
+        # 仓库里只有 .dev.vars.example，没有真密钥。每次构建现场生成一个。
+        #
+        # 少了这一步，Worker 起得来但每个请求都是 500 weak_token_secret ——
+        # 服务端会拒绝没有 32 字节密钥的启动（这是对的，不能为了"能跑"放水），
+        # 而冒烟脚本等的是 401，于是一直轮询到两分钟超时，看起来像"服务起不来"。
+        - name: 生成本地开发密钥
+          script: |
+            cd worker
+            node -e "console.log('TOKEN_SECRET = ' + require('crypto').randomBytes(32).toString('hex'))" > .dev.vars
+
         # 迁移能干净跑完，就等于证明 0001_init.sql 没有语法/约束冲突。
         # 真实 D1 上用的是同一条命令，只多一个 --remote。
         - name: 建本地 D1 并应用迁移
@@ -40,7 +50,7 @@ main:
             export CI=true
             npx wrangler d1 migrations apply classpoints --local
 
-        - name: 起本地 Worker 并跑 66 项契约冒烟
+        - name: 起本地 Worker 并跑接口契约 + 设备白名单
           script: |
             cd worker
             export CI=true
@@ -66,8 +76,15 @@ main:
               exit 1
             fi
 
-            timeout 240 npm run test:smoke
+            # 顺序有讲究：冒烟最后一项是"连续猜错密码会被限流"，跑完这个来源
+            # 就在 15 分钟封禁期里 —— 反过来跑的话，白名单那一步的配对全拿 429，
+            # 看起来像白名单坏了。
+            timeout 240 npm run test:grants
             status=$?
+            if [ "$status" = "0" ]; then
+              timeout 240 npm run test:smoke
+              status=$?
+            fi
             kill -TERM $WDEV 2>/dev/null || true
             exit $status
 
