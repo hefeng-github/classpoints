@@ -101,6 +101,17 @@ export const ADMIN_HTML = `<!doctype html>
   }
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   code.k { background: #f2f5fa; padding: 1px 5px; border-radius: 5px; }
+
+  /* 手机：老师多半是在走廊里掏手机点通过。窄屏下把按钮铺满一行，
+     手指好点；留白也收一点，不然一张卡片就占满一屏。 */
+  @media (max-width: 480px) {
+    .wrap { padding: 18px 14px 64px; }
+    .card { padding: 14px; border-radius: 12px; }
+    .item { gap: 10px; }
+    .actions { width: 100%; }
+    .actions button { flex: 1 1 0; }
+    h1 { font-size: 20px; }
+  }
 </style>
 </head>
 <body>
