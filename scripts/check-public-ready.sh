@@ -22,15 +22,23 @@ export PYTHONIOENCODING=utf-8
 HISTORY=0
 [ "${1:-}" = "--history" ] && HISTORY=1
 
-# 目录排除：依赖、构建产物、本地状态、IDE 数据。
-# .workbuddy 是本地会话记忆，不进版本库（.gitignore），但拷目录时会跟着走 ——
-# 单独提醒，不在这里扫，免得刷出一堆与仓库无关的东西。
-EXCLUDES=(
-  --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=bin
-  --exclude-dir=obj --exclude-dir=dist --exclude-dir=_stale
-  --exclude-dir=shots --exclude-dir=.wrangler --exclude-dir=.workbuddy
-  --exclude='*.lock' --exclude='package-lock.json'
+# 扫哪些文件：只扫"会进版本库"的那些。
+#
+# 这里刻意不用 grep -r：工作区里有 wrangler.deploy.toml、.dev.vars 这些
+# 本机专属文件（已在 .gitignore 里），grep -r 会把它们一起扫进来，结果是
+# **本地永远红、CI 永远绿** —— 那种"只有自己机器报错"的检查，跑两次就没人跑了。
+# git ls-files -co --exclude-standard = 已跟踪 + 未跟踪但没被忽略的。
+mapfile -t SCAN_FILES < <(
+  git ls-files -z -co --exclude-standard \
+    | tr '\0' '\n' \
+    | grep -vE '(^|/)(node_modules|dist|_stale|shots|bin|obj|\.wrangler|\.workbuddy)/' \
+    | grep -vE '\.(lock|png|jpe?g|gif|ico|zip|exe|dll|pdb|ttf|otf|woff2?|pdf|db|sqlite|snk|pfx)$' \
+    | grep -v 'package-lock.json' || true
 )
+if [ ${#SCAN_FILES[@]} -eq 0 ]; then
+  echo "❌ 一个文件都没扫到，确认当前目录是仓库根" >&2
+  exit 1
+fi
 
 # ① 凭据格式。和 CI 的 secrets job 保持同一套，避免两边口径不一致。
 CREDENTIALS='ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|cfat_[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[baprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,}'
@@ -44,7 +52,7 @@ DEPLOY_SPECIFIC='(classpoints|sync|api)\.[a-z0-9-]+\.(top|eu\.org|com|cn)|[0-9a-
 fail=0
 
 echo "==> ① 明文凭据"
-hits=$(grep -rInE "$CREDENTIALS" "${EXCLUDES[@]}" . 2>/dev/null || true)
+hits=$(grep -InE "$CREDENTIALS" "${SCAN_FILES[@]}" 2>/dev/null || true)
 # 密钥扫描规则本身会命中自己（CI 里那行 patterns），排除掉
 hits=$(printf '%s' "$hits" | grep -v "patterns=" | grep -v "CREDENTIALS=" | grep -v "check-public-ready.sh:" || true)
 if [ -n "$hits" ]; then
@@ -56,7 +64,7 @@ else
 fi
 
 echo "==> ② 部署专属信息（域名 / D1 id / 私有库路径）"
-hits2=$(grep -rInE "$DEPLOY_SPECIFIC" "${EXCLUDES[@]}" . 2>/dev/null || true)
+hits2=$(grep -InE "$DEPLOY_SPECIFIC" "${SCAN_FILES[@]}" 2>/dev/null || true)
 # 白名单：文档/测试里刻意用的保留域名、占位 UUID、以及本脚本的规则本身。
 # 这些是"看起来像真实值但其实不是"，不算泄露。
 hits2=$(printf '%s' "$hits2" \
@@ -82,8 +90,9 @@ done
 [ "$bad" = "0" ] && echo "    ✓ 无"
 
 echo "==> ④ 更新地址是否只靠注入"
-if grep -rInE 'https://cnb\.cool/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' \
-    --include=*.cs --include=*.csproj --include=*.yml --include=*.iss --include=*.ps1 . 2>/dev/null | grep -v '<' | grep -v 'someone/dist'; then
+if printf '%s\n' "${SCAN_FILES[@]}" | grep -E '\.(cs|csproj|yml|iss|ps1)$' \
+    | xargs -r grep -InE 'https://cnb\.cool/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' 2>/dev/null \
+    | grep -v '<' | grep -v 'someone/dist'; then
   echo "    ❌ 源码里写死了具体的版本库路径" >&2
   fail=1
 else

@@ -6,64 +6,64 @@
     xmlns:controls="using:ClassPoints.App.Controls">
 
     <!--
-        电脑端的样子：左侧常驻文字导航、行高 40 —— 键鼠密度，一眼能扫完十项。
-        大屏端相反：左侧只有 56 宽的图标轨。两端导航项一模一样（AppNav），
-        差别只在排版，所以「大屏上能做的事，在这儿也能做」是结构性保证，不是靠人记。
+        电脑端：Windows 原生 NavigationView（PaneDisplayMode=Left）—— 悬停高亮、
+        选中指示条、键盘上下键切换、折叠动画都由系统模板提供，不再自己画。
 
-        导航项内部是「24 宽图标格 + 文字」：图标中心固定在第 12 像素，
-        文字从同一列起排，换了图标或加了图标都不会让文字左右跳。
+        顶部是班级/周期/形态，底部是身份与备份状态：这两块只在导航展开时可见，
+        和系统自带应用的侧栏一致。
+
+        导航项和右侧页面仍然走 AppNav / DeskPages：换的是外壳，不是内容。
     -->
     <Grid Background="{ThemeResource BoardBgBrush}">
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="236" />
-            <ColumnDefinition Width="*" />
-        </Grid.ColumnDefinitions>
+        <NavigationView x:Name="Nav"
+                        Background="{ThemeResource BoardBgBrush}"
+                        IsBackButtonVisible="Collapsed"
+                        IsSettingsVisible="False"
+                        IsPaneToggleButtonVisible="False"
+                        PaneDisplayMode="Left"
+                        OpenPaneLength="248"
+                        CompactModeThresholdWidth="0"
+                        ExpandedModeThresholdWidth="0"
+                        SelectionChanged="OnNavSelectionChanged">
 
-        <Border Grid.Column="0" Background="{ThemeResource CardBgBrush}"
-                BorderBrush="{ThemeResource CardStrokeBrush}" BorderThickness="0,0,1,0">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                    <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
-
-                <StackPanel Margin="20,20,20,12" Spacing="3">
+            <NavigationView.PaneHeader>
+                <StackPanel Margin="16,16,16,8" Spacing="2">
                     <TextBlock x:Name="ClassNameText" Style="{StaticResource DeskH2Text}"
-                               FontSize="18" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                               FontSize="17" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
                     <TextBlock x:Name="PeriodText" Style="{StaticResource DeskSecondaryText}"
                                TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
                     <Border Background="{ThemeResource TileBgBrush}" CornerRadius="4"
-                            Padding="6,2" HorizontalAlignment="Left" Margin="0,6,0,0">
+                            Padding="6,1" HorizontalAlignment="Left" Margin="0,6,0,0">
                         <TextBlock x:Name="ModeText" Style="{StaticResource DeskSecondaryText}" FontSize="11" />
                     </Border>
                 </StackPanel>
+            </NavigationView.PaneHeader>
 
-                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="12,0">
-                    <StackPanel x:Name="NavStack" Spacing="2" />
-                </ScrollViewer>
-
-                <StackPanel Grid.Row="2" Margin="16,0,16,14" Spacing="8">
+            <NavigationView.PaneFooter>
+                <StackPanel Margin="12,8,12,12" Spacing="8">
                     <controls:IdentityChip x:Name="IdentityChip" HorizontalAlignment="Stretch" />
                     <StackPanel Spacing="2">
-                        <TextBlock x:Name="BackupText" Style="{StaticResource DeskSecondaryText}" />
-                        <TextBlock x:Name="VersionText" Style="{StaticResource DeskSecondaryText}" />
-                        <!-- 有新版本时的常驻提示。放在侧栏底部而不是弹窗：
+                        <TextBlock x:Name="BackupText" Style="{StaticResource DeskSecondaryText}"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="VersionText" Style="{StaticResource DeskSecondaryText}"
+                                   TextWrapping="Wrap" />
+                        <!-- 有新版本时的常驻提示：放在侧栏底部而不是弹窗，
                              更新不该打断上课，但也不能让人永远看不见。 -->
                         <HyperlinkButton x:Name="UpdateBadge" Visibility="Collapsed"
                                          Padding="0" Margin="0,-2,0,0" Click="OnUpdateBadgeClick">
                             <TextBlock x:Name="UpdateBadgeText" Style="{StaticResource DeskSecondaryText}"
+                                       TextWrapping="Wrap"
                                        Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
                         </HyperlinkButton>
                     </StackPanel>
                 </StackPanel>
-            </Grid>
-        </Border>
+            </NavigationView.PaneFooter>
 
-        <Frame x:Name="DeskFrame" Grid.Column="1" />
+            <Frame x:Name="DeskFrame" />
+        </NavigationView>
 
         <!-- 认人覆盖层：电脑端只在真的需要时出现（默认是班主任身份） -->
-        <Grid x:Name="IdentifyLayer" Grid.ColumnSpan="2" Visibility="Collapsed"
+        <Grid x:Name="IdentifyLayer" Visibility="Collapsed"
               Background="{ThemeResource ScrimBrush}">
             <Border HorizontalAlignment="Center" VerticalAlignment="Center"
                     Width="520" Padding="30"
@@ -84,7 +84,7 @@
             </Border>
         </Grid>
 
-        <controls:PinPad x:Name="Pin" Grid.ColumnSpan="2" />
-        <controls:Toast x:Name="ToastLayer" Grid.ColumnSpan="2" />
+        <controls:PinPad x:Name="Pin" />
+        <controls:Toast x:Name="ToastLayer" />
     </Grid>
 </UserControl>

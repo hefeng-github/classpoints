@@ -10,11 +10,27 @@ namespace ClassPoints.Data;
 public sealed record BackupFile(string Path, DateTime At, long SizeBytes, bool IsPack)
 {
     public string Name => System.IO.Path.GetFileName(Path);
-    public string AtText => At.ToString("yyyy-MM-dd HH:mm");
+
+    /// <summary>列表的主信息。备份是给人翻的，人先找的是「什么时候那一份」，不是文件名叫什么。</summary>
+    public string AtText
+    {
+        get
+        {
+            var today = DateTime.Today;
+            if (At.Date == today) return $"今天 {At:HH:mm}";
+            if (At.Date == today.AddDays(-1)) return $"昨天 {At:HH:mm}";
+            return At.ToString("yyyy-MM-dd HH:mm");
+        }
+    }
+
     public string SizeText => SizeBytes > 1024 * 1024
         ? $"{SizeBytes / 1024.0 / 1024.0:0.0} MB"
         : $"{SizeBytes / 1024.0:0} KB";
+
     public string KindText => IsPack ? "整包" : "快照";
+
+    /// <summary>次要信息：类型、大小、文件名。</summary>
+    public string DetailText => $"{KindText} · {SizeText} · {Name}";
 }
 
 public sealed record RestoreCheck(bool Ok, string Message);
@@ -30,8 +46,34 @@ public sealed class BackupService(Database db)
         get
         {
             var custom = db.GetSetting("backup_dir");
-            return string.IsNullOrWhiteSpace(custom) ? Database.BackupRoot : custom!;
+            if (string.IsNullOrWhiteSpace(custom)) return Database.DefaultBackupDir;
+
+            // 老库把默认值写成了绝对路径；认出它就不再当年是"用户自己选的"。
+            return string.Equals(custom.TrimEnd('\\'), Database.BackupRoot.TrimEnd('\\'),
+                StringComparison.OrdinalIgnoreCase)
+                ? Database.DefaultBackupDir
+                : custom!;
         }
+    }
+
+    /// <summary>
+    /// 换成别的目录（空串 = 回到默认）。返回 false 表示这个目录建不出来 ——
+    /// 调用方要把失败说出来：存下一个写不进去的路径，之后每次备份都只是"没有报错的失败"。
+    /// </summary>
+    public bool SetBackupRoot(string? path)
+    {
+        var target = string.IsNullOrWhiteSpace(path) ? Database.DefaultBackupDir : path.Trim();
+        try
+        {
+            Directory.CreateDirectory(target);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+
+        db.SetSetting("backup_dir", string.IsNullOrWhiteSpace(path) ? "" : target);
+        return true;
     }
 
     public long LastBackupAt => long.TryParse(db.GetSetting("last_backup_at"), out var v) ? v : 0;
@@ -43,10 +85,9 @@ public sealed class BackupService(Database db)
             if (LastBackupAt <= 0) return "还没有备份过";
             var days = (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - LastBackupAt) / 86_400_000.0;
             var when = Clock.ToLocal(LastBackupAt);
-            var dayText = when.Date == DateTime.Today ? $"今天 {when:HH:mm}"
-                : when.Date == DateTime.Today.AddDays(-1) ? $"昨天 {when:HH:mm}"
-                : when.ToString("yyyy-MM-dd HH:mm");
-            return days > 7 ? $"{dayText}（已超过 7 天）" : $"{dayText}（{(int)days} 天前）";
+            if (when.Date == DateTime.Today) return $"今天 {when:HH:mm}";
+            if (when.Date == DateTime.Today.AddDays(-1)) return $"昨天 {when:HH:mm}";
+            return days > 7 ? $"{when:yyyy-MM-dd HH:mm}（已超过 7 天）" : $"{when:yyyy-MM-dd HH:mm}";
         }
     }
 
@@ -145,25 +186,63 @@ public sealed class BackupService(Database db)
         catch (Exception) { }
     }
 
+    /// <summary>
+    /// 列出备份。除了当前目录，也把旧位置（%LOCALAPPDATA%\ClassPoints\backups）里的列进来 ——
+    /// 默认目录换到「文档」之后，之前那些备份还躺在那儿，看不见就等于丢了。
+    /// </summary>
     public List<BackupFile> List(int take = 40)
     {
         var list = new List<BackupFile>();
-        if (Directory.Exists(BackupRoot))
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var root in new[] { BackupRoot, Database.BackupRoot })
         {
-            foreach (var d in Directory.GetDirectories(BackupRoot))
+            if (!Directory.Exists(root)) continue;
+
+            foreach (var d in Directory.GetDirectories(root))
             {
                 var file = System.IO.Path.Combine(d, "classpoints.db");
+
+                // 备份目录是用户自己选的，里面可能还有别的文件夹（Documents 就是默认值）。
+                // 没有库文件的目录不是备份，列出来只会让人以为备份坏了。
+                if (!File.Exists(file)) continue;
+                if (!seen.Add(file)) continue;
+
                 var info = new DirectoryInfo(d);
-                var size = File.Exists(file) ? new FileInfo(file).Length : 0;
-                list.Add(new BackupFile(file, info.LastWriteTime, size, false));
+                list.Add(new BackupFile(file, info.LastWriteTime, new FileInfo(file).Length, false));
             }
-            foreach (var f in Directory.GetFiles(BackupRoot, "*.zip"))
+
+            foreach (var f in Directory.GetFiles(root, "*.zip"))
             {
+                if (!seen.Add(f)) continue;
                 var fi = new FileInfo(f);
                 list.Add(new BackupFile(f, fi.LastWriteTime, fi.Length, true));
             }
         }
+
         return list.OrderByDescending(x => x.At).Take(take).ToList();
+    }
+
+    /// <summary>旧目录里还有多少份（界面上用它提示"这些还在原来的位置"）。</summary>
+    public int LegacyCount
+    {
+        get
+        {
+            if (string.Equals(BackupRoot.TrimEnd('\\'), Database.BackupRoot.TrimEnd('\\'),
+                    StringComparison.OrdinalIgnoreCase))
+                return 0;
+            try
+            {
+                return Directory.Exists(Database.BackupRoot)
+                    ? Directory.GetDirectories(Database.BackupRoot).Length +
+                      Directory.GetFiles(Database.BackupRoot, "*.zip").Length
+                    : 0;
+            }
+            catch (Exception)
+            {
+                return 0;
+            }
+        }
     }
 
     /// <summary>恢复：先把当前库改名并排（不覆盖），再把候选库拷回来。装错了包还能退。</summary>

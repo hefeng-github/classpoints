@@ -49,9 +49,16 @@ public sealed partial class BoardLookupPage : Page
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         PeriodText.Text = Services.PeriodName;   // 班级名在顶上那条常驻状态里，这里只补周期
+
+        // 大屏是学生自己凑过来点，电脑上多半是老师代查 —— 同一句话在两种场景都要说得通。
+        var board = App.Mode == AppMode.Board;
+        HintText.Text = board ? "点一下自己的名字" : "点一下姓名，查看该生的积分";
+        EmptyText.Text = board ? "名单还没建好，找班主任。" : "名单还是空的，先到「名单」页导入。";
+
         Load();
         ResetTimeout();
 
+        _timeout.Tick -= OnTimeoutTick;
         _timeout.Tick += OnTimeoutTick;
         _timeout.Start();
     }
@@ -183,10 +190,7 @@ public sealed partial class BoardLookupPage : Page
         var from = Clock.StartOfDay(monday);
         var to = Clock.StartOfDay(today.AddDays(1));
 
-        return Services.Entries
-            .EntriesForStudent(studentId, 500)
-            .Where(e => e.OccurredAt >= from && e.OccurredAt < to)
-            .Sum(e => e.Delta);
+        return Services.Entries.PointsInRange(studentId, from, to);
     }
 
     private void BuildDistribution(Student student, string periodId)

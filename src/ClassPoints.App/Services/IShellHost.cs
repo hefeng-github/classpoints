@@ -14,6 +14,9 @@ public interface IShellHost
 
     void Toast(string message, double seconds = 3);
 
+    /// <summary>重画常驻状态（身份、备份时间、同步角标）。后台任务完成后调它，页面不必知道细节。</summary>
+    void RefreshChrome();
+
     Task<bool> ConfirmAsync(string title, string message, string primary, string close);
 
     /// <summary>没认人就弹认人；<paramref name="requireAdmin"/> 时还要求是班主任/班长。</summary>

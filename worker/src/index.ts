@@ -2,7 +2,7 @@
  * 路由。这一层要薄：只做鉴权、校验、幂等写入、增量查询，不做业务计算。
  * 所有排名与折算都在客户端算 —— 这样"换云端只改 Repository"才不是一句口号。
  *
- * 十个接口，一个都不多：
+ * 十个业务接口，一个都不多：
  *   POST /api/v1/classes            建班（向导第 1 步，全程只调用一次）
  *   POST /api/v1/pair               班级码 + 口令 → token 对（角色跟着口令走）
  *   POST /api/v1/refresh            静默续期
@@ -14,6 +14,16 @@
  *   POST|PATCH /api/v1/:entity      新增 / 修改（students / rules / members / note_templates / schemes）
  *   POST /api/v1/periods/reset      两阶段重置
  * 另加 GET /api/v1/ping 给唤醒探测用（一体机休眠后 TCP 假活，这个端点比任何离线逻辑都先写）。
+ *
+ * 管理台是第二摊，和上面十个不是一类东西：它服务的是"人"，不是客户端。
+ *   GET   /admin                    网页管理台（HTML，零依赖）
+ *   POST  /api/v1/admin/session     只认班主任密码 / 恢复码
+ *   GET   /api/v1/admin/devices     待审 / 已通过 / 已拒绝
+ *   POST  /api/v1/admin/devices/:id/approve|reject|revoke
+ *   POST  /api/v1/admin/devices     手动预置一台
+ *   DELETE /api/v1/admin/devices/:id
+ *   PATCH /api/v1/admin/settings    切 join_mode
+ * 它存在的原因见 routes/grants.ts 开头：口令会传开，机器要单独放行。
  *
  * 权限分两档（见 auth.ts 的 requireManager / canManage）：
  *   - 任意已配对身份：读（/sync /ping）、记分（/entries）、撤销（/entries/batch/:id/reverse）
@@ -28,11 +38,13 @@
 import type { Env } from './types';
 import { HttpError, fail, harden, json, preflight, readJson } from './util';
 import { requireAuth, requireManager } from './auth';
-import { ping, createClass, pair, refresh, signOut } from './routes/classes';
+import { ADMIN_HTML } from './admin';
+import { ping, adminSession, createClass, pair, refresh, signOut } from './routes/classes';
 import { postEntries, reverseBatch } from './routes/entries';
 import { putSchemeWeights, resolveEntity, upsertEntity } from './routes/entities';
 import { upsertExam } from './routes/exams';
 import { resetPeriod, upsertPeriod } from './routes/periods';
+import { addGrant, decideGrant, listGrants, removeGrant, setJoinMode } from './routes/grants';
 import { assertNotResetting, pull } from './sync';
 
 /**
@@ -76,6 +88,23 @@ async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const parts = url.pathname.split('/').filter(Boolean);
 
+  // 网页管理台。它不是 JSON 接口，所以走在自己这一支上，前面那套 /api/v1 校验管不到它。
+  if (parts.length === 0 || (parts[0] === 'admin' && parts.length === 1)) {
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      throw new HttpError(405, 'method_not_allowed', '管理台只支持 GET');
+    }
+    return new Response(ADMIN_HTML, {
+      headers: {
+        'content-type': 'text/html; charset=utf-8',
+        // 页面自己会写这行 CSP（harden 见已有值就不覆盖）：
+        // 只允许内联脚本和样式，零外部源 —— 页面里握着的 token 没有外带通道。
+        'content-security-policy':
+          "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        'cache-control': 'no-store',
+      },
+    });
+  }
+
   if (parts[0] !== 'api' || parts[1] !== 'v1') {
     throw new HttpError(404, 'not_found', '只提供 /api/v1 下的接口');
   }
@@ -104,6 +133,9 @@ async function route(request: Request, env: Env): Promise<Response> {
     case 'signout':
       if (method === 'POST') return signOut(env, request);
       break;
+
+    case 'admin':
+      return adminRoute(env, request, rest.slice(1));
 
     case 'sync':
       if (method === 'GET') return pull(env, request);
@@ -195,4 +227,43 @@ async function route(request: Request, env: Env): Promise<Response> {
     throw new HttpError(405, 'method_not_allowed', `${head} 不支持 ${method}`);
   }
   throw new HttpError(404, 'not_found', `没有这个接口：${method} ${url.pathname}`);
+}
+
+/**
+ * 管理台接口。除了登录，全部要 requireManager —— 也就是说班长也能看，
+ * 但只有班主任的密码能登进网页（见 adminSession），所以实际上还是班主任一个人。
+ * 留 requireManager 而不是 requireOwner 是为了以后真要下放时不用改这里。
+ */
+async function adminRoute(env: Env, request: Request, rest: string[]): Promise<Response> {
+  const [head, id, action] = rest;
+  const method = request.method.toUpperCase();
+
+  if (head === 'session' && !id && method === 'POST') return adminSession(env, request);
+
+  if (head === 'devices') {
+    if (!id) {
+      const claims = await requireManager(env, request);
+      if (method === 'GET') return listGrants(env, claims.cid);
+      if (method === 'POST') return addGrant(env, request, claims.cid, claims.mid ?? claims.sid);
+      throw new HttpError(405, 'method_not_allowed', `devices 不支持 ${method}`);
+    }
+    const claims = await requireManager(env, request);
+    const key = decodeURIComponent(id);
+    if (!action && method === 'DELETE') return removeGrant(env, claims.cid, key);
+    if (action && method === 'POST') {
+      if (action === 'approve' || action === 'reject' || action === 'revoke') {
+        return decideGrant(env, claims.cid, key, action, claims.mid ?? claims.sid);
+      }
+      throw new HttpError(404, 'not_found', `没有这个动作：${action}`);
+    }
+    throw new HttpError(405, 'method_not_allowed', `${method} 用不到这个路径`);
+  }
+
+  if (head === 'settings' && !id) {
+    const claims = await requireManager(env, request);
+    if (method === 'PATCH') return setJoinMode(env, request, claims.cid);
+    throw new HttpError(405, 'method_not_allowed', `settings 不支持 ${method}`);
+  }
+
+  throw new HttpError(404, 'not_found', `管理台没有这个接口：${method} /${rest.join('/')}`);
 }

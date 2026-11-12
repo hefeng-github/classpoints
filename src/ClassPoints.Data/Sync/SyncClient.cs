@@ -90,6 +90,8 @@ public sealed class SyncClient : IDisposable
             recoveryCode,
             kind,
             deviceLabel = Environment.MachineName,
+            // 班级开了设备审核时，服务端要靠这个值判断"这台机器批过没有"
+            deviceFingerprint = DeviceFingerprint.Raw,
         };
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/api/v1/classes")
         {
@@ -112,7 +114,14 @@ public sealed class SyncClient : IDisposable
     public async Task<(string ClassId, string Access, string Refresh)> PairAsync(
         string code, string secret, string kind, CancellationToken ct = default)
     {
-        var body = new { code, secret, kind, deviceLabel = Environment.MachineName };
+        var body = new
+        {
+            code,
+            secret,
+            kind,
+            deviceLabel = Environment.MachineName,
+            deviceFingerprint = DeviceFingerprint.Raw,
+        };
         using var res = await _http.PostAsJsonAsync($"{BaseUrl}/api/v1/pair", body, Json, ct);
         var json = await ReadAsync(res, ct);
         return (

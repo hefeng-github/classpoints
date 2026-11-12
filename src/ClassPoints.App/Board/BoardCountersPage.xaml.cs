@@ -101,7 +101,7 @@ public sealed partial class BoardCountersPage : Page
 
             Empty.Show(_students.Count == 0 || _counters.Count == 0);
             if (_students.Count == 0)
-                Empty.Configure("\uE716", "还没有学生。到电脑端导入名单，或在记分台上粘贴一列姓名。",
+                Empty.Configure("\uE716", "还没有学生。到「名单」页导入，或在记分台上粘贴一列姓名。",
                     null, "刷新");
             else if (_counters.Count == 0)
                 Empty.Configure("\uE7C1", "还没有事件类型。到电脑端的「事件计数」页新增一个。", null, "刷新");
@@ -260,17 +260,34 @@ public sealed partial class BoardCountersPage : Page
             CornerRadius = new CornerRadius(10),
             BorderThickness = new Thickness(1),
             // 减号原来是瓷白色，跟卡片底几乎一个色，三米外看不出那是个按钮。
-            // 改成强调色的浅底：和实心的「加」是一对，主次还在，但边界清楚。
-            BorderBrush = primary ? Pal.Accent : Pal.AccentBg,
+            // 改成强调色的浅底 + 强调色描边：和实心的「加」是一对，主次还在，但边界清楚。
+            BorderBrush = Pal.Accent,
             Background = primary ? Pal.Accent : Pal.AccentBg,
             IsEnabled = enabled,
-            Content = new FontIcon
-            {
-                Glyph = glyph,
-                FontFamily = new FontFamily(IconCatalog.FontFamily),
-                FontSize = primary ? 22 : 24,
-                Foreground = primary ? Pal.OnAccent : Pal.Primary,
-            },
+            // 按钮要铺满自己那一半。只给 Height 不给宽度时按钮会缩到内容大小，
+            // 卡片上于是出现「一个细长蓝条 + 一根小横线」，两边的可点区域都只有三十几像素。
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            // 字体里的「减号」是一条发丝线，两米外看不见；减号改画一根粗一点的横杠，
+            // 和右边的「＋」在重量上配得起来。
+            Content = primary
+                ? new FontIcon
+                {
+                    Glyph = glyph,
+                    FontFamily = new FontFamily(IconCatalog.FontFamily),
+                    FontSize = 22,
+                    Foreground = Pal.OnAccent,
+                }
+                : new Border
+                {
+                    Width = 22,
+                    Height = 4,
+                    CornerRadius = new CornerRadius(2),
+                    Background = Pal.Primary,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
         };
         ToolTipService.SetToolTip(button, tip);
         button.Click += (_, _) => onClick();

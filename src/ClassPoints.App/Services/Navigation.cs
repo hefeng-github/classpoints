@@ -40,4 +40,12 @@ public static class AppNav
     /// <summary>会改数据的页面：没认人时进去会先弹认人。看板、查分、明细永远可看。</summary>
     public static bool NeedsIdentity(int index) =>
         index is Score or Counters or Students or Exams or Periods or Settings;
+
+    /// <summary>
+    /// 管理类页面：改名单、改分值、定口径、开周期、改设置。
+    /// 班委的卡能记分，但进不来这些页 —— 和云端「班委令牌一律 403」是同一条规则，
+    /// 不能只靠"按钮藏起来"（大屏是公开设备，谁都能点）。
+    /// </summary>
+    public static bool NeedsAdmin(int index) =>
+        index is Students or Exams or Periods or Settings;
 }

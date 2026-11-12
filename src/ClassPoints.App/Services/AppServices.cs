@@ -190,6 +190,13 @@ public sealed class AppServices
     public bool HasAnyCredential =>
         Members.ListAll().Any(m => m.HasPin || Members.Identities(m.Id).Count > 0);
 
+    /// <summary>
+    /// 有没有"能用密码证明自己是班主任/班长"的人。
+    /// 只发卡没设密码的机器，管理密码校验永远过不去 —— 这时要放行进管理态，否则名单和设置就锁死了。
+    /// </summary>
+    public bool HasManagerPin =>
+        Members.ListAll().Any(m => m.IsManager && m.HasPin);
+
     /// <summary>当前周期总分。</summary>
     public Dictionary<string, int> PeriodTotals() => Entries.PeriodTotals(CurrentPeriod.Id);
 
@@ -206,10 +213,14 @@ public sealed class AppServices
         var usePolicy = policy ?? Settings.AbsencePolicy;
         var ranking = Exams.BuildRanking(students, termPoints, scheme, usePolicy);
 
+        // 排名用累计口径（全部考试），成绩明细与参数说明也必须用同一份场次，
+        // 否则表里只有一个周期的考试，"总评"却把它们加在一起 —— 数字对不上。
+        var exams = Exams.ListAllExams();
+
         return new ExportBundle(
             ranking,
-            Exams.ListExams(period.Id),
-            Exams.ScoresForTerm(period.TermKey, Exams.ListExams(period.Id).Select(e => e.Id).ToList()),
+            exams,
+            Exams.ScoresForTerm(period.TermKey, exams.Select(e => e.Id).ToList()),
             Entries.Entries(period.Id, limit: 100_000),
             scheme,
             period,

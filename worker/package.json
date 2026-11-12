@@ -10,6 +10,7 @@
     "migrate:remote": "wrangler d1 migrations apply classpoints --remote",
     "db:reset": "node scripts/reset-local-db.mjs",
     "test:smoke": "node test/smoke.mjs",
+    "test:grants": "node test/grants.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

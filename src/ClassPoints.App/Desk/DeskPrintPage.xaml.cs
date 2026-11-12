@@ -108,7 +108,8 @@ public sealed partial class DeskPrintPage : Page
             var scheme = Services.Exams.ActiveScheme();
             var students = Services.Students.ListActive();
             var term = Services.Entries.CumulativeTotals();
-            var exams = Services.Exams.ListExams(period.Id);
+            // 总评按累计口径算，期末总评表要列全部场次；只列本周期的会让"总评里的考试列"缺几场
+            var exams = Services.Exams.ListAllExams();
             var weights = Services.Exams.Weights(scheme.Id);
             var ranking = Services.Exams.BuildRanking(students, term, scheme,
                 Services.Settings.AbsencePolicy);
@@ -183,11 +184,14 @@ public sealed partial class DeskPrintPage : Page
     private string BuildArchive(PrintContext ctx, Period period, int studentCount)
     {
         var entries = Services.Entries.Entries(period.Id, 100_000);
-        var path = Path.Combine(Services.Backups.BackupRoot, $"归档-{period.Name}.xlsx");
-        ArchiveHint.Text = $"当前周期「{period.Name}」，共 {entries.Count} 条记录、{studentCount} 名学生。" +
-                           "封面校验码和归档包上的对上，就是同一份。";
 
-        return PrintTemplates.ArchiveCover(ctx, entries.Count, studentCount, path, ctx.Checksum);
+        // 归档是"开新周期时在备份目录里留一个带时间戳的文件夹"，不是某个固定文件名的 xlsx。
+        // 封面原来印的是 归档-第N周期.xlsx，一个任何代码都不会生成的文件名。
+        var location = Services.Backups.BackupRoot;
+        ArchiveHint.Text = $"当前周期「{period.Name}」，共 {entries.Count} 条记录、{studentCount} 名学生。" +
+                           "归档副本在备份目录里，按开新周期的时间排列。";
+
+        return PrintTemplates.ArchiveCover(ctx, entries.Count, studentCount, location, ctx.Checksum);
     }
 
     private async void OnPrint(object sender, RoutedEventArgs e)

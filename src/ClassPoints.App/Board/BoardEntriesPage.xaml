@@ -32,6 +32,7 @@
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition x:Name="OperatorColumn" Width="0" />
                 <ColumnDefinition Width="110" />
+                <ColumnDefinition Width="96" />
             </Grid.ColumnDefinitions>
             <TextBlock Grid.Column="0" Text="时间" Style="{StaticResource SmallText}" />
             <TextBlock Grid.Column="1" Text="学生" Style="{StaticResource SmallText}" />
@@ -39,6 +40,7 @@
             <TextBlock x:Name="OperatorHeader" Grid.Column="3" Text="操作人"
                        Style="{StaticResource SmallText}" Visibility="Collapsed" />
             <TextBlock Grid.Column="4" Text="分值" Style="{StaticResource SmallText}" HorizontalAlignment="Right" />
+            <TextBlock Grid.Column="5" Text="操作" Style="{StaticResource SmallText}" HorizontalAlignment="Right" />
         </Grid>
 
         <Grid Grid.Row="2" Margin="12,0">
@@ -57,7 +59,6 @@
             <controls:EmptyState x:Name="Empty" />
         </Grid>
 
-        <TextBlock Grid.Row="3" Margin="12,8,12,12" Style="{StaticResource SmallText}"
-                   Text="左滑可撤销。大屏只显示今天，完整流水在电脑端。" />
+        <TextBlock x:Name="FootNote" Grid.Row="3" Margin="12,8,12,12" Style="{StaticResource SmallText}" />
     </Grid>
 </Page>

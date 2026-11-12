@@ -43,11 +43,18 @@ public sealed partial class BoardWallPage : Page
         ClassText.Text = Services.ClassName;
         PeriodText.Text = Services.PeriodName;
 
+        // 同一页两端共用：大屏靠"碰"，电脑靠"点"。写死"轻触屏幕"在键鼠上是一句错话。
+        HintText.Text = App.Mode == AppMode.Board
+            ? "轻触屏幕 · 或直接刷卡"
+            : "点击任意处打开查分与记分入口";
+
         _rotate.Interval = TimeSpan.FromSeconds(Services.Settings.BoardRotateSec);
+        _rotate.Tick -= OnRotateTick;
         _rotate.Tick += OnRotateTick;
         _rotate.Start();
 
-        _refresh.Tick += (_, _) => Render();
+        _refresh.Tick -= OnRefreshTick;
+        _refresh.Tick += OnRefreshTick;
         _refresh.Start();
 
         Render();
@@ -58,6 +65,8 @@ public sealed partial class BoardWallPage : Page
         _rotate.Stop();
         _refresh.Stop();
     }
+
+    private void OnRefreshTick(object? sender, object e) => Render();
 
     private void OnRotateTick(object? sender, object e)
     {
@@ -222,8 +231,7 @@ public sealed partial class BoardWallPage : Page
     private void RenderFeed(string periodId)
     {
         FeedPanel.Children.Clear();
-        var entries = Services.Entries.Entries(periodId, limit: 8);
-        if (entries.Count == 0)
+        var entries = Services.Entries.Entries(periodId, limit: 8);        if (entries.Count == 0)
         {
             FeedPanel.Children.Add(new TextBlock
             {
@@ -243,7 +251,9 @@ public sealed partial class BoardWallPage : Page
             var top = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
             top.Children.Add(new TextBlock
             {
-                Text = Clock.ToLocal(entry.OccurredAt).ToString("HH:mm"),
+                // 动态不清周期，可能是三天前的。只写「14:15」会让站在屏幕前的人
+                // 以为是今天下午 —— 看板上"刚发生"和"周一发生"必须一眼分得清。
+                Text = FeedTime(entry.OccurredAt),
                 FontFamily = new FontFamily("Consolas"),
                 FontSize = 14,
                 Foreground = Secondary,
@@ -279,6 +289,16 @@ public sealed partial class BoardWallPage : Page
 
             FeedPanel.Children.Add(panel);
         }
+    }
+
+    /// <summary>动态时间：今天只给时分，昨天加「昨天」，更早带上日期。</summary>
+    private static string FeedTime(long occurredAt)
+    {
+        var at = Clock.ToLocal(occurredAt);
+        var today = DateTime.Today;
+        if (at.Date == today) return at.ToString("HH:mm");
+        if (at.Date == today.AddDays(-1)) return "昨天 " + at.ToString("HH:mm");
+        return at.ToString("MM-dd HH:mm");
     }
 
     // ---------------- 轻触 ----------------

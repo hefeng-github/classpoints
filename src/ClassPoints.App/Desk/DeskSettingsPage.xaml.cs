@@ -25,17 +25,29 @@ public sealed partial class DeskSettingsPage : Page
     {
         InitializeComponent();
         Loaded += (_, _) => Reload();
+
+        // 读卡器那两个订阅和 2 秒一次的灯是挂在服务上的：页面离开后不停，
+        // 旧页面就一直被 Reader 的事件钉在内存里（每进一次设置多一份）。
+        Unloaded += (_, _) =>
+        {
+            _lampTimer?.Stop();
+            Services.Reader.StatusChanged -= OnReaderStatus;
+        };
     }
 
     private static AppServices Services => App.Services;
 
     private static IShellHost? Shell => App.Host;
 
+    /// <summary>数据库实际所在的目录。用 --db 指到别处时，它和 Database.RootDir 不是一个地方。</summary>
+    private static string DataDir =>
+        Path.GetDirectoryName(Services.Db.DbPath) ?? Database.RootDir;
+
     private void Reload()
     {
         try
         {
-            SubText.Text = $"{Services.ClassName} · 班级码 {Services.Settings.ClassCode} · 数据在 {Database.RootDir}";
+            SubText.Text = $"{Services.ClassName} · 班级码 {Services.Settings.ClassCode} · 数据在 {DataDir}";
 
             Sections.Children.Clear();
             BuildClassSection();
@@ -46,7 +58,9 @@ public sealed partial class DeskSettingsPage : Page
             BuildMemberSection();
             BuildReaderSection();
             BuildRuleSection();
+            BuildSchemeSection();
             BuildBackupSection();
+            BuildLocalDataSection();
             BuildProvisionSection();
             BuildSyncSection();
             BuildUpdateSection();
@@ -63,7 +77,7 @@ public sealed partial class DeskSettingsPage : Page
 
     private void BuildClassSection()
     {
-        var body = Section("班级信息", "只有班级名会显示在大屏上。");
+        var body = Section("班级信息", "班级名显示在大屏顶部。");
 
         var nameBox = new TextBox { Text = Services.Settings.ClassName, Width = 300 };
         var save = Small("保存", () =>
@@ -86,10 +100,10 @@ public sealed partial class DeskSettingsPage : Page
         body.Children.Add(Labelled("班级名称", line));
 
         body.Children.Add(ValueRow("班级码", Services.Settings.ClassCode,
-            "电脑端配对要用它。没连云时只是个标识。"));
+            "另一台设备配对时要用它。没连云时只是个标识。"));
 
-        body.Children.Add(ValueRow("数据文件", Database.DefaultDbPath,
-            "积分、成绩、名单都在这一个文件里。备份请用「立即备份」，别手动复制正在写的库。"));
+        body.Children.Add(ValueRow("数据文件", Services.Db.DbPath,
+            "名单、积分、成绩都在这一个文件里。备份用下面的「立即备份」，不要手动复制正在写的库。"));
 
         var seatButton = Small("打开名单与座位", () => Shell?.Navigate(AppNav.Students));
         body.Children.Add(Labelled($"座位布局　{Services.Settings.SeatRows} 排 × {Services.Settings.SeatCols} 座",
@@ -123,11 +137,10 @@ public sealed partial class DeskSettingsPage : Page
 
     private void BuildThisMachineSection()
     {
-        var body = Section("这台电脑", "同一个程序三种用法。换形态只换界面，名单和积分一份都不动。");
+        var body = Section("这台电脑", "一个程序两种排版，换形态不动数据。");
 
-        body.Children.Add(ValueRow("当前形态", App.Mode.ToDisplay() + " · " + App.Mode.ToHint(),
-            "形态存在本机，不影响别的机器。"));
-
+        // 当前是哪一种，看按钮就够了（选中的那个是实心蓝）。
+        // 原来还单列一行「当前形态 · 触屏用…」，和下面的按钮说的是同一件事。
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         foreach (var mode in new[] { AppMode.Board, AppMode.Desk })
         {
@@ -135,8 +148,8 @@ public sealed partial class DeskSettingsPage : Page
             if (mode == App.Mode) button.Style = Styled("DeskPrimaryButton");
             row.Children.Add(button);
         }
-        body.Children.Add(Labelled("界面形态", row));
-        body.Children.Add(Note("两端功能一样，只是排版不同：大屏适合触屏，电脑适合键鼠。"));
+        body.Children.Add(LabelledHint("界面形态",
+            App.Mode.ToDisplay() + " · " + App.Mode.ToHint(), row));
 
         var footer = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         footer.Children.Add(Small("重新运行首次配置…", async () =>
@@ -168,7 +181,7 @@ public sealed partial class DeskSettingsPage : Page
 
     private void BuildAppearanceSection()
     {
-        var body = Section("外观", "浅色是默认，投影出来更清楚。切换立即生效。");
+        var body = Section("外观", "浅色为默认，投影更清楚。切换立即生效。");
 
         var current = Services.Settings.Theme;
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
@@ -192,7 +205,6 @@ public sealed partial class DeskSettingsPage : Page
         }
 
         body.Children.Add(Labelled("配色", row));
-        body.Children.Add(Note("两端共用。这里切成深色，大屏下次同步也会跟着变。"));
     }
 
     // ---------------- 计时与音效 ----------------
@@ -206,15 +218,15 @@ public sealed partial class DeskSettingsPage : Page
     private void BuildOnScreenSection()
     {
         var s = Services.Settings;
-        var body = Section("计时与音效", "只影响这台机器。大屏和电脑各存一份，不会互相覆盖。");
+        var body = Section("计时与音效", "只影响这台电脑。");
 
-        body.Children.Add(NumberField("空闲回看板", "有人选中学生时不计时", 10, 600, 10,
+        body.Children.Add(NumberField("空闲回看板", "有选中学生时不计时", 10, 600, 10,
             () => s.IdleTimeoutSec, v => s.IdleTimeoutSec = (int)v, " 秒"));
-        body.Children.Add(NumberField("管理模式锁定", "超时只退管理态，不退身份", 60, 3600, 30,
+        body.Children.Add(NumberField("管理模式锁定", "超时只退出管理态", 60, 3600, 30,
             () => s.LockTimeoutSec, v => s.LockTimeoutSec = (int)v, " 秒"));
-        body.Children.Add(NumberField("查分页超时", "到点回看板并清屏", 10, 300, 10,
+        body.Children.Add(NumberField("查分页超时", "到时回看板并清屏", 10, 300, 10,
             () => s.LookupTimeoutSec, v => s.LookupTimeoutSec = (int)v, " 秒"));
-        body.Children.Add(NumberField("看板轮播", "榜单和动态的切换间隔", 8, 120, 4,
+        body.Children.Add(NumberField("看板轮播", "榜单与动态的切换间隔", 8, 120, 4,
             () => s.BoardRotateSec, v => s.BoardRotateSec = (int)v, " 秒"));
 
         var sound = new ToggleSwitch
@@ -260,7 +272,12 @@ public sealed partial class DeskSettingsPage : Page
 
     private UIElement LabelledHint(string label, string hint, UIElement control)
     {
-        var panel = new StackPanel { Spacing = 4, Padding = new Thickness(0, 6, 0, 6) };
+        var panel = new StackPanel
+        {
+            Spacing = 4,
+            Padding = new Thickness(0, 6, 0, 6),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
         panel.Children.Add(new TextBlock { Text = label, Style = Styled("DeskColumnHeader") });
         panel.Children.Add(new TextBlock { Text = hint, Style = Styled("DeskSecondaryText") });
         panel.Children.Add(control);
@@ -280,7 +297,7 @@ public sealed partial class DeskSettingsPage : Page
     /// </summary>
     private void BuildReaderSection()
     {
-        var body = Section("读卡器", "PN532 转串口，插上后在设备管理器里会多一个 COM 口。没硬件也能用模拟通道验链路。");
+        var body = Section("读卡器", "PN532 串口读卡器。没有硬件可用模拟刷卡验证链接。");
 
         _lampGrid = new Grid { ColumnSpacing = 18, Margin = new Thickness(0, 4, 0, 0) };
         for (var i = 0; i < 3; i++)
@@ -289,11 +306,20 @@ public sealed partial class DeskSettingsPage : Page
         _readerStatusText = new TextBlock { Style = Styled("DeskSecondaryText") };
 
         _portCombo = new ComboBox { MinWidth = 260, Height = 34 };
+
+        // 第一项是"未连接"。以前列表直接选中第一个真实端口，而读卡器其实没启动，
+        // 看起来像已经在用 COM1 了；而且办公室电脑的 COM1 往往是主板串口。
+        _portCombo.Items.Add(new ComboBoxItem { Content = "未连接", Tag = "" });
         foreach (var port in Pn532Serial.ListPorts())
             _portCombo.Items.Add(new ComboBoxItem { Content = port.Display, Tag = port.PortName });
 
-        if (_portCombo.Items.Count == 0)
-            _portCombo.Items.Add(new ComboBoxItem { Content = "没有发现串口设备", Tag = "" });
+        if (_portCombo.Items.Count == 1)
+            _portCombo.Items.Add(new ComboBoxItem
+            {
+                Content = "没有发现串口设备",
+                Tag = "",
+                IsEnabled = false,
+            });
 
         var saved = Services.Settings.ReaderPort;
         for (var i = 0; i < _portCombo.Items.Count; i++)
@@ -307,17 +333,24 @@ public sealed partial class DeskSettingsPage : Page
             var port = (string?)item.Tag ?? "";
             Services.Settings.ReaderPort = port;
             Services.Reader.Stop();
-            Services.Reader.Start(string.IsNullOrEmpty(port) ? null : port);
+
+            // 选"未连接"就只是停下，不再去探一遍 COM1
+            if (!string.IsNullOrEmpty(port)) Services.Reader.Start(port);
             RefreshLamps();
         };
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Bottom };
         actions.Children.Add(Small("重新连接", () =>
         {
+            var port = Services.Settings.ReaderPort;
+            if (string.IsNullOrWhiteSpace(port))
+            {
+                Shell?.Toast("先在左边选一个端口，再点重新连接");
+                return;
+            }
+
             Services.Reader.Stop();
-            Services.Reader.Start(string.IsNullOrWhiteSpace(Services.Settings.ReaderPort)
-                ? null
-                : Services.Settings.ReaderPort);
+            Services.Reader.Start(port);
             RefreshLamps();
         }));
         actions.Children.Add(Small("模拟刷一张卡", () =>
@@ -333,7 +366,7 @@ public sealed partial class DeskSettingsPage : Page
         body.Children.Add(Labelled("端口", portLine));
         body.Children.Add(_lampGrid);
         body.Children.Add(_readerStatusText);
-        body.Children.Add(Note("三个灯：设备（串口打开）· 帧（握手通过）· 卡（读到过卡）。三个都亮才真能用。"));
+        body.Children.Add(Note("设备（串口已打开）· 帧（握手通过）· 卡（读到过卡），三个都亮才可用。"));
 
         Services.Reader.StatusChanged -= OnReaderStatus;
         Services.Reader.StatusChanged += OnReaderStatus;
@@ -394,7 +427,9 @@ public sealed partial class DeskSettingsPage : Page
             ReaderState.NoDevice => "没找到读卡器。" + status.Message,
             ReaderState.Error => "出错了：" + status.Message,
             ReaderState.Opening => "正在打开端口…",
-            _ => "已停止（点「重新连接」）",
+            _ => string.IsNullOrWhiteSpace(Services.Settings.ReaderPort)
+                ? "未连接。选一个端口后点「重新连接」。"
+                : "已停止。点「重新连接」继续。",
         };
         _readerStatusText.Foreground = status.State switch
         {
@@ -409,8 +444,7 @@ public sealed partial class DeskSettingsPage : Page
 
     private void BuildSecuritySection()
     {
-        var body = Section("密码与恢复码",
-            "谁输对了密码，就按谁的角色给权限：班主任和班长进管理，班委只记分。");
+        var body = Section("密码与恢复码", "输谁的密码，就按谁的角色给权限。");
 
         var owner = Services.Members.Owner();
 
@@ -437,37 +471,52 @@ public sealed partial class DeskSettingsPage : Page
         body.Children.Add(Labelled("管理模式密码",
             Wrap(setPin, ValueText(owner?.HasPin == true ? "已设置" : "未设置"))));
 
-        // 恢复码：明文只出现一次，所以生成之后必须能立刻存下来 ——
-        // 只让人"抄到纸上"是不够的，教室里找不到笔的那次就白生成了。
+        // 恢复码的明文只在"生成的那一次"存在，所以：
+        // ① 生成后必须能立刻存下来（教室里找不到笔的那次就白生成了）；
+        // ② 重开设置页时不能假装还有一串码 —— 以前固定写"还没有生成"，
+        //    已经生成过的机器看上去像从来没设过。
         var codeText = new TextBlock
         {
-            Text = "还没有生成",
+            Text = Services.Settings.HasRecovery ? "已生成，明文不再显示" : "还没有生成",
             FontFamily = (FontFamily)Application.Current.Resources["NumberFont"],
             FontSize = 20,
             FontWeight = FontWeights.SemiBold,
-            Foreground = Pal.Warn,
+            Foreground = Services.Settings.HasRecovery ? Pal.Secondary : Pal.Warn,
             IsTextSelectionEnabled = true,
             VerticalAlignment = VerticalAlignment.Center,
         };
 
+        // 这一次会话里生成出来的明文。为空就表示"看不到"，不能拿界面上的提示文字去存文件。
+        string? plainCode = null;
+
         var generate = Small(Services.Settings.HasRecovery ? "重新生成" : "生成恢复码", async () =>
         {
             if (Shell is not { } shell) return;
+
+            // 生成恢复码要先证明自己是班主任。还没设密码时，校验只会回一句"密码不对"，
+            // 这里直接说清楚缺的是哪一步。
+            if (Services.Members.Owner()?.HasPin != true)
+            {
+                shell.Toast("先在上面设置管理密码，再生成恢复码");
+                return;
+            }
+
             if (!await shell.AskPinAsync("生成恢复码", "需要管理密码", requireManager: true)) return;
 
             var code = RecoveryCode.Generate();
             Services.Settings.RecoveryCodeHash = PasswordHasher.Hash(RecoveryCode.Normalize(code));
+            plainCode = code;
             codeText.Text = code;
+            codeText.Foreground = Pal.Primary;
             Services.Audit.Add("recovery.generate", Services.Session.Current?.Id, null, null);
             shell.Toast("已生成。现在就存一份，关掉就看不到了。", 8);
         });
 
         var saveTxt = Small("保存为 txt", () =>
         {
-            var code = codeText.Text;
-            if (code.Length < 8 || code == "还没有生成")
+            if (plainCode is not { } code)
             {
-                Shell?.Toast("先生成恢复码");
+                Shell?.Toast("明文只在生成时可见。要存文件，先重新生成一张");
                 return;
             }
 
@@ -499,7 +548,7 @@ public sealed partial class DeskSettingsPage : Page
         var printCard = Small("打印恢复卡", () => Shell?.Navigate(AppNav.Print));
 
         body.Children.Add(Labelled("恢复码", Wrap(codeText, generate, saveTxt, printCard)));
-        body.Children.Add(Note("只存哈希，明文只出现这一次。忘了密码就靠它，丢了只能重置数据。"));
+        body.Children.Add(Note("明文只显示一次，库里只存哈希。忘了密码只能靠它或本机重置。"));
     }
 
     /// <summary>几个控件一个标签摆一行，省得每次手写 StackPanel。</summary>
@@ -527,8 +576,7 @@ public sealed partial class DeskSettingsPage : Page
 
     private void BuildMemberSection()
     {
-        var body = Section("成员与权限",
-            "班主任和班长能进管理模式；班委只能记分。密码和卡都能用，输密码时按角色给权限。");
+        var body = Section("成员与权限", "班主任与班长可管理，班委只能记分。密码与卡都可用于认人。");
 
         var members = Services.Members.ListAll(includeRevoked: false);
         if (members.Count == 0)
@@ -663,13 +711,21 @@ public sealed partial class DeskSettingsPage : Page
         };
         var labelBox = new TextBox { Header = "备注（可空）", Text = "校园卡", Width = 340 };
 
+        var status = new TextBlock
+        {
+            Text = "把卡放到读卡器上，卡号会自动填入。",
+            Style = Styled("DeskSecondaryText"),
+            Foreground = Pal.Accent,
+        };
+
         var panel = new StackPanel { Spacing = 10, Width = 360 };
         panel.Children.Add(new TextBlock
         {
-            Text = "两种方式：\n· 在大屏「设置 → 班委管理」点「发卡」再刷卡（推荐）。\n" +
-                   "· 在这里手输 UID：手机 NFC 工具读，或抄卡面丝印。",
+            Text = "· 把卡放到读卡器上，卡号自动填入（读卡器需已连接）。\n" +
+                   "· 没有读卡器就手输 UID：手机 NFC 工具读，或抄卡面丝印。",
             Style = Styled("DeskSecondaryText"),
         });
+        panel.Children.Add(status);
         panel.Children.Add(uidBox);
         panel.Children.Add(labelBox);
 
@@ -683,7 +739,26 @@ public sealed partial class DeskSettingsPage : Page
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        // 对话框开着的时候监听刷卡：这是「发卡」最顺手的姿势 ——
+        // 班主任手里拿着学生那张卡，点一下、放上去，卡号就填好了，不用手抄十六进制。
+        void OnCard(CardRead read) => DispatcherQueue.TryEnqueue(() =>
+        {
+            uidBox.Text = read.Uid;
+            status.Text = $"已读到卡：{read.ShortUid}";
+        });
+
+        Services.Reader.CardDetected += OnCard;
+        ContentDialogResult result;
+        try
+        {
+            result = await dialog.ShowAsync();
+        }
+        finally
+        {
+            Services.Reader.CardDetected -= OnCard;
+        }
+
+        if (result != ContentDialogResult.Primary) return;
 
         try
         {
@@ -773,9 +848,10 @@ public sealed partial class DeskSettingsPage : Page
     private void BuildRuleSection()
     {
         var body = Section("加分与扣分项",
-            "分值是输入框，直接改数字就存。负数是扣分。名称、图标、封顶点「编辑」。");
+            "负数是扣分。「全班」的项目所有人在记分台都能看到；写着人名的只在他刷卡时出现。");
 
         var rules = Services.Rules.ListAll(includeArchived: _showArchivedRules);
+        var members = Services.Members.ListAll(includeRevoked: true).ToDictionary(m => m.Id, m => m.DisplayName);
         foreach (var rule in rules)
         {
             var row = new Grid { ColumnSpacing = 10, Padding = new Thickness(0, 6, 0, 6) };
@@ -793,18 +869,33 @@ public sealed partial class DeskSettingsPage : Page
                 VerticalAlignment = VerticalAlignment.Center,
                 Opacity = rule.IsArchived ? 0.5 : 1,
             });
-            head.Children.Add(new TextBlock
+            var title = new TextBlock
             {
                 Text = $"{rule.Label}　{rule.DeltaText}",
                 Style = Styled("DeskBodyText"),
                 Opacity = rule.IsArchived ? 0.5 : 1,
+            };
+            head.Children.Add(title);
+
+            // 归属：不标出来，班主任会以为「怎么多出几项自己没建过的」
+            var owner = rule.OwnerId is { } ownerId && members.TryGetValue(ownerId, out var name)
+                ? name
+                : (rule.IsShared ? "全班" : "已停用成员");
+            head.Children.Add(new Border
+            {
+                Background = Pal.TileBg,
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(6, 1, 6, 1),
+                VerticalAlignment = VerticalAlignment.Center,
+                Opacity = rule.IsArchived ? 0.5 : 1,
+                Child = new TextBlock { Text = owner, FontSize = 11, Foreground = Pal.Secondary },
             });
             info.Children.Add(head);
             info.Children.Add(new TextBlock
             {
                 Text = rule.HasCap
-                    ? $"封顶：{(rule.CapScope == CapScope.Single ? "单次最多" : "每周期最多")} {rule.CapValue}"
-                    : "封顶：不封顶",
+                    ? $"{(rule.CapScope == CapScope.Single ? "单次最多" : "每周期最多")} {rule.CapValue}"
+                    : "不封顶",
                 Style = Styled("DeskSecondaryText"),
             });
             row.Children.Add(info);
@@ -837,6 +928,9 @@ public sealed partial class DeskSettingsPage : Page
                     if (next == captured.Delta) return;
                     captured.Delta = next;
                     Services.Rules.Save(captured);
+
+                    // 左边那行字里也印着分值，不同步就会一行两个数
+                    title.Text = $"{captured.Label}　{captured.DeltaText}";
                 };
                 actions.Children.Add(delta);
 
@@ -920,14 +1014,16 @@ public sealed partial class DeskSettingsPage : Page
         panel.Children.Add(capBox);
         panel.Children.Add(new TextBlock
         {
-            Text = "「入账确认」不可关闭：分账总要对得上。",
+            Text = "封顶按单次或每个周期计；不封顶就一直累加。",
             Style = Styled("DeskSecondaryText"),
         });
 
         var dialog = new ContentDialog
         {
             XamlRoot = XamlRoot,
-            Title = isNew ? "新建加分项" : "编辑加分项",
+            Title = isNew
+                ? (rule.Delta < 0 ? "新建扣分项" : "新建加分项")
+                : (rule.Delta < 0 ? "编辑扣分项" : "编辑加分项"),
             Content = panel,
             PrimaryButtonText = "保存",
             CloseButtonText = "取消",
@@ -946,7 +1042,10 @@ public sealed partial class DeskSettingsPage : Page
         rule.Label = label;
         rule.Delta = double.IsNaN(deltaBox.Value) ? 10 : (int)deltaBox.Value;
         rule.Icon = IconCatalog.Normalize(icon);
-        rule.CapValue = capCombo.SelectedIndex == 0 ? null : (int)capBox.Value;
+        // 上限值留空时 NumberBox 给的是 NaN，直接取整会变成 0 —— 那等于「一分都不许给」。
+        rule.CapValue = capCombo.SelectedIndex == 0
+            ? null
+            : double.IsNaN(capBox.Value) ? 50 : (int)capBox.Value;
         rule.CapScope = capCombo.SelectedIndex == 0 ? CapScope.None
             : capCombo.SelectedIndex == 1 ? CapScope.Single : CapScope.Period;
 
@@ -955,18 +1054,134 @@ public sealed partial class DeskSettingsPage : Page
         Shell?.Toast(isNew ? $"已新建「{label}」" : "已保存", 2);
     }
 
+    // ---------------- 成绩口径 ----------------
+
+    /// <summary>顺序和下拉框的项一一对应，改顺序要同时改下面两个 switch。</summary>
+    private static readonly AbsencePolicy[] PolicyOrder =
+    [
+        AbsencePolicy.Redistribute,
+        AbsencePolicy.Zero,
+        AbsencePolicy.ClassAverage,
+    ];
+
+    /// <summary>
+    /// 口径原来在「成绩与总评」页里，和权重滑块挤在一张卡上 ——
+    /// 一个是每节课都会动的数，一个是开学定一次就再也不碰的口径，放在一起只会被误拖。
+    /// </summary>
+    private void BuildSchemeSection()
+    {
+        var body = Section("成绩口径", "总评怎么算。改完立即影响排名与导出。");
+
+        var scheme = Services.Exams.ActiveScheme();
+
+        var normalize = new CheckBox
+        {
+            Content = "总评折算成百分制",
+            IsChecked = scheme.Normalize,
+            MinWidth = 0,
+        };
+        normalize.Checked += (_, _) => SaveNormalize(true);
+        normalize.Unchecked += (_, _) => SaveNormalize(false);
+        body.Children.Add(Labelled("总评形式", normalize));
+        body.Children.Add(new TextBlock
+        {
+            Text = "开启：各场考试按满分折算成百分制后加权，总评是 0–100 的分数。" +
+                   "关闭：按考试原始分与积分加权，只用于本班内排名。",
+            Style = Styled("DeskSecondaryText"),
+            MaxWidth = 620,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        });
+
+        var policy = new ComboBox { Width = 360 };
+        policy.Items.Add("缺考那场不计，权重摊给其余场次");
+        policy.Items.Add("缺考记 0 分");
+        policy.Items.Add("缺考按该场全班平均分替代");
+        var index = Array.IndexOf(PolicyOrder, Services.Settings.AbsencePolicy);
+        policy.SelectedIndex = index < 0 ? 0 : index;
+        policy.SelectionChanged += (_, _) =>
+        {
+            if (policy.SelectedIndex < 0) return;
+            Services.Settings.AbsencePolicy = PolicyOrder[policy.SelectedIndex];
+            Services.Audit.Add("scheme.policy", null, null,
+                Services.Settings.AbsencePolicy.ToString());
+        };
+        body.Children.Add(Labelled("缺考处理", policy));
+        body.Children.Add(new TextBlock
+        {
+            Text = "缺考与考低分是两件事，默认不按 0 分计入。",
+            Style = Styled("DeskSecondaryText"),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        });
+    }
+
+    private void SaveNormalize(bool on)
+    {
+        var scheme = Services.Exams.ActiveScheme();
+        if (scheme.Normalize == on) return;
+        scheme.Normalize = on;
+        Services.Exams.SaveScheme(scheme);
+        Services.Audit.Add("scheme.normalize", null, null, on ? "百分制" : "原值加权");
+    }
+
     // ---------------- 备份 ----------------
 
     private void BuildBackupSection()
     {
-        var body = Section("备份与恢复",
-            "整库快照 + 可选 Excel。每天首次启动自动备份，留 30 天。");
+        var body = Section("备份与恢复", "每天首次启动自动备份，保留 30 天。");
 
-        body.Children.Add(ValueRow("备份目录", Services.Backups.BackupRoot,
-            "建议改到 OneDrive 之类同步目录，换机器能直接拿到。"));
+        var dirBox = new TextBox { Text = Services.Backups.BackupRoot, Width = 460, Height = 32 };
+        var dirActions = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        dirActions.Children.Add(Small("保存", () =>
+        {
+            var path = dirBox.Text.Trim();
+            if (!Services.Backups.SetBackupRoot(path))
+            {
+                // 盘符不存在、路径里带了非法字符，都会走到这里。把失败说出来，
+                // 否则用户以为改成功了，之后每次备份都悄悄失败。
+                Shell?.Toast("这个目录建不了，请换一个（例如 D:\\班级积分备份）", 6);
+                return;
+            }
+            Shell?.Toast("备份目录已改为 " + Services.Backups.BackupRoot, 5);
+            Reload();
+        }));
+        dirActions.Children.Add(Small("恢复默认", () =>
+        {
+            if (!Services.Backups.SetBackupRoot(null))
+            {
+                Shell?.Toast("默认目录建不了：" + Database.DefaultBackupDir, 6);
+                return;
+            }
+            Shell?.Toast("已改回 " + Services.Backups.BackupRoot, 5);
+            Reload();
+        }));
+        dirActions.Children.Add(Small("打开文件夹", () =>
+        {
+            try
+            {
+                Directory.CreateDirectory(Services.Backups.BackupRoot);
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = Services.Backups.BackupRoot,
+                    UseShellExecute = true,
+                });
+            }
+            catch (Exception ex)
+            {
+                Shell?.Toast("打不开：" + ex.Message, 4);
+            }
+        }));
 
-        body.Children.Add(ValueRow("上次备份", Services.Backups.LastBackupText,
-            $"状态：{StalenessText()}"));
+        var dirLine = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        dirLine.Children.Add(dirBox);
+        dirLine.Children.Add(dirActions);
+        body.Children.Add(Labelled("备份目录", dirLine));
+
+        body.Children.Add(ValueRow("上次备份", Services.Backups.LastBackupText, StalenessText()));
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         buttons.Children.Add(Small("立即备份", () =>
@@ -974,7 +1189,7 @@ public sealed partial class DeskSettingsPage : Page
             try
             {
                 var path = Services.Backups.BackupNow("manual", Services.BuildExportBundle());
-                Shell?.Toast("已备份：" + Path.GetFileName(path), 4);
+                Shell?.Toast("已备份到 " + path, 6);
                 Reload();
             }
             catch (Exception ex)
@@ -985,83 +1200,185 @@ public sealed partial class DeskSettingsPage : Page
         buttons.Children.Add(Small("清理旧备份", () =>
         {
             Services.Backups.Cleanup();
-            Shell?.Toast("已按规则清理（保留 30 天 + 每月 1 号）", 4);
+            Shell?.Toast("已清理（保留最近 30 天与每月 1 日）", 4);
             Reload();
         }));
-        buttons.Children.Add(Small("整包导出（换机用）", ExportPack));
+        buttons.Children.Add(Async("整包导出（换机用）", ExportPackAsync));
         buttons.Children.Add(Small("从整包导入…", ImportPack));
         body.Children.Add(buttons);
 
         var list = Services.Backups.List(8);
-        if (list.Count == 0)
+        body.Children.Add(new TextBlock
         {
-            body.Children.Add(Note("还没有备份文件。"));
+            Text = list.Count == 0 ? "还没有备份。" : "最近的备份（恢复会覆盖当前库，先自动留档）",
+            Style = Styled("DeskColumnHeader"),
+            Margin = new Thickness(0, 10, 0, 2),
+        });
+
+        foreach (var file in list)
+        {
+            var row = new Grid { Padding = new Thickness(0, 5, 0, 5) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var info = new StackPanel { Spacing = 1 };
+            // 时间在上：人找备份时先想的是"昨天那份"，而不是"哪个文件"
+            info.Children.Add(new TextBlock { Text = file.AtText, Style = Styled("DeskBodyText") });
+            info.Children.Add(new TextBlock { Text = file.DetailText, Style = Styled("DeskSecondaryText") });
+            row.Children.Add(info);
+
+            var restore = Small("恢复", () => RestoreFrom(file));
+            Grid.SetColumn(restore, 1);
+            row.Children.Add(restore);
+
+            body.Children.Add(row);
         }
-        else
+
+        // 换成「文档」之后，老备份还在 %LOCALAPPDATA%，别让人以为它们没了
+        if (Services.Backups.LegacyCount is > 0 and var legacy)
+            body.Children.Add(Note($"另有 {legacy} 份在旧目录 {Database.BackupRoot}，上面同样可恢复。"));
+    }
+
+    private string StalenessText()
+    {
+        // 主行已经写着「还没有备份过」了，这里不能再补一句「一周没备份了」——
+        // 两句话叠在一起既自相矛盾，也把一个从没备份过的机器说成"很久没备份"。
+        if (Services.Backups.LastBackupAt <= 0)
+            return "目前没有备份。点「立即备份」做一份，之后每天首次启动会自动备份。";
+
+        return Services.Backups.StalenessLevel switch
         {
-            body.Children.Add(new TextBlock
-            {
-                Text = "最近的备份（恢复会覆盖当前库，先留档）",
-                Style = Styled("DeskColumnHeader"),
-                Margin = new Thickness(0, 8, 0, 2),
-            });
+            0 => "今天备份过",
+            1 => "两三天没备份了",
+            _ => "一周没备份了，数据只有一份",
+        };
+    }
 
-            foreach (var file in list)
-            {
-                var row = new Grid { Padding = new Thickness(0, 4, 0, 4) };
-                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+    // ---------------- 本机数据 ----------------
 
-                var info = new StackPanel { Spacing = 1 };
-                info.Children.Add(new TextBlock { Text = file.Name, Style = Styled("DeskBodyText") });
-                info.Children.Add(new TextBlock
+    /// <summary>
+    /// 这台电脑上的数据怎么处置。
+    ///
+    /// 「本机重置」清的是本机，不是班级：先自动备份，再删库重启，回到刚装好的向导。
+    /// 不提供"只删一部分"的选项 —— 半个班的数据比没有数据更难解释。
+    /// </summary>
+    private void BuildLocalDataSection()
+    {
+        var body = Section("本机数据", "数据只在这一台电脑上，换机器用整包导出。");
+
+        body.Children.Add(ValueRow("数据库", Services.Db.DbPath));
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        row.Children.Add(Small("打开数据目录", () =>
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
-                    Text = $"{file.KindText} · {file.AtText} · {file.SizeText}",
-                    Style = Styled("DeskSecondaryText"),
+                    FileName = DataDir,
+                    UseShellExecute = true,
                 });
-                row.Children.Add(info);
-
-                var restore = Small("恢复", () => RestoreFrom(file));
-                Grid.SetColumn(restore, 1);
-                row.Children.Add(restore);
-
-                body.Children.Add(row);
             }
+            catch (Exception ex)
+            {
+                Shell?.Toast("打不开：" + ex.Message, 4);
+            }
+        }));
+        body.Children.Add(row);
+
+        body.Children.Add(new TextBlock
+        {
+            Text = "本机重置",
+            Style = Styled("DeskColumnHeader"),
+            Margin = new Thickness(0, 12, 0, 2),
+        });
+        body.Children.Add(new TextBlock
+        {
+            Text = "清空这台电脑上的名单、积分、成绩与密码，重新进入首次配置。清空前自动备份一份。",
+            Style = Styled("DeskSecondaryText"),
+            MaxWidth = 560,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        });
+
+        var reset = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Margin = new Thickness(0, 6, 0, 0),
+        };
+        reset.Children.Add(Small("本机重置…", ResetLocal));
+        body.Children.Add(reset);
+    }
+
+    private async void ResetLocal()
+    {
+        if (Shell is not { } shell) return;
+        if (!await shell.AskPinAsync("本机重置", "需要管理密码", requireManager: true)) return;
+
+        var ok = await shell.ConfirmAsync("确定清空这台电脑上的数据？",
+            "名单、积分、成绩、周期和管理密码都会删除，之后重新进入首次配置。" +
+            "清空前会自动做一份备份，撤销只能在备份里找回。",
+            "清空并重启", "取消");
+        if (!ok) return;
+
+        try
+        {
+            var backup = Services.Backups.BackupNow("before-reset", null);
+            Services.Audit.Add("local.reset", null, null, backup);
+            shell.Toast("已备份到 " + backup + "，正在重启…", 5);
+            App.Window?.ResetLocalAndRestart();
+        }
+        catch (Exception ex)
+        {
+            Services.LogError("local-reset", ex);
+            shell.Toast("重置失败：" + ex.Message, 8);
         }
     }
 
-    private string StalenessText() => Services.Backups.StalenessLevel switch
-    {
-        0 => "今天备份过",
-        1 => "两三天没备份了",
-        _ => "一周没备份了，数据只有一份",
-    };
-
     private async void RestoreFrom(BackupFile file)
     {
+        // 列表里同时有快照（文件夹里的库文件）和整包（.zip）。两者恢复方式不同：
+        // 直接拿 zip 去走 Restore 会得到"这不是一个 SQLite 数据库文件"。
+        var pack = file.IsPack;
+
         var dialog = new ContentDialog
         {
             XamlRoot = XamlRoot,
-            Title = "用这份备份覆盖当前数据？",
-            Content = $"{file.Name}\n\n当前库会改名留档（不删），再用这份恢复。恢复完重启软件。",
-            PrimaryButtonText = "恢复",
+            Title = pack ? "用这个整包替换当前数据？" : "用这份备份覆盖当前数据？",
+            Content = $"{file.AtText}\n{file.DetailText}\n\n" +
+                      (pack
+                          ? "会先校验校验码、结构版本与记录条数，全部对上才替换；"
+                          : "当前库会改名留档（不删），再用这份恢复；") +
+                      "程序会自动重新打开。",
+            PrimaryButtonText = pack ? "校验并恢复" : "恢复",
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Close,
         };
 
         if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
 
-        var check = Services.Backups.Restore(file.Path);
-        Shell?.Toast(check.Message, check.Ok ? 8 : 8);
-        Services.Audit.Add("backup.restore", null, file.Name, check.Message);
-        if (check.Ok) Reload();
+        var check = pack
+            ? Services.Backups.ImportPack(file.Path)
+            : Services.Backups.Restore(file.Path);
+        Services.Audit.Add(pack ? "pack.import" : "backup.restore", null, file.Name, check.Message);
+
+        if (!check.Ok)
+        {
+            Shell?.Toast(check.Message, 8);
+            return;
+        }
+
+        // 库文件已经换掉了，内存里还是旧会话 —— 必须重开程序，不能只是 Reload。
+        Shell?.Toast(check.Message + "，正在重新打开…", 6);
+        App.Window?.RestartApp();
     }
 
-    private async void ExportPack()
+    private async Task ExportPackAsync()
     {
         try
         {
-            var path = Services.Backups.ExportPack();
+            // 打包要拷库再压缩，放后台：教室电脑上这一步可能一两秒，别让界面卡住。
+            var path = await Task.Run(() => Services.Backups.ExportPack());
             Shell?.Toast("整包已导出：" + path, 8);
         }
         catch (Exception ex)
@@ -1092,9 +1409,17 @@ public sealed partial class DeskSettingsPage : Page
             if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
 
             var check = Services.Backups.ImportPack(path);
-            Shell?.Toast(check.Message, 10);
             Services.Audit.Add("pack.import", null, Path.GetFileName(path), check.Message);
-            if (check.Ok) Reload();
+
+            if (!check.Ok)
+            {
+                Shell?.Toast(check.Message, 10);
+                return;
+            }
+
+            // 同「恢复」：整包会把库整个替换，重开程序才能确保读的是新库。
+            Shell?.Toast(check.Message + "，正在重新打开…", 6);
+            App.Window?.RestartApp();
         }
         catch (Exception ex)
         {
@@ -1107,15 +1432,13 @@ public sealed partial class DeskSettingsPage : Page
 
     private void BuildProvisionSection()
     {
-        var body = Section("预配置",
-            "在家里配好云端地址、班级码、座位，连名单一起存成文件带到学校。" +
-            "学校那台导入后只剩定分值和试一下。");
+        var body = Section("预配置", "把云端地址、班级码、座位与名单导出成一个文件，带到学校导入。");
 
         var credentials = new SyncStore().Load();
         body.Children.Add(ValueRow("当前可下发的配置",
             string.IsNullOrWhiteSpace(Services.ClassName) ? "还没配班级信息" : Services.ClassName,
             credentials is null
-                ? "这台还没连云端。导出的是纯本地配置（班级名 + 座位）。"
+                ? "这台还没连云端。导出的是纯本地配置（班级名、座位与名单）。"
                 : $"云端 {credentials.BaseUrl}，班级码 {credentials.ClassCode}。" +
                   "文件里带班级码和配对口令，到学校导入即自动配对。"));
 
@@ -1124,8 +1447,7 @@ public sealed partial class DeskSettingsPage : Page
         buttons.Children.Add(Async("导入配置包…", ImportBundleAsync));
         body.Children.Add(buttons);
 
-        body.Children.Add(Note("配对口令用配置包口令加密。U 盘丢了也看不到班主任密码。" +
-                              "不设口令也能导出，只是文件里不带密码。"));
+        body.Children.Add(Note("配对口令用配置包口令加密，未设口令的包里不含任何密码。"));
     }
 
     private async Task ExportBundleAsync()
@@ -1292,16 +1614,22 @@ public sealed partial class DeskSettingsPage : Page
 
         var body = Section("同步",
             configured
-                ? $"已连接到 {creds?.BaseUrl}。两端各记各的，靠 UUID 幂等合并，断了网也照常用。"
-                : "这台电脑目前是纯本地模式：它就是数据的唯一副本。「备份」就是你的同步。");
+                ? $"已连接 {creds?.BaseUrl}。断网照常用，写操作在后台补推。"
+                : "纯本地模式：这台电脑就是数据的唯一副本，备份即同步。");
 
-        body.Children.Add(ValueRow("同步状态", Services.Pump.StatusText,
-            "本地写入永远先成功，同步只在后台跑。断网时界面只会多一个「待推送」角标。"));
-        body.Children.Add(ValueRow("待推送", Services.Outbox.Count() + " 条",
-            "每条写操作都有幂等键，重连后重复提交不会重复入账。"));
+        body.Children.Add(ValueRow("同步状态", Services.Pump.StatusText));
+
+        // 特征码放在这里而不是只放在「关于」：班级一旦开了设备审核，
+        // 老师要做的第一件事就是把这串抄给班主任 —— 或者反过来，对着网页核对它。
+        body.Children.Add(ValueRow("本机特征码", DeviceFingerprint.Display,
+            "班主任在「班级管理台」里凭这一串认这台机器。班级没开设备审核时用不到。"));
 
         if (configured)
         {
+            // 纯本地模式不显示这一行：那台机器压根没接云端，
+            // 「待推送 136 条」只会让人以为有东西卡住了。
+            body.Children.Add(ValueRow("待推送", Services.Outbox.Count() + " 条"));
+
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
             buttons.Children.Add(Async("立即同步", async () =>
             {
@@ -1311,10 +1639,10 @@ public sealed partial class DeskSettingsPage : Page
                     : $"同步失败：{report.Error}", 5);
                 Reload();
             }));
-            buttons.Children.Add(Small("换一台设备配对…", () =>
+            buttons.Children.Add(Small("解除配对…", () =>
             {
                 sync.SignOut();
-                Shell?.Toast("凭据已清除，下面可以重新配对", 5);
+                Shell?.Toast("凭据已清除，可以重新配对", 5);
                 Reload();
             }));
             body.Children.Add(buttons);
@@ -1325,46 +1653,41 @@ public sealed partial class DeskSettingsPage : Page
         var urlBox = new TextBox
         {
             PlaceholderText = "https://classpoints-api.你的账号.workers.dev",
-            Width = 460,
-            Height = 38,
+            Height = 34,
             VerticalContentAlignment = VerticalAlignment.Center,
             Text = "http://127.0.0.1:8787",
         };
         var codeBox = new TextBox
         {
-            PlaceholderText = "8 位，建班时给的",
-            Width = 220,
-            Height = 38,
+            PlaceholderText = "8 位班级码",
+            Height = 34,
             VerticalContentAlignment = VerticalAlignment.Center,
         };
         var pinBox = new PasswordBox
         {
             PasswordChar = "●",
-            Width = 220,
-            Height = 38,
+            Height = 34,
             VerticalContentAlignment = VerticalAlignment.Center,
+            PlaceholderText = "6 位数字",
         };
         // 服务端配了 BOOTSTRAP_SECRET 才需要填。填了只在这一个请求里用，
         // 不存盘 —— 它是部署口令，不属于这台电脑该记得的东西。
         var bootstrapBox = new PasswordBox
         {
             PasswordChar = "●",
-            Width = 220,
-            Height = 38,
+            Height = 34,
             VerticalContentAlignment = VerticalAlignment.Center,
             PlaceholderText = "没设就留空",
         };
 
-        body.Children.Add(Labelled("服务器地址", urlBox));
+        body.Children.Add(Labelled("服务器地址", urlBox, 460));
 
-        // 两个输入框并排。各自用 Labelled 把标签压在框上方，
-        // 和上面「班级名称」用同一套写法，高度与基线才不会叉开。
-        var pairRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-        pairRow.Children.Add(Labelled("班级码", codeBox));
-        pairRow.Children.Add(Labelled("班主任密码", pinBox));
-        body.Children.Add(pairRow);
-
-        body.Children.Add(Labelled("部署口令（建班用，服务端没设就留空）", bootstrapBox));
+        // 三个字段同一行、同一宽度、同一基线：分别在三个 StackPanel 里各写一遍宽度，
+        // 迟早会出现"标签在最左、输入框飘在中间"的错位。
+        body.Children.Add(FieldRow(200,
+            ("班级码", codeBox),
+            ("班主任密码", pinBox),
+            ("部署口令", bootstrapBox)));
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         actions.Children.Add(Async("配对到已有班级", async () =>
@@ -1389,7 +1712,10 @@ public sealed partial class DeskSettingsPage : Page
             catch (Exception ex)
             {
                 Services.LogError("sync-pair", ex);
-                Shell?.Toast("配对失败：" + ex.Message, 6);
+                // 待审和被拒的话术里带着特征码，老师要照着去网页上点通过，
+                // 6 秒读不完一串十六进制，给足时间。
+                var needsAction = ex is SyncException { Code: "device_pending" or "device_blocked" };
+                Shell?.Toast("配对失败：" + ex.Message, needsAction ? 16 : 6);
             }
         }));
         actions.Children.Add(Async("在这台电脑上建班", async () =>
@@ -1420,8 +1746,7 @@ public sealed partial class DeskSettingsPage : Page
         }));
         body.Children.Add(actions);
 
-        body.Children.Add(Note("先把云端跑起来：worker/ 目录下 wrangler d1 migrations apply --remote，" +
-            "再 wrangler deploy，然后把地址填到上面。没配也不影响用，只是换机器要靠整包导入。"));
+        body.Children.Add(Note("云端未部署时不用填：换机器改用「整包导出 / 导入」。"));
     }
 
     private Button Async(string text, Func<Task> work)
@@ -1463,12 +1788,10 @@ public sealed partial class DeskSettingsPage : Page
     private void BuildUpdateSection()
     {
         var center = UpdateCenter.Current;
-        var body = Section("更新", "只接收正式版本。升级会先关掉本程序，装完自动重新打开。");
+        var body = Section("更新", "只接收正式版本。升级时程序会自动关闭并重新打开。");
 
         body.Children.Add(ValueRow("当前版本", "班级积分 v" + AppServices.AppVersion,
-            UpdateService.IsInstalled
-                ? "安装版：可以直接在应用内升级到新版本。"
-                : "便携版：只能下载新包自己解压覆盖，不会自动安装。数据在 AppData 里，覆盖程序不影响。"));
+            UpdateService.IsInstalled ? "安装版：可在应用内升级。" : "便携版：只能下载新包手动覆盖。"));
 
         var statusText = new TextBlock
         {
@@ -1556,11 +1879,8 @@ public sealed partial class DeskSettingsPage : Page
 
         var resolved = UpdateCenter.ResolveFeed();
         body.Children.Add(Note(string.IsNullOrWhiteSpace(resolved)
-            ? "还没确定版本库地址。填一个公开版本库根地址（https://…/<用户>/<仓库>）就能接收更新。"
+            ? "还没确定版本库地址。填一个公开版本库根地址（https://…/<用户>/<仓库>）。"
             : "实际使用：" + resolved));
-
-        body.Children.Add(Note("直接连公开版本库下载，不经过同步服务，也不需要任何账号或令牌。" +
-            "只认 v主.次.修 的正式版本，下载后先核对大小和 SHA-256，对不上就不装。"));
     }
 
     /// <summary>下载 → 校验 → 拉起安装程序。便携版到"下载完"为止。</summary>
@@ -1656,8 +1976,10 @@ public sealed partial class DeskSettingsPage : Page
         }));
         body.Children.Add(buttons);
 
-        body.Children.Add(ValueRow("版本", "班级积分 v" + AppServices.AppVersion,
-            "数据库表结构版本 " + Sql.SchemaVersion + "。升级时只做向前迁移，不降级。"));
+        // 「当前版本」在「更新」那一节已经有一行了，这里再写一遍只是重复。
+        // 这一行要回答的是"库结构是哪一代、能不能降级"。
+        body.Children.Add(ValueRow("数据库结构", "v" + Sql.SchemaVersion,
+            "升级时只做向前迁移，不降级。"));
     }
 
     // ---------------- 构件 ----------------
@@ -1683,7 +2005,12 @@ public sealed partial class DeskSettingsPage : Page
 
     private UIElement ValueRow(string label, string value, string? hint = null)
     {
-        var panel = new StackPanel { Spacing = 1, Padding = new Thickness(0, 6, 0, 6) };
+        var panel = new StackPanel
+        {
+            Spacing = 1,
+            Padding = new Thickness(0, 6, 0, 6),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
         panel.Children.Add(new TextBlock { Text = label, Style = Styled("DeskColumnHeader") });
         panel.Children.Add(new TextBlock
         {
@@ -1701,12 +2028,36 @@ public sealed partial class DeskSettingsPage : Page
         return panel;
     }
 
-    private UIElement Labelled(string label, UIElement control)
+    /// <summary>
+    /// 标签在上、输入框在下。
+    ///
+    /// 输入框必须显式左对齐：StackPanel 里的子元素默认 HorizontalAlignment=Stretch，
+    /// 而 Stretch 遇上显式 Width 时会被摆到容器正中 —— 表现就是「标签在最左边、
+    /// 输入框飘到中间」，几行之间还各飘各的。所有表单都只能从这里出去。
+    /// </summary>
+    private UIElement Labelled(string label, FrameworkElement control, double width = 0)
     {
-        var panel = new StackPanel { Spacing = 6, Padding = new Thickness(0, 6, 0, 6) };
+        if (width > 0) control.Width = width;
+        control.HorizontalAlignment = HorizontalAlignment.Left;
+        control.VerticalAlignment = VerticalAlignment.Center;
+
+        var panel = new StackPanel
+        {
+            Spacing = 6,
+            Padding = new Thickness(0, 6, 0, 6),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
         panel.Children.Add(new TextBlock { Text = label, Style = Styled("DeskColumnHeader") });
         panel.Children.Add(control);
         return panel;
+    }
+
+    /// <summary>一行并排几个输入框：等宽、基线一致，宽度由调用方给。</summary>
+    private UIElement FieldRow(double fieldWidth, params (string Label, FrameworkElement Control)[] fields)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14 };
+        foreach (var (label, control) in fields) row.Children.Add(Labelled(label, control, fieldWidth));
+        return row;
     }
 
     private UIElement Note(string text) => new TextBlock

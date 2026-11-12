@@ -4,6 +4,7 @@ using ClassPoints.Core;
 using ClassPoints.Core.Config;
 using ClassPoints.Data;
 using ClassPoints.Data.Config;
+using ClassPoints.Data.Sync;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -111,6 +112,14 @@ public sealed partial class OnboardingView : UserControl
 
     public event EventHandler? Completed;
 
+    /// <summary>从设置里重跑向导时才有「退出配置」：第一次装机器的时候没有可回的地方。</summary>
+    public bool AllowCancel { get; set; }
+
+    public event EventHandler? Cancelled;
+
+    private void OnCancelSetup(object sender, RoutedEventArgs e) =>
+        Cancelled?.Invoke(this, EventArgs.Empty);
+
     /// <summary>验收用：直接跳到某一步（CP_SNAP 抓向导各步截图时用，正常流程不会碰它）。</summary>
     public void DebugGoToStep(int step) => ShowStep(step);
 
@@ -129,11 +138,10 @@ public sealed partial class OnboardingView : UserControl
         _steps.Clear();
         _titles.Clear();
 
-        if (!_modeChosen)
-        {
-            _steps.Add(StepKind.Mode);
-            _titles.Add("这台电脑做什么");
-        }
+        // 形态这一步永远在：即使这次启动已经知道形态（预配置过、或从设置里重跑），
+        // 也给得回一步 —— "1. 预配置"底下没有「上一步」按钮，看着像界面坏了。
+        _steps.Add(StepKind.Mode);
+        _titles.Add("这台电脑做什么");
 
         _steps.Add(StepKind.Config);
         _titles.Add("预配置");
@@ -185,9 +193,37 @@ public sealed partial class OnboardingView : UserControl
 
         TryPanel.Visibility = IsSelfCheck ? Visibility.Visible : Visibility.Collapsed;
         BackButton.Visibility = _step == 0 ? Visibility.Collapsed : Visibility.Visible;
+        CancelButton.Visibility = AllowCancel ? Visibility.Visible : Visibility.Collapsed;
         SkipAllButton.Visibility = IsSelfCheck ? Visibility.Collapsed : Visibility.Visible;
         SkipAllButton.Content = "跳到自检";
         NextButton.Content = IsSelfCheck ? "完成，开始用" : "下一步";
+
+        LeftAlignSizedChildren(Body);
+    }
+
+    /// <summary>
+    /// 显式给了 Width 的控件，在 Stretch 对齐下会被摆到容器正中 ——
+    /// 表现是"标签在最左、输入框飘到中间"。这里统一改成左对齐，省得每加一个输入框就忘一次。
+    /// </summary>
+    private static void LeftAlignSizedChildren(Panel panel)
+    {
+        foreach (var child in panel.Children)
+        {
+            if (child is FrameworkElement element &&
+                element.HorizontalAlignment == HorizontalAlignment.Stretch &&
+                !double.IsNaN(element.Width))
+                element.HorizontalAlignment = HorizontalAlignment.Left;
+
+            switch (child)
+            {
+                case Panel nested:
+                    LeftAlignSizedChildren(nested);
+                    break;
+                case Border { Child: Panel bordered }:
+                    LeftAlignSizedChildren(bordered);
+                    break;
+            }
+        }
     }
 
     private void RenderDots()
@@ -315,22 +351,22 @@ public sealed partial class OnboardingView : UserControl
     {
         Body.Children.Add(new TextBlock
         {
-            Text = "同一个程序，两种排版。功能完全一样，只是这台机器平时怎么用。",
+            Text = "这台电脑平时放在教室还是办公室。功能完全一样，只是排版不同。",
             Style = Styled("DeskBodyText"),
             TextWrapping = TextWrapping.Wrap,
         });
 
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
         row.Children.Add(ModeCard(AppMode.Board, "\uE7F4", "教室大屏",
-            "触屏用。字大、按钮厚，站在两米外也看得清；记分、计数、看板都在这儿。"));
+            "触屏操作，字大按钮厚，两米外看得清。"));
         row.Children.Add(ModeCard(AppMode.Desk, "\uE977", "班主任电脑",
-            "键鼠用。紧凑、信息密度高，改名单、算总评、打印更顺手。"));
+            "键鼠操作，信息密度高，改名单与出成绩更顺手。"));
         Body.Children.Add(row);
 
         // 「示例数据」必须在欢迎页显式勾选：不勾就不写任何假学生进库。
         var demo = new CheckBox
         {
-            Content = "先用示例数据试试（48 个假学生，随时可以一键清空）",
+            Content = "先用示例数据试试（48 个示例学生，随时可清空）",
             IsChecked = _demoData,
             Margin = new Thickness(0, 6, 0, 0),
         };
@@ -340,7 +376,7 @@ public sealed partial class OnboardingView : UserControl
 
         Body.Children.Add(new TextBlock
         {
-            Text = "形态存在本机。以后要换，到「设置 → 这台电脑」里重新选，不用重装。",
+            Text = "形态存在本机，之后可在「设置 → 这台电脑」里更换。",
             Style = Styled("SmallText"),
         });
     }
@@ -403,7 +439,7 @@ public sealed partial class OnboardingView : UserControl
 
         Body.Children.Add(new TextBlock
         {
-            Text = "在家把班级名、座位、云端地址和名单打包成 .cpcfg，带过来导入一次，学校这边就只剩定分值。没有就跳过。",
+            Text = "配置包（.cpcfg）里带着班级名、座位、云端地址与名单，套用后本机能少填几项。没有就跳过。",
             Style = Styled("DeskBodyText"),
             TextWrapping = TextWrapping.Wrap,
         });
@@ -537,11 +573,102 @@ public sealed partial class OnboardingView : UserControl
             }
         };
 
-        Body.Children.Add(Section("配置包里有什么", new[]
+        Body.Children.Add(BuildClassCodeLink());
+    }
+
+    /// <summary>
+    /// 没有配置文件时的第二条路：填班级码 + 班主任密码，直接连云端把名单和配置拉下来。
+    /// 以前只有"导入文件"一条路，于是没带 U 盘的那次就得先跳过、装完再回设置里配对。
+    /// </summary>
+    private UIElement BuildClassCodeLink()
+    {
+        var urlBox = new TextBox
         {
-            "班级名、座位排布，以及提前录好的名单。",
-            "云端地址与班级码；配对口令是加密的，可以再加一个预置管理密码。",
-        }));
+            Header = "服务器地址",
+            PlaceholderText = "https://classpoints.example.com",
+            Text = "http://127.0.0.1:8787",
+            Width = 420,
+        };
+        var codeBox = new TextBox { Header = "班级码", PlaceholderText = "8 位", Width = 200 };
+        var pinBox = new PasswordBox
+        {
+            Header = "班主任密码",
+            PasswordChar = "●",
+            Width = 200,
+        };
+        var link = new Button
+        {
+            Content = "连接并拉取",
+            Style = Styled("TouchSecondaryButton"),
+            VerticalAlignment = VerticalAlignment.Bottom,
+        };
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        row.Children.Add(codeBox);
+        row.Children.Add(pinBox);
+        row.Children.Add(link);
+
+        var panel = new StackPanel { Spacing = 10, HorizontalAlignment = HorizontalAlignment.Left };
+        panel.Children.Add(urlBox);
+        panel.Children.Add(row);
+        // 首次配置时就把特征码摊开：班级开了设备审核的话，接下来那一步
+        // 会卡在"等班主任通过"，而老师需要有个东西能念给对方听。
+        panel.Children.Add(new TextBlock
+        {
+            Text = $"本机特征码 {DeviceFingerprint.Display}",
+            Style = Styled("SmallText"),
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 620,
+        });
+        var status = new TextBlock { Style = Styled("SmallText"), TextWrapping = TextWrapping.Wrap, MaxWidth = 620 };
+        panel.Children.Add(status);
+
+        link.Click += async (_, _) =>
+        {
+            var url = urlBox.Text.Trim();
+            var code = codeBox.Text.Trim();
+            var pin = pinBox.Password;
+
+            if (url.Length == 0 || code.Length == 0 || pin.Length < 6)
+            {
+                status.Text = "地址、班级码和 6 位密码都要填。";
+                return;
+            }
+
+            link.IsEnabled = false;
+            status.Text = "正在连接…";
+            try
+            {
+                var report = await Services.Sync.PairAsync(url, code, pin, _mode.ToDb());
+                if (!report.Ok)
+                {
+                    status.Text = "连接失败：" + (report.Error ?? "地址或班级码不对");
+                    return;
+                }
+
+                _classCode = code;
+                Services.Settings.ClassCode = code;
+                Services.Pump.Start();
+
+                var pull = await Services.Sync.RunOnceAsync();
+                status.Text = pull.Ok
+                    ? $"已连接，拉取 {pull.Pulled} 条记录。名单那一步可以跳过。"
+                    : $"已连接，但这次没拉到数据（{pull.Error}），稍后会自动重试。";
+                HintText.Text = "云端已接入这台机器。";
+                HintText.Foreground = Pal.Positive;
+            }
+            catch (Exception ex)
+            {
+                Services.LogError("wizard-pair", ex);
+                status.Text = "连接失败：" + ex.Message;
+            }
+            finally
+            {
+                link.IsEnabled = true;
+            }
+        };
+
+        return Section("或者：用班级码直接连云端", null, panel);
     }
 
     private Task<string?> PickConfigFileAsync()
@@ -576,20 +703,17 @@ public sealed partial class OnboardingView : UserControl
 
         Body.Children.Add(new TextBlock
         {
-            Text = "只填班级名。周期不用管：每开一次新周期，系统按「第 1、2、3…」自动编号。",
+            Text = "周期不用填：每开一次新周期，按「第 1、2、3…」自动编号。",
             Style = Styled("SmallText"),
         });
 
-        var hasData = Services.Students.ListActive().Count > 0;
-        Body.Children.Add(Section("接下来", new[]
-        {
-            hasData
-                ? $"本机已有 {Services.Students.ListActive().Count} 人，名单那步可以跳过。"
-                : "贴一列姓名，或者稍后从 Excel 导入。",
-            "定几个加分项和扣分项 —— 数目和类别都不固定，用不上就删掉。",
-            "设 6 位管理密码，生成恢复码并存一份。",
-            "试加一分，看看一屏放得下不。",
-        }));
+        var existing = Services.Students.ListActive().Count;
+        if (existing > 0)
+            Body.Children.Add(new TextBlock
+            {
+                Text = $"本机已有 {existing} 人，名单那一步可以跳过。",
+                Style = Styled("SmallText"),
+            });
     }
 
     // ---------------- 3. 名单 ----------------
@@ -623,7 +747,7 @@ public sealed partial class OnboardingView : UserControl
         Body.Children.Add(NamesInput);
         Body.Children.Add(new TextBlock
         {
-            Text = "带学号、座位的导入在「名单」页做，Excel 直接读。",
+            Text = "带学号和座位的导入在「名单」页做，可直接读 Excel。",
             Style = Styled("SmallText"),
         });
 
@@ -642,12 +766,15 @@ public sealed partial class OnboardingView : UserControl
     {
         Body.Children.Add(new TextBlock
         {
-            Text = "项目、数量、分值都由你定。负数是扣分。图标点一下就能换，封顶默认关。",
+            Text = "项目名称、默认分值与封顶都由你定。负数是扣分，封顶默认关闭。",
             Style = Styled("DeskBodyText"),
             TextWrapping = TextWrapping.Wrap,
         });
 
         var visible = _rules.Where(r => !r.Removed).ToList();
+
+        // 先给一行表头：没有它，那一排输入框只能靠猜——哪个是分值、哪个是上限，谁也不确定
+        Body.Children.Add(BuildRuleHeader());
 
         foreach (var draft in visible)
             Body.Children.Add(BuildRuleRow(draft));
@@ -682,6 +809,29 @@ public sealed partial class OnboardingView : UserControl
     }
 
     private int NextSort() => _rules.Count == 0 ? 10 : _rules.Max(r => r.Sort) + 10;
+
+    /// <summary>列宽必须和 BuildRuleRow 里的一模一样，否则表头会跟下面的输入框错开。</summary>
+    private static UIElement BuildRuleHeader()
+    {
+        var grid = new Grid { ColumnSpacing = 10, Padding = new Thickness(0, 4, 0, 0) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(44) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(132) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(132) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(112) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        string[] headers = ["图标", "项目名称", "分值（负数为扣分）", "封顶方式", "上限", "操作"];
+        for (var i = 0; i < headers.Length; i++)
+        {
+            var text = new TextBlock { Text = headers[i], Style = Styled("DeskColumnHeader") };
+            Grid.SetColumn(text, i);
+            if (i == headers.Length - 1) text.HorizontalAlignment = HorizontalAlignment.Center;
+            grid.Children.Add(text);
+        }
+
+        return grid;
+    }
 
     /// <summary>
     /// 一行 = 一个项目。分值是输入框（不是 ±5 两枚按钮）：改 10 分是"改成 10"，
@@ -870,7 +1020,7 @@ public sealed partial class OnboardingView : UserControl
             _classCode = ClassCodes.New();
             Services.Settings.ClassCode = _classCode;
             codeText.Text = _classCode;
-            HintText.Text = "已换新班级码。电脑端要用新的这个配对。";
+            HintText.Text = "已换新班级码。另一台设备要用新的这个配对。";
             HintText.Foreground = Pal.Secondary;
         };
 
@@ -881,7 +1031,7 @@ public sealed partial class OnboardingView : UserControl
         Body.Children.Add(Section("班级码", null, codeRow));
         Body.Children.Add(new TextBlock
         {
-            Text = "两台机器配对时用它。没连云端时只是个编号，不影响记分。",
+            Text = "两台设备配对时用它。未连云端时只是本机编号。",
             Style = Styled("SmallText"),
         });
 
@@ -910,8 +1060,8 @@ public sealed partial class OnboardingView : UserControl
         Body.Children.Add(new TextBlock
         {
             Text = _pinFromBundle
-                ? "配置包里已经带了管理密码，这里留空就用包里的那个；想换就在这儿重设。"
-                : "进管理模式要输它。输谁的密码，就按谁的角色给权限：班主任和班长能管理，班委只能记分。",
+                ? "配置包里已有管理密码，留空即沿用；如需更换在此重设。"
+                : "进入管理模式时输入。班主任与班长可管理，班委只能记分。",
             Style = Styled("SmallText"),
         });
 
@@ -986,14 +1136,14 @@ public sealed partial class OnboardingView : UserControl
         Body.Children.Add(Section("恢复码", null, recoverRow));
         Body.Children.Add(new TextBlock
         {
-            Text = "只显示这一次，库里只存哈希。忘了密码或换了电脑，都靠它。",
+            Text = "明文只显示一次，库里只存哈希。忘记密码或换机器时用它。",
             Style = Styled("SmallText"),
         });
 
-        Body.Children.Add(Section("之后再做也不迟", new[]
+        Body.Children.Add(Section("之后再做", new[]
         {
-            "「设置 → 成员与权限」里给班长和班委发卡、设密码。",
-            "「打印与导出」里可以打一张恢复卡，塞在讲台抽屉里。",
+            "「设置 → 成员与权限」给班长与班委发卡或设密码。",
+            "「打印与导出」可打印一张恢复卡留档。",
         }));
     }
 

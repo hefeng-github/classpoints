@@ -161,6 +161,15 @@ public sealed class Rule
     public string Icon { get; set; } = IconCatalog.Default;
     public int Sort { get; set; }
     public string? PresetKey { get; set; }
+
+    /// <summary>
+    /// 归属成员。NULL = 全班共用（记分台上每个人都能看到）；
+    /// 非空 = 只有这个人的快捷项。班级的分值项应当保持 NULL，
+    /// 否则换个人刷卡后按钮就"少了一半"。
+    /// </summary>
+    public string? OwnerId { get; set; }
+
+    public bool IsShared => string.IsNullOrEmpty(OwnerId);
     public int? CapValue { get; set; }
     public CapScope CapScope { get; set; } = CapScope.None;
     public long? ArchivedAt { get; set; }

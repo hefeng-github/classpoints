@@ -78,6 +78,8 @@
                             MinWidth="110" Click="OnLassoButtonClick" />
                     <Button x:Name="UndoLastButton" Content="撤销上一步" Style="{StaticResource TouchSecondaryButton}"
                             MinWidth="150" Click="OnUndoLastClick" />
+                    <Button x:Name="QuickRulesButton" Content="快捷项" Style="{StaticResource TouchSecondaryButton}"
+                            MinWidth="110" Click="OnQuickRulesClick" />
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right">
                     <Button x:Name="SelectAllButton" Content="全选本屏" Style="{StaticResource TouchSecondaryButton}"
@@ -88,21 +90,46 @@
             </Grid>
         </Grid>
 
-        <!-- ===== 入账确认条 / 撤销条：共用底部这一条位置，不同时出现 ===== -->
-        <Grid Grid.Row="2" VerticalAlignment="Bottom" Height="88" x:Name="BarHost" Visibility="Collapsed">
+        <!--
+            入账确认：居中弹窗。
+            以前是贴在底部的一条横条，按钮在最右下角 —— 触屏一体机上，老师刚在中间框完一片，
+            眼睛和手都停在屏幕中间，却要去右下角点「确定」。确认这一步值得一个真正的弹窗。
+        -->
+        <Grid x:Name="ConfirmHost" Grid.RowSpan="3" Visibility="Collapsed">
+            <Rectangle Fill="{ThemeResource ScrimBrush}" Tapped="OnConfirmScrimTapped" />
+
+            <Border HorizontalAlignment="Center" VerticalAlignment="Center" Width="600"
+                    Background="{ThemeResource CardBgBrush}" BorderBrush="{ThemeResource CardStrokeBrush}"
+                    BorderThickness="1" CornerRadius="18" Padding="28">
+                <StackPanel Spacing="18">
+                    <TextBlock Text="确认入账" Style="{StaticResource H2Text}" />
+                    <TextBlock x:Name="ConfirmText" Style="{StaticResource BodyText}" TextWrapping="Wrap" />
+
+                    <StackPanel Orientation="Horizontal" Spacing="12" HorizontalAlignment="Right">
+                        <Button x:Name="ConfirmCancelButton" Content="取消" Style="{StaticResource BtnLg}"
+                                MinWidth="140" Click="OnBarCancelClick" />
+                        <Button x:Name="ConfirmOkButton" Content="确定" Style="{StaticResource TouchPrimaryButton}"
+                                MinWidth="200" Click="OnBarOkClick" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- ===== 撤销条：仍在底部，它只是提示，不该抢走视线 ===== -->
+        <Grid Grid.Row="2" VerticalAlignment="Bottom" Height="88" x:Name="UndoHost" Visibility="Collapsed">
             <Border Background="{ThemeResource FloatingBgBrush}" BorderBrush="{ThemeResource CardStrokeBrush}"
                     BorderThickness="1,1,1,0" CornerRadius="14,14,0,0" Padding="16,0">
                 <Grid>
-                    <TextBlock x:Name="BarText" Style="{StaticResource BodyText}" VerticalAlignment="Center"
+                    <TextBlock x:Name="UndoText" Style="{StaticResource BodyText}" VerticalAlignment="Center"
                                TextTrimming="CharacterEllipsis" />
 
                     <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right" VerticalAlignment="Center">
-                        <Button x:Name="BarAuxButton" Content="备注" Style="{StaticResource BtnLg}"
-                                MinWidth="110" Visibility="Collapsed" Click="OnBarAuxClick" />
-                        <Button x:Name="BarCancelButton" Content="取消" Style="{StaticResource BtnLg}"
+                        <Button x:Name="UndoNoteButton" Content="备注" Style="{StaticResource BtnLg}"
+                                MinWidth="110" Click="OnBarAuxClick" />
+                        <Button x:Name="UndoButton" Content="撤销" Style="{StaticResource BtnLg}"
                                 MinWidth="110" Click="OnBarCancelClick" />
-                        <Button x:Name="BarOkButton" Content="确定" Style="{StaticResource TouchPrimaryButton}"
-                                MinWidth="220" Click="OnBarOkClick" />
+                        <Button x:Name="UndoOkButton" Content="知道了" Style="{StaticResource TouchPrimaryButton}"
+                                MinWidth="200" Click="OnBarOkClick" />
                     </StackPanel>
                 </Grid>
             </Border>

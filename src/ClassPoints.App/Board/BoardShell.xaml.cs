@@ -18,18 +18,17 @@ namespace ClassPoints.App.Board;
 /// </summary>
 public sealed partial class BoardShell : UserControl, IShellHost
 {
-    private static readonly SolidColorBrush ActiveBg = Pal.AccentBg;
-    private static readonly SolidColorBrush ActiveFg = Pal.Accent;
-    private static readonly SolidColorBrush IdleFg = Pal.Secondary;
-    private static readonly SolidColorBrush Transparent = new(Windows.UI.Color.FromArgb(0x00, 0, 0, 0));
 
     private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromSeconds(1) };
-    private readonly Dictionary<int, Button> _railButtons = new();
-    private readonly Dictionary<int, Button> _paneButtons = new();
+    private readonly Dictionary<int, NavigationViewItem> _navItems = new();
 
     private TaskCompletionSource<Member?>? _identifyTcs;
+
+    /// <summary>认人浮层的 30 秒自动关闭。必须留一个字段：早先它是方法里的局部变量，
+    /// 认人提前完成后计时器还在跑，30 秒后会去关掉「下一次」打开的浮层。</summary>
+    private DispatcherTimer? _identifyTimer;
     private int _currentIndex = AppNav.Wall;
-    private bool _paneOpen;
+    private bool _navSyncing;
     private string _clockMinute = "";
 
     public BoardShell()
@@ -116,81 +115,65 @@ public sealed partial class BoardShell : UserControl, IShellHost
     /// </summary>
     private void BuildNavigation()
     {
-        RailStack.Children.Clear();
-        PaneStack.Children.Clear();
-        _railButtons.Clear();
-        _paneButtons.Clear();
+        Nav.MenuItems.Clear();
+        _navItems.Clear();
 
         foreach (var (index, title, glyph) in AppNav.Items)
         {
-            var rail = new Button
+            var item = new NavigationViewItem
             {
-                Style = (Style)Application.Current.Resources["RailButtonStyle"],
+                Content = title,
                 Tag = index,
-                Content = new FontIcon { Glyph = glyph, FontSize = 20 },
+                Icon = new FontIcon
+                {
+                    Glyph = glyph,
+                    FontFamily = new FontFamily(IconCatalog.FontFamily),
+                },
             };
-            ToolTipService.SetToolTip(rail, title);
-            rail.Click += OnRailClick;
-            RailStack.Children.Add(rail);
-            _railButtons[index] = rail;
 
-            var pane = new Button
-            {
-                Style = (Style)Application.Current.Resources["PaneItemStyle"],
-                Tag = index,
-            };
-            var row = new Grid { ColumnSpacing = 4 };
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(56) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-            var icon = new FontIcon
-            {
-                Glyph = glyph,
-                FontSize = 18,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-                Foreground = IdleFg,
-            };
-            Grid.SetColumn(icon, 0);
-            row.Children.Add(icon);
-
-            var text = new TextBlock
-            {
-                Text = title,
-                FontSize = 16,
-                VerticalAlignment = VerticalAlignment.Center,
-                Foreground = Pal.Primary,
-            };
-            Grid.SetColumn(text, 1);
-            row.Children.Add(text);
-
-            pane.Content = row;
-            pane.Click += OnPaneItemClick;
-            PaneStack.Children.Add(pane);
-            _paneButtons[index] = pane;
+            // 收起时只剩图标，靠工具提示说明这一格是什么
+            ToolTipService.SetToolTip(item, title);
+            Nav.MenuItems.Add(item);
+            _navItems[index] = item;
         }
     }
 
-    private void OnRailClick(object sender, RoutedEventArgs e)
+    /// <summary>原生 NavigationView 的选中回调；权限不够就弹回原来那一项。</summary>
+    private void OnNavSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
-        if (sender is not Button b || b.Tag is not int index) return;
+        if (_navSyncing) return;
+        if (args.SelectedItemContainer?.Tag is not int index) return;
+        if (index == _currentIndex) return;
+
+        // 选完就收起面板：大屏是给全班看的，展开的侧栏挡住半个屏幕
         _ = NavigateAsync(index);
     }
 
-    private void OnPaneItemClick(object sender, RoutedEventArgs e)
+    private void SelectWithoutNotify(int index)
     {
-        if (sender is not Button b || b.Tag is not int index) return;
-        ClosePane();
-        _ = NavigateAsync(index);
+        _navSyncing = true;
+        if (_navItems.TryGetValue(index, out var item)) Nav.SelectedItem = item;
+        _navSyncing = false;
     }
 
     private async Task NavigateAsync(int index)
     {
-        // 会改数据的页面先认人；看板/查分/明细随便看
-        if (AppNav.NeedsIdentity(index) && !Session.CanWrite)
+        // 管理类页面要管理态；记分台/事件计数只要有身份；看板/查分/明细随便看
+        if (AppNav.NeedsAdmin(index))
         {
-            var ok = await EnsureIdentifiedAsync();
-            if (!ok) return;
+            if (!await EnsureIdentifiedAsync(requireAdmin: true))
+            {
+                SelectWithoutNotify(_currentIndex);
+                return;
+            }
+        }
+        else if (AppNav.NeedsIdentity(index) && !Session.CanWrite)
+        {
+            if (!await EnsureIdentifiedAsync())
+            {
+                SelectWithoutNotify(_currentIndex);
+                return;
+            }
         }
         Navigate(index);
     }
@@ -200,47 +183,8 @@ public sealed partial class BoardShell : UserControl, IShellHost
         _currentIndex = index;
         var page = BoardPages.Map(index);
         if (ContentFrame.CurrentSourcePageType != page) ContentFrame.Navigate(page);
-        RefreshRail();
+        SelectWithoutNotify(index);
     }
-
-    private void RefreshRail()
-    {
-        foreach (var (index, button) in _railButtons)
-        {
-            var active = index == _currentIndex;
-            button.Background = active ? ActiveBg : Transparent;
-            if (button.Content is FontIcon icon) icon.Foreground = active ? ActiveFg : IdleFg;
-        }
-
-        foreach (var (index, button) in _paneButtons)
-        {
-            var active = index == _currentIndex;
-            button.Background = active ? ActiveBg : Transparent;
-            if (button.Content is not Grid grid) continue;
-            foreach (var child in grid.Children)
-            {
-                if (child is FontIcon icon) icon.Foreground = active ? ActiveFg : IdleFg;
-                else if (child is TextBlock text) text.Foreground = active ? ActiveFg : Pal.Primary;
-            }
-        }
-    }
-
-    private void OnPaneToggleClick(object sender, RoutedEventArgs e) => TogglePane();
-
-    private void TogglePane()
-    {
-        _paneOpen = !_paneOpen;
-        PaneLayer.Visibility = _paneOpen ? Visibility.Visible : Visibility.Collapsed;
-        PaneClassText.Text = Services.ClassTitle;
-    }
-
-    private void ClosePane()
-    {
-        _paneOpen = false;
-        PaneLayer.Visibility = Visibility.Collapsed;
-    }
-
-    private void OnPaneScrimTapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e) => ClosePane();
 
     // ================= 会话与超时 =================
 
@@ -248,7 +192,6 @@ public sealed partial class BoardShell : UserControl, IShellHost
     {
         HeadClassText.Text = Services.ClassName;
         HeadPeriodText.Text = Services.PeriodName;
-        PaneClassText.Text = Services.ClassTitle;
         HeadSyncText.Text = Session.SyncText;
     }
 
@@ -391,6 +334,15 @@ public sealed partial class BoardShell : UserControl, IShellHost
         // 已经是班委/其他人，但要进管理 → 要管理密码，而不是重新刷一张卡
         if (requireAdmin && Session.CanWrite)
         {
+            // 全班只有卡、没有任何管理密码时，校验永远过不去。放行进管理态，
+            // 否则这台机器的名单和设置会彻底打不开（提示去补一个密码）。
+            if (!Services.HasManagerPin)
+            {
+                Session.EnterAdmin();
+                Toast("还没设管理密码，先以管理态进来；建议到设置里补一个");
+                return true;
+            }
+
             var ok = await AskPinAsync("管理模式密码", "改名单、改分值、撤销记录都要这一步", requireManager: true);
             if (ok) Session.EnterAdmin();
             return ok;
@@ -412,19 +364,22 @@ public sealed partial class BoardShell : UserControl, IShellHost
         IdentifyLayer.Visibility = Visibility.Visible;
 
         // 30 秒没人理就收起，避免一个模态框永远压在屏幕上
-        var timeout = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
-        timeout.Tick += (_, _) =>
+        _identifyTimer?.Stop();
+        _identifyTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+        _identifyTimer.Tick += (_, _) =>
         {
-            timeout.Stop();
+            _identifyTimer?.Stop();
             if (_identifyTcs is not null) CompleteIdentify(null);
         };
-        timeout.Start();
+        _identifyTimer.Start();
 
         return _identifyTcs.Task;
     }
 
     private void CompleteIdentify(Member? member)
     {
+        _identifyTimer?.Stop();
+
         var tcs = _identifyTcs;
         _identifyTcs = null;
         IdentifyLayer.Visibility = Visibility.Collapsed;
@@ -549,4 +504,6 @@ public sealed partial class BoardShell : UserControl, IShellHost
     }
 
     public void Toast(string message, double seconds = 3) => ToastLayer.Show(message, seconds);
+
+    public void RefreshChrome() => RefreshHeader();
 }

@@ -65,7 +65,9 @@
             <TextBlock x:Name="HintText" Style="{StaticResource SmallText}" VerticalAlignment="Center" />
 
             <StackPanel Orientation="Horizontal" Spacing="12" HorizontalAlignment="Right">
-                <Button x:Name="SkipAllButton" Content="跳过全部，用默认设置"
+                <Button x:Name="CancelButton" Content="退出配置" Style="{StaticResource TouchSecondaryButton}"
+                        Click="OnCancelSetup" Visibility="Collapsed" />
+                <Button x:Name="SkipAllButton" Content="跳到自检"
                         Style="{StaticResource TouchSecondaryButton}" Click="OnSkipAll" />
                 <Button x:Name="BackButton" Content="上一步" Style="{StaticResource TouchSecondaryButton}"
                         Click="OnBack" />

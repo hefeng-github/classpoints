@@ -5,7 +5,6 @@ using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
-using Windows.Storage.Pickers;
 using ClassPoints.App.Theme;
 
 namespace ClassPoints.App.Desk;
@@ -74,7 +73,7 @@ public sealed partial class DeskStudentsPage : Page
     private UIElement BuildRow(Student s)
     {
         var grid = new Grid { ColumnSpacing = 12, MinHeight = 44, Padding = new Thickness(12, 0, 12, 0) };
-        foreach (var w in new[] { 90d, 180d, 110d, 100d, 100d, 90d, 150d, 0d })
+        foreach (var w in new[] { 90d, 180d, 110d, 100d, 100d, 90d, 210d, 0d })
             grid.ColumnDefinitions.Add(new ColumnDefinition
             {
                 Width = w <= 0 ? new GridLength(1, GridUnitType.Star) : new GridLength(w),
@@ -121,6 +120,10 @@ public sealed partial class DeskStudentsPage : Page
             Spacing = 6,
             VerticalAlignment = VerticalAlignment.Center,
         };
+
+        var records = new Button { Content = "记录", Style = Styled("DeskButton"), Height = 28, MinWidth = 54 };
+        records.Click += (_, _) => ShowStudentRecords(s);
+        actions.Children.Add(records);
 
         var edit = new Button { Content = "编辑", Style = Styled("DeskButton"), Height = 28, MinWidth = 54 };
         edit.Click += async (_, _) => await EditStudentAsync(s, isNew: false);
@@ -176,26 +179,67 @@ public sealed partial class DeskStudentsPage : Page
 
     private async Task<bool> EditStudentAsync(Student s, bool isNew)
     {
-        var nameBox = new TextBox { Header = "姓名", Text = s.Name };
-        var noBox = new TextBox { Header = "学号（可空）", Text = s.StudentNo ?? "" };
-        var seatBox = new NumberBox
+        var nameBox = new TextBox { Header = "姓名", Text = s.Name, Width = 320 };
+        var noBox = new TextBox { Header = "学号（可空）", Text = s.StudentNo ?? "", Width = 320 };
+
+        // 座位是"可选"的：有的班按学号站队、有的班还没排座，硬要一个数字反而逼人编一个。
+        // 指定时用「排 / 座」两个数——老师脑子里的座位就是这个形状，不是"第 37 号"。
+        var cols = System.Math.Max(1, Services.Settings.SeatCols);
+        var seatNo = s.SeatNo;
+        var seatOn = new CheckBox
         {
-            Header = "座位号（1 起，按 8 座一排换算）",
-            Value = s.SeatNo ?? double.NaN,
-            Minimum = 1,
-            Maximum = 999,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
+            Content = "指定座位",
+            IsChecked = seatNo is not null,
+            MinWidth = 0,
         };
+
+        var rowBox = new NumberBox
+        {
+            Header = "第几排",
+            Value = seatNo is int sn ? (sn - 1) / cols + 1 : 1,
+            Minimum = 1,
+            Maximum = 99,
+            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
+            Width = 140,
+            IsEnabled = seatNo is not null,
+        };
+        var colBox = new NumberBox
+        {
+            Header = "第几座",
+            Value = seatNo is int sc ? (sc - 1) % cols + 1 : 1,
+            Minimum = 1,
+            Maximum = cols,
+            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
+            Width = 140,
+            IsEnabled = seatNo is not null,
+        };
+        seatOn.Checked += (_, _) => { rowBox.IsEnabled = true; colBox.IsEnabled = true; };
+        seatOn.Unchecked += (_, _) => { rowBox.IsEnabled = false; colBox.IsEnabled = false; };
+
+        var seatRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 12,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        seatRow.Children.Add(rowBox);
+        seatRow.Children.Add(colBox);
 
         var panel = new StackPanel { Spacing = 12, Width = 360 };
         panel.Children.Add(nameBox);
         panel.Children.Add(noBox);
-        panel.Children.Add(seatBox);
+        panel.Children.Add(seatOn);
+        panel.Children.Add(seatRow);
+        panel.Children.Add(new TextBlock
+        {
+            Text = $"不指定座位的学生排在名单最后。当前每排 {cols} 座，可在「座位布局」里改。",
+            Style = Styled("DeskSecondaryText"),
+        });
 
         var dialog = new ContentDialog
         {
             XamlRoot = XamlRoot,
-            Title = "编辑学生",
+            Title = isNew ? "新增学生" : "编辑学生",
             Content = panel,
             PrimaryButtonText = "保存",
             CloseButtonText = "取消",
@@ -213,7 +257,18 @@ public sealed partial class DeskStudentsPage : Page
 
         s.Name = name;
         s.StudentNo = string.IsNullOrWhiteSpace(noBox.Text) ? null : noBox.Text.Trim();
-        s.SeatNo = double.IsNaN(seatBox.Value) ? null : (int)seatBox.Value;
+
+        if (seatOn.IsChecked == true)
+        {
+            var row = double.IsNaN(rowBox.Value) ? 1 : System.Math.Max(1, (int)rowBox.Value);
+            var col = double.IsNaN(colBox.Value) ? 1 : System.Math.Clamp((int)colBox.Value, 1, cols);
+            s.SeatNo = (row - 1) * cols + col;
+        }
+        else
+        {
+            s.SeatNo = null;
+        }
+
         s.Active = true;
 
         if (isNew) Services.Students.Insert(s); else Services.Students.Update(s);
@@ -319,14 +374,28 @@ public sealed partial class DeskStudentsPage : Page
                 .Select(c => new ColumnOption(c, grid.Cell(0, c), grid.RowCount > 1 ? grid.Cell(1, c) : ""))
                 .ToList();
 
-            var nameCombo = new ComboBox { Header = "姓名列", ItemsSource = options, Width = 320 };
+            // ColumnOption 是 record，不设 DisplayMemberPath 时下拉框显示的是
+            // "ColumnOption { Index = 0, Header = 姓名, Sample = 王小明 }"，三行都这样。
+            var nameCombo = new ComboBox
+            {
+                Header = "姓名列", ItemsSource = options, Width = 320,
+                DisplayMemberPath = nameof(ColumnOption.Display),
+            };
             nameCombo.SelectedIndex = options.FindIndex(o => o.Header.Contains("姓名") || o.Header.Contains("学生"));
             if (nameCombo.SelectedIndex < 0) nameCombo.SelectedIndex = 0;
 
-            var noCombo = new ComboBox { Header = "学号列（可选）", ItemsSource = options, Width = 320 };
+            var noCombo = new ComboBox
+            {
+                Header = "学号列（可选）", ItemsSource = options, Width = 320,
+                DisplayMemberPath = nameof(ColumnOption.Display),
+            };
             noCombo.SelectedIndex = options.FindIndex(o => o.Header.Contains("学号") || o.Header.Contains("编号"));
 
-            var seatCombo = new ComboBox { Header = "座位列（可选）", ItemsSource = options, Width = 320 };
+            var seatCombo = new ComboBox
+            {
+                Header = "座位列（可选）", ItemsSource = options, Width = 320,
+                DisplayMemberPath = nameof(ColumnOption.Display),
+            };
             seatCombo.SelectedIndex = options.FindIndex(o => o.Header.Contains("座"));
 
             var preview = new TextBlock { Style = Styled("DeskSecondaryText"), TextWrapping = TextWrapping.Wrap };
@@ -478,6 +547,171 @@ public sealed partial class DeskStudentsPage : Page
 
     // ---------------- 回收站 ----------------
 
+    /// <summary>
+    /// 一个学生的全部积分记录（跨周期，最新的在前）。
+    ///
+    /// 名单页原来是"只有总分"：家长问「这 30 分怎么来的」，班主任得翻明细页
+    /// 一条条找。这里直接按人列出来，权限够的话就地能撤。
+    /// </summary>
+    private async void ShowStudentRecords(Student s)
+    {
+        var body = new StackPanel { Spacing = 6, Width = 560 };
+
+        void Render()
+        {
+            body.Children.Clear();
+
+            var term = Services.Entries.CumulativeTotals().GetValueOrDefault(s.Id);
+            var periodTotal = Services.Entries.PeriodTotals(Services.CurrentPeriod.Id).GetValueOrDefault(s.Id);
+            body.Children.Add(new TextBlock
+            {
+                Text = $"累计 {term} 分　·　{Services.PeriodName} {periodTotal} 分",
+                Style = Styled("DeskBodyText"),
+                Margin = new Thickness(0, 0, 0, 4),
+            });
+
+            var entries = Services.Entries.EntriesForStudent(s.Id, 500);
+            if (entries.Count == 0)
+            {
+                body.Children.Add(new TextBlock
+                {
+                    Text = "还没有记录。",
+                    Style = Styled("DeskSecondaryText"),
+                });
+                return;
+            }
+
+            foreach (var entry in entries)
+                body.Children.Add(BuildRecordRow(entry, Render));
+        }
+
+        Render();
+
+        await new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = s.Name + " · 积分记录",
+            Content = new ScrollViewer { Content = body, MaxHeight = 460 },
+            CloseButtonText = "关闭",
+        }.ShowAsync();
+
+        Reload();
+    }
+
+    private UIElement BuildRecordRow(Entry entry, Action refresh)
+    {
+        var grid = new Grid { ColumnSpacing = 10, Padding = new Thickness(0, 5, 0, 5) };
+        foreach (var w in new[] { 96d, 0d, 96d, 120d, 72d })
+            grid.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = w <= 0 ? new GridLength(1, GridUnitType.Star) : new GridLength(w),
+            });
+
+        var time = new TextBlock
+        {
+            Text = Clock.ToLocal(entry.OccurredAt).ToString("MM-dd HH:mm"),
+            Style = Styled("DeskSecondaryText"),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        grid.Children.Add(time);
+
+        var label = new TextBlock
+        {
+            Text = entry.RuleLabel ?? "—",
+            Style = Styled("DeskBodyText"),
+            Opacity = entry.IsReversed ? 0.5 : 1,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(label, 1);
+        grid.Children.Add(label);
+
+        var op = new TextBlock
+        {
+            Text = entry.OperatorName,
+            Style = Styled("DeskSecondaryText"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(op, 2);
+        grid.Children.Add(op);
+
+        var delta = new TextBlock
+        {
+            Text = entry.IsReversed ? "已撤销" : entry.DeltaText,
+            FontFamily = (FontFamily)Application.Current.Resources["NumberFont"],
+            FontSize = 14,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = entry.IsReversed ? Pal.Secondary : entry.Delta >= 0 ? Pal.Positive : Pal.Negative,
+        };
+        Grid.SetColumn(delta, 3);
+        grid.Children.Add(delta);
+
+        if (!entry.IsReversed && !entry.IsReversal)
+        {
+            var undo = new Button
+            {
+                Content = "撤销",
+                Style = Styled("DeskButton"),
+                Height = 26,
+                MinWidth = 54,
+                HorizontalAlignment = HorizontalAlignment.Right,
+            };
+            undo.Click += async (_, _) =>
+            {
+                if (await TryReverseAsync(entry)) refresh();
+            };
+            Grid.SetColumn(undo, 4);
+            grid.Children.Add(undo);
+        }
+
+        return new Border
+        {
+            Child = grid,
+            BorderBrush = Pal.Stroke,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+        };
+    }
+
+    /// <summary>
+    /// 按权限撤销一条：自己刚记的、或管理态/班主任，直接过；
+    /// 别人的旧记录要管理密码。门禁统一在 EntryService.CheckReversePermission 里，
+    /// 这里只负责把"要去问密码"翻译成一次弹窗。
+    /// </summary>
+    private async Task<bool> TryReverseAsync(Entry entry)
+    {
+        var rows = Services.Entries.BatchRows(entry.BatchId);
+        var permission = EntryService.CheckReversePermission(
+            rows, Services.Operator, Services.Session.IsAdmin, Clock.NowMs());
+
+        if (permission == ReversePermission.Denied)
+        {
+            Shell?.Toast("没有权限撤销这一条");
+            return false;
+        }
+
+        if (permission == ReversePermission.NeedsPassword)
+        {
+            if (Shell is not { } shell) return false;
+            if (!await shell.AskPinAsync("撤销别人的记录", "需要管理密码", requireManager: true)) return false;
+            Services.Session.EnterAdmin();
+        }
+
+        try
+        {
+            Services.Entries.ReverseSingle(entry.Id, Services.Operator, "desk.students");
+            Shell?.Toast($"已撤销 {entry.StudentName} 的 {entry.RuleLabel} {entry.DeltaText}", 3);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Services.LogError("undo-student-entry", ex);
+            Shell?.Toast("撤销失败：" + ex.Message, 5);
+            return false;
+        }
+    }
+
     private async void OnRecycle(object sender, RoutedEventArgs e)
     {
         var deleted = _all.Where(s => s.IsDeleted).ToList();
@@ -513,6 +747,10 @@ public sealed partial class DeskStudentsPage : Page
                 restore.Click += (_, _) =>
                 {
                     Services.Students.Restore(s.Id);
+
+                    // 弹窗是模态的，页面刷了也看不见 —— 直接把这一行从弹窗里去掉，
+                    // 否则点完还挂在"回收站"列表里，像是没恢复成功。
+                    panel.Children.Remove(row);
                     Reload();
                     Shell?.Toast($"{s.Name} 已恢复", 2);
                 };

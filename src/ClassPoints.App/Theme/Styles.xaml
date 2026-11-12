@@ -268,10 +268,18 @@
         <Setter Property="HorizontalContentAlignment" Value="Center" />
     </Style>
 
+    <!--
+        主按钮：自带模板。
+
+        为什么不用系统模板 + 只改颜色：WinUI 的 Button 模板在 PointerOver / Pressed 两个
+        VisualState 里会把前景色换成 ButtonForegroundPointerOver（浅色下几乎全黑），
+        于是蓝底白字一悬停就变成蓝底黑字 —— 看起来像"字没换白"。模板里的前景走
+        TemplateBinding，状态只改不透明度，白字就一直是白的。
+    -->
     <Style x:Key="DeskPrimaryButton" TargetType="Button">
         <Setter Property="FontFamily" Value="{StaticResource TextFont}" />
         <Setter Property="FontSize" Value="14" />
-        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="FontWeight" Value="Bold" />
         <Setter Property="Height" Value="34" />
         <Setter Property="MinWidth" Value="88" />
         <Setter Property="Padding" Value="16,0" />
@@ -280,6 +288,55 @@
         <Setter Property="Background" Value="{ThemeResource SelectStrokeBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource OnAccentBrush}" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid x:Name="Root"
+                          Background="{TemplateBinding Background}"
+                          CornerRadius="{TemplateBinding CornerRadius}"
+                          BorderThickness="{TemplateBinding BorderThickness}"
+                          BorderBrush="{TemplateBinding BorderBrush}">
+                        <ContentPresenter
+                            x:Name="Presenter"
+                            Content="{TemplateBinding Content}"
+                            Foreground="{TemplateBinding Foreground}"
+                            Padding="{TemplateBinding Padding}"
+                            FontFamily="{TemplateBinding FontFamily}"
+                            FontSize="{TemplateBinding FontSize}"
+                            FontWeight="{TemplateBinding FontWeight}"
+                            HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                            VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Root"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0.90" Duration="0:0:0.1" />
+                                    </Storyboard>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Root"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0.78" Duration="0:0:0.05" />
+                                    </Storyboard>
+                                </VisualState>
+                                <VisualState x:Name="Disabled">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Root"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0.45" Duration="0:0:0" />
+                                    </Storyboard>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <!-- 表格行：电脑端行高 40，靠得住的密度 -->

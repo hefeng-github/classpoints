@@ -144,6 +144,17 @@ public sealed class RuleRepository(Database db)
         return list;
     }
 
+    /// <summary>
+    /// 记分台上该出现哪些项目：全班共用的（owner 为空）+ 当前这个人的快捷项。
+    /// 换个人刷卡，多出来的是他自己那几项，班级的分值项一项不少。
+    /// </summary>
+    public List<Rule> ListForMember(string? memberId)
+    {
+        var all = ListAll();
+        if (string.IsNullOrEmpty(memberId)) return all.Where(r => r.IsShared).ToList();
+        return all.Where(r => r.IsShared || r.OwnerId == memberId).ToList();
+    }
+
     public Rule? Get(string id)
     {
         using var conn = db.Open();
@@ -168,11 +179,13 @@ public sealed class RuleRepository(Database db)
         {
             rule.Rev = 1;
             Database.Exec(conn, tx, """
-                INSERT INTO rules (id, label, delta, icon, sort, preset_key, cap_value, cap_scope, rev, updated_at)
-                VALUES ($id, $label, $delta, $icon, $sort, $preset, $cap, $scope, 1, $now)
+                INSERT INTO rules (id, label, delta, icon, sort, preset_key, owner_id, cap_value, cap_scope, rev, updated_at)
+                VALUES ($id, $label, $delta, $icon, $sort, $preset, $owner, $cap, $scope, 1, $now)
                 """,
                 ("$id", rule.Id), ("$label", rule.Label), ("$delta", rule.Delta), ("$icon", rule.Icon),
-                ("$sort", rule.Sort), ("$preset", rule.PresetKey), ("$cap", rule.CapValue),
+                ("$sort", rule.Sort), ("$preset", rule.PresetKey),
+                ("$owner", string.IsNullOrEmpty(rule.OwnerId) ? null : rule.OwnerId),
+                ("$cap", rule.CapValue),
                 ("$scope", rule.CapScope == CapScope.None ? null : (rule.CapScope == CapScope.Single ? "single" : "period")),
                 ("$now", now));
         }
@@ -181,11 +194,14 @@ public sealed class RuleRepository(Database db)
             rule.Rev++;
             Database.Exec(conn, tx, """
                 UPDATE rules SET label = $label, delta = $delta, icon = $icon, sort = $sort,
-                       cap_value = $cap, cap_scope = $scope, rev = $rev, updated_at = $now
+                       owner_id = $owner, cap_value = $cap, cap_scope = $scope,
+                       rev = $rev, updated_at = $now
                 WHERE id = $id
                 """,
                 ("$id", rule.Id), ("$label", rule.Label), ("$delta", rule.Delta), ("$icon", rule.Icon),
-                ("$sort", rule.Sort), ("$cap", rule.CapValue),
+                ("$sort", rule.Sort),
+                ("$owner", string.IsNullOrEmpty(rule.OwnerId) ? null : rule.OwnerId),
+                ("$cap", rule.CapValue),
                 ("$scope", rule.CapScope == CapScope.None ? null : (rule.CapScope == CapScope.Single ? "single" : "period")),
                 ("$rev", rule.Rev), ("$now", now));
         }

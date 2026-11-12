@@ -44,8 +44,12 @@ export function harden(res: Response, request: Request, env: Env): Response {
   h.set('x-content-type-options', 'nosniff');
   h.set('x-frame-options', 'DENY');
   h.set('referrer-policy', 'no-referrer');
-  // 这个域只吐 JSON，没有任何静态资源，所以 CSP 可以一刀切到 'none'
-  h.set('content-security-policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+  // 默认这个域只吐 JSON，没有任何静态资源，所以 CSP 可以一刀切到 'none'。
+  // 唯一的例外是网页管理台，它自己带一份"只放内联、不放开任何外部源"的 CSP，
+  // 已经有值就别覆盖 —— 覆盖了页面会白屏，而且是最难查的那种白屏。
+  if (!h.has('content-security-policy')) {
+    h.set('content-security-policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+  }
   h.set('cross-origin-resource-policy', 'same-origin');
 
   const origin = request.headers.get('origin');

@@ -46,7 +46,7 @@
                     <ColumnDefinition Width="100" />
                     <ColumnDefinition Width="100" />
                     <ColumnDefinition Width="90" />
-                    <ColumnDefinition Width="150" />
+                    <ColumnDefinition Width="210" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="学号" Style="{StaticResource DeskColumnHeader}" />

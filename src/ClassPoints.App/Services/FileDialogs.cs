@@ -25,6 +25,10 @@ public sealed record FileFilter(string Label, string[] Patterns)
 ///
 /// comdlg32 的公共对话框不依赖包标识、也不经过拾取器中介进程，提权进程里照常工作，
 /// 返回的永远是真实文件系统路径（而不是 StorageFile 那种可能为空串的 Path）。
+///
+/// 结构体里全部用 IntPtr：只要有一个 string 字段，<c>Marshal.SizeOf</c> 在 .NET 10 上
+/// 就会抛「cannot be marshaled as an unmanaged structure」，而这个异常只在真正点按钮时
+/// 才出现 —— 编译期完全看不出来。字符串一律自己分配、自己释放。
 /// </summary>
 public static class FileDialogs
 {
@@ -35,7 +39,7 @@ public static class FileDialogs
     private const int OFN_FILEMUSTEXIST = 0x00001000;
     private const int OFN_EXPLORER = 0x00080000;
 
-    private const int BufferSize = 2048;
+    private const int BufferChars = 2048;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct OpenFileName
@@ -43,23 +47,23 @@ public static class FileDialogs
         public int StructSize;
         public IntPtr Owner;
         public IntPtr Instance;
-        public string? Filter;
-        public string? CustomFilter;
+        public IntPtr Filter;
+        public IntPtr CustomFilter;
         public int MaxCustomFilter;
         public int FilterIndex;
-        [MarshalAs(UnmanagedType.LPWStr)] public StringBuilder File;
+        public IntPtr File;
         public int MaxFile;
-        public string? FileTitle;
+        public IntPtr FileTitle;
         public int MaxFileTitle;
-        public string? InitialDir;
-        public string? Title;
+        public IntPtr InitialDir;
+        public IntPtr Title;
         public int Flags;
         public short FileOffset;
         public short FileExtension;
-        public string? DefaultExt;
+        public IntPtr DefaultExt;
         public IntPtr CustomData;
         public IntPtr Hook;
-        public string? TemplateName;
+        public IntPtr TemplateName;
         public IntPtr Reserved;
         public int ReservedInt;
         public int FlagsEx;
@@ -72,45 +76,68 @@ public static class FileDialogs
     private static extern bool GetSaveFileNameW(ref OpenFileName dialog);
 
     /// <summary>选一个已有的文件。取消返回 null。</summary>
-    public static string? Open(string title, params FileFilter[] filters)
-    {
-        var dialog = Build(title, filters, defExt: null);
-        dialog.Flags |= OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-        return GetOpenFileNameW(ref dialog) ? dialog.File.ToString() : null;
-    }
+    public static string? Open(string title, params FileFilter[] filters) =>
+        Show(title, filters, defExt: null, suggestedName: "", save: false);
 
     /// <summary>选一个保存位置。取消返回 null。</summary>
-    public static string? Save(string title, string suggestedName, FileFilter filter, string defaultExtension)
+    public static string? Save(string title, string suggestedName, FileFilter filter, string defaultExtension) =>
+        Show(title, [filter], defaultExtension, suggestedName, save: true);
+
+    private static string? Show(string title, FileFilter[] filters, string? defExt,
+        string suggestedName, bool save)
     {
-        var dialog = Build(title, [filter], defaultExtension);
-        dialog.File = new StringBuilder(suggestedName, BufferSize);
-        dialog.Flags |= OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
-        return GetSaveFileNameW(ref dialog) ? dialog.File.ToString() : null;
+        var filterPtr = Marshal.StringToHGlobalUni(BuildFilter(filters));
+        var titlePtr = Marshal.StringToHGlobalUni(title);
+        var defExtPtr = defExt is null ? IntPtr.Zero : Marshal.StringToHGlobalUni(defExt);
+        var filePtr = Marshal.AllocHGlobal(BufferChars * 2);
+
+        try
+        {
+            // 缓冲区自己清零：不清的话第一次打开会把随机内容当成默认文件名
+            for (var i = 0; i < BufferChars; i++) Marshal.WriteInt16(filePtr, i * 2, 0);
+            if (suggestedName.Length > 0)
+            {
+                var bytes = Encoding.Unicode.GetBytes(suggestedName);
+                var count = System.Math.Min(bytes.Length, (BufferChars - 1) * 2);
+                Marshal.Copy(bytes, 0, filePtr, count);
+            }
+
+            var dialog = new OpenFileName
+            {
+                StructSize = Marshal.SizeOf<OpenFileName>(),
+                Owner = App.Window is null ? IntPtr.Zero : WinRT.Interop.WindowNative.GetWindowHandle(App.Window),
+                Filter = filterPtr,
+                FilterIndex = 1,
+                File = filePtr,
+                MaxFile = BufferChars,
+                Title = titlePtr,
+                DefaultExt = defExtPtr,
+                Flags = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST |
+                        (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST),
+            };
+
+            var ok = save ? GetSaveFileNameW(ref dialog) : GetOpenFileNameW(ref dialog);
+            var picked = ok ? Marshal.PtrToStringUni(filePtr) : null;
+            return string.IsNullOrWhiteSpace(picked) ? null : picked;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(filePtr);
+            Marshal.FreeHGlobal(titlePtr);
+            Marshal.FreeHGlobal(filterPtr);
+            if (defExtPtr != IntPtr.Zero) Marshal.FreeHGlobal(defExtPtr);
+        }
     }
 
     /// <summary>拼 filter 串：每组是「说明|通配符」，整串以两个 \0 结尾。</summary>
-    private static OpenFileName Build(string title, FileFilter[] filters, string? defExt)
+    private static string BuildFilter(FileFilter[] filters)
     {
-        var filter = new StringBuilder();
+        var builder = new StringBuilder();
         foreach (var group in filters)
-            filter.Append(group.Label).Append('\0').Append(group.Pattern).Append('\0');
-        filter.Append('\0');
+            builder.Append(group.Label).Append('\0').Append(group.Pattern).Append('\0');
 
-        return new OpenFileName
-        {
-            StructSize = Marshal.SizeOf<OpenFileName>(),
-            Owner = App.Window is null ? IntPtr.Zero : WinRT.Interop.WindowNative.GetWindowHandle(App.Window),
-            Filter = filter.ToString(),
-            FilterIndex = 1,
-            File = new StringBuilder(BufferSize),
-            MaxFile = BufferSize,
-            FileTitle = null,
-            MaxFileTitle = 0,
-            InitialDir = null,
-            Title = title,
-            Flags = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_HIDEREADONLY,
-            DefaultExt = defExt,
-            TemplateName = null,
-        };
+        // 末尾的终结符由 StringToHGlobalUni 补，所以这里只要再加一个 \0
+        builder.Append('\0');
+        return builder.ToString();
     }
 }

@@ -123,10 +123,16 @@ public partial class App : Application
 
     private static void ShowFatal(Exception ex)
     {
+        // 报错时给的是"这台电脑实际用的那个库"，不是默认路径 ——
+        // 用 --db 指定过文件时，两者不是一个地方，指错会让人去修一个不存在的文件。
+        var dbPath = string.IsNullOrWhiteSpace(Options.DbPath)
+            ? Data.Database.DefaultDbPath
+            : Path.GetFullPath(Options.DbPath);
+
         var dialog = new Microsoft.UI.Xaml.Controls.ContentDialog
         {
             Title = "数据库打不开",
-            Content = $"{ex.Message}\n\n数据库位置：{Data.Database.DefaultDbPath}\n\n" +
+            Content = $"{ex.Message}\n\n数据库位置：{dbPath}\n\n" +
                       "文件被占用就关掉那个程序再启动；损坏就到备份目录挑最近的复制回来。",
             CloseButtonText = "退出",
         };

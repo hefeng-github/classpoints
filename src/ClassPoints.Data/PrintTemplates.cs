@@ -198,7 +198,7 @@ public static class PrintTemplates
         }
 
         sb.Append("<div class=\"pr-grid\">");
-        sb.Append("<div class=\"pr-cell\"><div class=\"pr-v\">").Append(rank.Points).Append("</div><div class=\"pr-k\">平时分（学期累计积分）</div></div>");
+        sb.Append("<div class=\"pr-cell\"><div class=\"pr-v\">").Append(rank.Points).Append("</div><div class=\"pr-k\">平时分（累计积分）</div></div>");
         sb.Append("<div class=\"pr-cell\"><div class=\"pr-v\">").Append(rank.ExamRaw.ToString("0.0")).Append("</div><div class=\"pr-k\">考试总分（加权）</div></div>");
         sb.Append("<div class=\"pr-cell\"><div class=\"pr-v\">").Append(rank.Total.ToString("0.0")).Append("</div><div class=\"pr-k\">")
           .Append(scheme.Normalize ? "总评（百分制）" : "总评（加权和）").Append("</div></div>");
@@ -309,13 +309,13 @@ public static class PrintTemplates
                 <tr><th>记录条数</th><td>{entryCount:N0} 条</td></tr>
                 <tr><th>在册学生</th><td>{studentCount} 人</td></tr>
                 <tr><th>归档时间</th><td>{ctx.ExportedAt:yyyy-MM-dd HH:mm:ss}</td></tr>
-                <tr><th>归档文件</th><td class="mono">{E(archivePath)}</td></tr>
+                <tr><th>归档位置</th><td class="mono">{E(archivePath)}</td></tr>
                 <tr><th>校验码</th><td class="mono">{E(checksum)}</td></tr>
                 <tr><th>折算公式</th><td>{E(ctx.FormulaText)}</td></tr>
               </table>
               <div class="cv-sign">归档人：{E(ctx.ExportedBy)}　　　　签字：__________________</div>
               <div class="cv-tip">
-                这个周期的记录没有被删除，只是被归档。要查旧账：设置 → 历史周期 → 选中这一项 → 查看榜单或导出。
+                这个周期的记录没有被删除，只是被归档。要查旧账：「周期」页 → 历史周期 → 查看榜单或导出。
               </div>
             </div>
             """;

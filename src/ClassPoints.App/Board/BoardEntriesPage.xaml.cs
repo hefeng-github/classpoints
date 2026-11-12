@@ -36,12 +36,23 @@ public sealed partial class BoardEntriesPage : Page
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        // 这页两端共用：大屏靠左滑，电脑上鼠标拖一下也能滑，但"完整流水在电脑端"
+        // 这句话是说给站在大屏前的人听的，在电脑上读起来像走错了地方。
+        FootNote.Text = App.Mode == AppMode.Board
+            ? "点「撤销」或左滑可撤销 · 只显示今天；完整流水在「周期」页导出。"
+            : "点「撤销」即可撤回（也支持按住向右拖）· 只显示今天；完整流水在「周期」页导出。";
+
         Render();
-        _refresh.Tick += (_, _) => Render();
+
+        // Loaded 可能不止一次（页面被重新挂上视觉树）：先退订再挂，避免每次刷新跑两遍
+        _refresh.Tick -= OnRefreshTick;
+        _refresh.Tick += OnRefreshTick;
         _refresh.Start();
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e) => _refresh.Stop();
+
+    private void OnRefreshTick(object? sender, object e) => Render();
 
     private void OnRefreshClick(object sender, RoutedEventArgs e) => Render();
 
@@ -88,6 +99,9 @@ public sealed partial class BoardEntriesPage : Page
             Empty.Configure("\uE8A5",
                 "今天还没有记录。加的第一条分会出现在这里。",
                 "去记分台", null);
+
+            // Render 每 20 秒跑一次：不先退订就会挂上十几份，点一下跳十几次
+            Empty.PrimaryInvoked -= GotoScore;
             Empty.PrimaryInvoked += GotoScore;
         }
     }
@@ -112,6 +126,7 @@ public sealed partial class BoardEntriesPage : Page
             Width = showOperator ? new GridLength(130) : new GridLength(0),
         });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
 
         var time = new TextBlock
         {
@@ -177,6 +192,23 @@ public sealed partial class BoardEntriesPage : Page
             Margin = new Thickness(0, 0, 8, 0),
         };
         Grid.SetColumn(delta, 4);
+
+        // 左滑是触屏手势，鼠标用户十个有八个不知道有这回事。
+        // 认得出来是谁在操作时，给一枚显式的撤销，门禁仍然是同一套。
+        if (Services.Session.CanWrite && !entry.IsReversed && !entry.IsReversal)
+        {
+            var undo = new Button
+            {
+                Content = "撤销",
+                Style = (Style)Application.Current.Resources["BtnSm"],
+                MinWidth = 80,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            undo.Click += async (_, _) => await UndoEntryAsync(entry);
+            Grid.SetColumn(undo, 5);
+            grid.Children.Add(undo);
+        }
 
         grid.Children.Add(time);
         grid.Children.Add(name);

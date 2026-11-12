@@ -101,6 +101,23 @@ public sealed partial class MainWindow : Window
         }
 
         AppWindow.Title = Title;
+
+        // 每天首次启动自动备份。设置页、侧栏和说明文件都写着这一条，之前却没有任何调用点 ——
+        // 只有「向导完成」和「每 50 条入账」会触发，「上次备份」于是可以永远停在几个月前。
+        // 后台跑：VACUUM INTO 再快也不该挡住第一帧。
+        if (Services.Settings.OnboardingDone &&
+            string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CP_SNAP")))
+        {
+            _ = Task.Run(() => Services.TryAutoBackup("startup")).ContinueWith(task =>
+            {
+                if (task.Result is null) return;
+
+                // 备份完成后把侧栏的「上次备份」刷一下：不然今天第一次启动，
+                // 明明备份已经写好了，左下角还挂着「还没有备份」。
+                DispatcherQueue.TryEnqueue(() => App.Host?.RefreshChrome());
+            });
+        }
+
         MaybeRunSnapshots();
     }
 
@@ -194,6 +211,15 @@ public sealed partial class MainWindow : Window
                 if (await Snapshot.SaveAsync(Root, Path.Combine(dir, "desk-a2-settings-bottom.png")))
                     Services.Log("快照 desk-a2-settings-bottom");
 
+                // 长页面的中间几节（备份、预配置）两头都拍不到，按比例补一张
+                if (double.TryParse(Environment.GetEnvironmentVariable("CP_SNAP_SCROLL"),
+                        out var fraction) && fraction is > 0 and < 1)
+                {
+                    await ScrollToFractionAsync(fraction);
+                    if (await Snapshot.SaveAsync(Root, Path.Combine(dir, "desk-a3-settings-mid.png")))
+                        Services.Log("快照 desk-a3-settings-mid");
+                }
+
                 // 当场切一次主题：不重建页面，验证共享画刷与 ThemeResource 都跟着变
                 var before = Services.Settings.Theme;
                 App.ApplyTheme(before == Theme.AppTheme.Dark ? Theme.AppTheme.Light : Theme.AppTheme.Dark);
@@ -223,6 +249,24 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private async Task ScrollToBottomAsync()
     {
+        var best = LongestScrollViewer();
+        if (best is null) return;
+        best.ChangeView(null, best.ScrollableHeight, null, disableAnimation: true);
+        await Task.Delay(500);
+    }
+
+    /// <summary>按比例滚到长页面的某一处（0=顶部，1=底部）。</summary>
+    private async Task ScrollToFractionAsync(double fraction)
+    {
+        var best = LongestScrollViewer();
+        if (best is null) return;
+        best.ChangeView(null, best.ScrollableHeight * System.Math.Clamp(fraction, 0, 1), null,
+            disableAnimation: true);
+        await Task.Delay(500);
+    }
+
+    private ScrollViewer? LongestScrollViewer()
+    {
         ScrollViewer? best = null;
         var queue = new Queue<DependencyObject>();
         queue.Enqueue(Root);
@@ -238,10 +282,7 @@ public sealed partial class MainWindow : Window
                 queue.Enqueue(child);
             }
         }
-
-        if (best is null) return;
-        best.ChangeView(null, best.ScrollableHeight, null, disableAnimation: true);
-        await Task.Delay(500);
+        return best;
     }
 
     /// <summary>设置页换形态：整个外壳换掉，进程不重启。数据、会话、日志都还在。</summary>
@@ -255,21 +296,106 @@ public sealed partial class MainWindow : Window
     /// <summary>重新跑一遍向导：形态清空，向导会从"这台电脑做什么"重新问。</summary>
     public void RunWizard()
     {
+        _modeBeforeWizard = App.ModeKnown ? App.Mode : null;
         App.ForgetMode();
-        ShowOnboarding();
+        ShowOnboarding(allowCancel: true);
     }
 
-    private void ShowOnboarding()
+    /// <summary>向导中途退出（重新配置时才有这条路）：形态恢复原样，外壳照旧。</summary>
+    public void CancelWizard() => ShowShell();
+
+    /// <summary>
+    /// 本机重置：删掉本地库再重启。设置、密码、名单都只存在这个文件里，所以删了就是出厂状态。
+    ///
+    /// 删之前调用方已经做过一次备份 —— 这里不能再做：真正的删除点必须只有一个，
+    /// 否则"备份完删库"和"删库"之间会多出一次可能失败的动作。
+    /// </summary>
+    /// <summary>
+    /// 换库之后重新打开程序：恢复备份、导入整包都会替换掉数据库文件，
+    /// 而内存里的会话、周期、形态还是旧的 —— 不重启就会在新库上写旧身份。
+    /// </summary>
+    public void RestartApp() => Relaunch();
+
+    public void ResetLocalAndRestart()
     {
-        var onboarding = new Onboarding.OnboardingView();
+        var dbPath = Services.Db.DbPath;
+
+        try
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            foreach (var suffix in new[] { "", "-wal", "-shm" })
+            {
+                var path = dbPath + suffix;
+                if (File.Exists(path)) File.Delete(path);
+            }
+        }
+        catch (Exception ex)
+        {
+            Services.LogError("reset-local", ex);
+
+            // 删不掉就改名让它消失：下次启动会新建一个空库，旧文件留在旁边由人取舍
+            try
+            {
+                File.Move(dbPath, dbPath + ".old-" + DateTime.Now.ToString("yyyyMMdd-HHmmss"), overwrite: true);
+            }
+            catch (Exception moveError)
+            {
+                Services.LogError("reset-local-move", moveError);
+                throw;
+            }
+        }
+
+        Relaunch();
+    }
+
+    private static void Relaunch()
+    {
+        try
+        {
+            var exe = Environment.ProcessPath;
+            if (!string.IsNullOrEmpty(exe))
+            {
+                // 带上原来的参数再启动：用 --db 指过库的机器，重开后不能偷偷换成默认库。
+                var args = Environment.GetCommandLineArgs().Skip(1)
+                    .Select(a => a.Contains(' ') ? $"\"{a}\"" : a);
+
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = exe,
+                    Arguments = string.Join(' ', args),
+                    UseShellExecute = true,
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            App.Services?.LogError("relaunch", ex);
+        }
+
+        Environment.Exit(0);
+    }
+
+    private void ShowOnboarding(bool allowCancel = false)
+    {
+        var onboarding = new Onboarding.OnboardingView { AllowCancel = allowCancel };
         onboarding.Completed += (_, _) =>
         {
             Services.Settings.OnboardingDone = true;
             ShowShell();
         };
+        onboarding.Cancelled += (_, _) =>
+        {
+            // 取消就把形态还原：向导一打开就清了它，否则下次启动会再问一遍
+            if (_modeBeforeWizard is AppMode mode) App.SetMode(mode);
+            Services.Settings.OnboardingDone = true;
+            _modeBeforeWizard = null;
+            ShowShell();
+        };
         Host.Content = onboarding;
         MaybeRunSnapshots();
     }
+
+    private AppMode? _modeBeforeWizard;
 
     // ---------------- 窗口尺寸与标题栏 ----------------
 

@@ -23,7 +23,7 @@
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right"
                                     VerticalAlignment="Center">
-                            <Button Content="改个名字" Style="{StaticResource DeskButton}" Click="OnRename" />
+                            <Button Content="重命名" Style="{StaticResource DeskButton}" Click="OnRename" />
                         </StackPanel>
                     </Grid>
 
@@ -70,7 +70,7 @@
                     <TextBlock Text="开新周期" Style="{StaticResource DeskH2Text}" />
                     <TextBlock Style="{StaticResource DeskSecondaryText}"
                                Text="用于「这一轮评比结束了」。旧周期整包归档（Excel + 数据库副本），新周期按序号自动命名，成绩和名单都保留。" />
-                    <Button Content="归档本周期，开始下一个…" Style="{StaticResource DeskPrimaryButton}"
+                    <Button Content="开始新周期…" Style="{StaticResource DeskPrimaryButton}"
                             HorizontalAlignment="Left" Height="34" Click="OnResetPeriod" />
                     <TextBlock x:Name="ResetHint" Style="{StaticResource DeskSecondaryText}" />
                 </StackPanel>

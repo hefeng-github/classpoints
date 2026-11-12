@@ -14,7 +14,7 @@
         <Grid Grid.Row="0" Padding="12,0">
             <StackPanel Orientation="Horizontal" Spacing="16" VerticalAlignment="Center">
                 <TextBlock Text="查分" Style="{StaticResource H2Text}" />
-                <TextBlock Text="点一下自己的名字" Style="{StaticResource SecondaryText}" VerticalAlignment="Center" />
+                <TextBlock x:Name="HintText" Style="{StaticResource SecondaryText}" VerticalAlignment="Center" />
             </StackPanel>
             <TextBlock x:Name="PeriodText" Style="{StaticResource SecondaryText}"
                        HorizontalAlignment="Right" VerticalAlignment="Center" />
@@ -25,7 +25,7 @@
                 <Grid x:Name="SeatGrid" Background="Transparent" VerticalAlignment="Top" />
             </ScrollViewer>
 
-            <TextBlock x:Name="EmptyText" Text="名单还没建好，找班主任。"
+            <TextBlock x:Name="EmptyText"
                        Style="{StaticResource BodyText}" Foreground="{ThemeResource TextSecondaryBrush}"
                        HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed" />
         </Grid>

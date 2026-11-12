@@ -66,17 +66,22 @@ public sealed class EntryService(Database db, AuditRepository audit)
             if (!string.IsNullOrEmpty(cap.Message)) warnings.Add(cap.Message);
             if (cap.AppliedDelta == 0 && line.RequestedDelta != 0) continue;
 
+            // Id 为空的规则 = 记分台上的「其他」：项目名与分值都是一次性的。
+            // 这种情况 rule_id 必须留空、source 记 custom，否则台账里会指向一个
+            // 根本不存在的规则行，导出和云端的关联都会对不上。
+            var oneOff = string.IsNullOrEmpty(line.Rule.Id);
+
             var entry = new Entry
             {
                 Id = Ids.NewUuid7(),
                 BatchId = batchId,
                 PeriodId = periodId,
                 StudentId = line.StudentId,
-                RuleId = line.Rule.Id,
+                RuleId = oneOff ? null : line.Rule.Id,
                 RuleLabel = line.Rule.Label,
-                RuleDeltaDefault = line.Rule.Delta,
+                RuleDeltaDefault = oneOff ? null : line.Rule.Delta,
                 Delta = cap.AppliedDelta,
-                Source = line.RequestedDelta != line.Rule.Delta ? "custom" : "rule",
+                Source = oneOff || line.RequestedDelta != line.Rule.Delta ? "custom" : "rule",
                 Note = string.IsNullOrWhiteSpace(line.Note) ? sharedNote : line.Note,
                 NoteTemplateId = line.NoteTemplateIds is { Count: > 0 } ids ? string.Join(",", ids) : null,
                 Capped = cap.Capped,
@@ -432,6 +437,27 @@ public sealed class EntryService(Database db, AuditRepository audit)
         var list = new List<Entry>();
         while (r.Read()) list.Add(Mappers.Entry(r));
         return list;
+    }
+
+    /// <summary>
+    /// 某个时间段内的净得分（查分页的「本周」用）。
+    ///
+    /// 不能拿 <see cref="EntriesForStudent"/> 去 Sum：那个查询为了显示干净，
+    /// 把冲销行藏起来了，而被撤销的原记录还在列表里 —— 相加会把撤掉的分数又算上。
+    /// 这里直接对 entries 求和，冲销行是负值，自己会抵消。
+    /// </summary>
+    public int PointsInRange(string studentId, long fromMs, long toMs)
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT COALESCE(SUM(delta), 0) FROM entries
+            WHERE student_id = $student AND occurred_at >= $from AND occurred_at < $to
+            """;
+        cmd.Parameters.AddWithValue("$student", studentId);
+        cmd.Parameters.AddWithValue("$from", fromMs);
+        cmd.Parameters.AddWithValue("$to", toMs);
+        return Convert.ToInt32(cmd.ExecuteScalar());
     }
 
     public List<(string Label, int Count, int Points)> RuleDistribution(string periodId, string? studentId = null)

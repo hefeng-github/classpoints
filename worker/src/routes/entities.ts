@@ -98,6 +98,8 @@ const SPECS: Record<string, Spec> = {
       column('icon', 'icon', 'text', { dflt: '⭐' }),
       column('sort', 'sort', 'int', { dflt: 0 }),
       column('presetKey', 'preset_key'),
+      // NULL = 全班共用；非空 = 只属于这个成员（换台设备也要保住归属）
+      column('ownerId', 'owner_id'),
       column('capValue', 'cap_value', 'int'),
       column('capScope', 'cap_scope', 'text', { map: capScopeOf }),
       column('archivedAt', 'archived_at', 'int'),

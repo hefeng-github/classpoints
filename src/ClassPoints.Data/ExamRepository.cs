@@ -37,6 +37,24 @@ public sealed class ExamRepository(Database db)
         return list;
     }
 
+    /// <summary>
+    /// 本机录入过的全部考试，不分周期。
+    ///
+    /// 总评是"累计"口径（周期只决定榜单），所以考试与总评页必须列全部场次：
+    /// 只列当前周期的话，开过一次新周期之后，成绩卡片会说"还没有成绩"，
+    /// 而下面的排名预览却仍然把这些考试算进去了。
+    /// </summary>
+    public List<Exam> ListAllExams()
+    {
+        using var conn = db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT * FROM exams ORDER BY COALESCE(exam_date,'') DESC, imported_at DESC";
+        using var r = cmd.ExecuteReader();
+        var list = new List<Exam>();
+        while (r.Read()) list.Add(Mappers.Exam(r));
+        return list;
+    }
+
     public Exam? GetExam(string examId)
     {
         using var conn = db.Open();
@@ -133,10 +151,11 @@ public sealed class ExamRepository(Database db)
         using var conn = db.Open();
         using var tx = conn.BeginTransaction();
 
-        // 同名同周期同日期视为同一场：覆盖，而不是并排出现两行「期中考试」
+        // 同名即同一场：总评把全部场次一起算，若按周期各存一份，
+        // 新学期重导同一张成绩单就会变成两场，权重和分数都被算两遍。
         var existing = Database.ScalarTx(conn, tx,
-            "SELECT id FROM exams WHERE period_id = $p AND name = $n LIMIT 1",
-            ("$p", periodId), ("$n", examName));
+            "SELECT id FROM exams WHERE name = $n ORDER BY imported_at LIMIT 1",
+            ("$n", examName));
         if (existing is string existId)
         {
             exam.Id = existId;
@@ -323,7 +342,27 @@ public sealed class ExamRepository(Database db)
         IReadOnlyList<Student> students,
         IReadOnlyDictionary<string, int> cumulativePoints,
         Scheme scheme,
-        AbsencePolicy policy)
+        AbsencePolicy policy) =>
+        BuildRanking(students, cumulativePoints, scheme, policy, exams: null);
+
+    /// <summary>
+    /// 指定考试范围的排名。给"历史周期导出"用：那时只该算那个周期的场次，
+    /// 不能把之后才考的成绩带回过去的榜里。
+    /// </summary>
+    public RankingResult BuildRanking(
+        IReadOnlyList<Student> students,
+        IReadOnlyDictionary<string, int> cumulativePoints,
+        Scheme scheme,
+        AbsencePolicy policy,
+        IReadOnlyList<Exam>? exams)
+    {
+        var scope = exams ?? LoadExamsAscending();
+        var scores = ScoresForTerm(null, scope.Select(e => e.Id).ToList());
+        var weights = Weights(scheme.Id);
+        return RankingCalculator.Compute(students, cumulativePoints, scope, scores, weights, scheme, policy);
+    }
+
+    private List<Exam> LoadExamsAscending()
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
@@ -331,9 +370,6 @@ public sealed class ExamRepository(Database db)
         using var r = cmd.ExecuteReader();
         var exams = new List<Exam>();
         while (r.Read()) exams.Add(Mappers.Exam(r));
-
-        var scores = ScoresForTerm(null, exams.Select(e => e.Id).ToList());
-        var weights = Weights(scheme.Id);
-        return RankingCalculator.Compute(students, cumulativePoints, exams, scores, weights, scheme, policy);
+        return exams;
     }
 }

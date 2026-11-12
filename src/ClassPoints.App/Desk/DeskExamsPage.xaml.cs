@@ -6,7 +6,6 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
-using Windows.Storage.Pickers;
 using ClassPoints.App.Theme;
 
 namespace ClassPoints.App.Desk;
@@ -18,13 +17,6 @@ namespace ClassPoints.App.Desk;
 /// </summary>
 public sealed partial class DeskExamsPage : Page
 {
-    private static readonly AbsencePolicy[] Policies =
-    [
-        AbsencePolicy.Redistribute,
-        AbsencePolicy.Zero,
-        AbsencePolicy.ClassAverage,
-    ];
-
     private Scheme _scheme = new();
     private List<Exam> _exams = [];
     private Dictionary<string, double> _weights = [];
@@ -52,20 +44,14 @@ public sealed partial class DeskExamsPage : Page
         try
         {
             _loading = true;
-            var period = Services.CurrentPeriod;
-            _exams = Services.Exams.ListExams(period.Id);
+            // 列全部场次：总评按"累计"算，开过新周期后旧考试仍然参与排名。
+            _exams = Services.Exams.ListAllExams();
             _scheme = Services.Exams.ActiveScheme();
             _weights = Services.Exams.Weights(_scheme.Id);
             _students = Services.Students.ListActive();
             _termPoints = Services.Entries.CumulativeTotals();
 
-            ExamWeightSlider.Value = _scheme.ExamPercent;
-            DailyWeightSlider.Value = _scheme.DailyPercent;
-            NormalizeCheck.IsChecked = _scheme.Normalize;
-
-            PolicyCombo.ItemsSource = Policies.Select(p => PolicyLabel(p)).ToList();
-            PolicyCombo.SelectedIndex = Array.IndexOf(Policies, Services.Settings.AbsencePolicy);
-            if (PolicyCombo.SelectedIndex < 0) PolicyCombo.SelectedIndex = 0;
+            WeightSlider.Value = _scheme.ExamPercent;
 
             _loading = false;
 
@@ -84,8 +70,8 @@ public sealed partial class DeskExamsPage : Page
     private static string PolicyLabel(AbsencePolicy p) => p switch
     {
         AbsencePolicy.Zero => "缺考记 0 分",
-        AbsencePolicy.ClassAverage => "缺考按该场全班均分替代",
-        _ => "缺考那场不计，权重摊给其余场次（默认）",
+        AbsencePolicy.ClassAverage => "缺考按该场全班平均分替代",
+        _ => "缺考那场不计，权重摊给其余场次",
     };
 
     // ---------------- 一、考试列表 ----------------
@@ -101,7 +87,7 @@ public sealed partial class DeskExamsPage : Page
                 Padding = new Thickness(18, 4, 18, 18),
                 Child = new TextBlock
                 {
-                    Text = "还没有成绩。点右上「选择文件导入」，支持 xlsx / xls / csv。",
+                    Text = "还没有成绩。点右上「选择文件导入成绩」，支持 xlsx / xls / csv。",
                     Style = Styled("DeskSecondaryText"),
                 },
             });
@@ -256,8 +242,14 @@ public sealed partial class DeskExamsPage : Page
         _loading = true;
 
         var examPercent = _scheme.ExamPercent;
-        ExamWeightLabel.Text = $"考试占 {examPercent}%";
-        DailyWeightLabel.Text = $"平时占 {100 - examPercent}%";
+        var dailyPercent = 100 - examPercent;
+        if (System.Math.Abs(WeightSlider.Value - examPercent) > 0.01) WeightSlider.Value = examPercent;
+        DailyWeightLabel.Text = $"平时 {dailyPercent}%";
+        ExamWeightLabel.Text = $"考试 {examPercent}%";
+
+        // 口径在设置页统一改；这里只留一句"现在是怎么算的"。总评形式已在上面那行公式里。
+        SchemeHint.Text = PolicyLabel(Services.Settings.AbsencePolicy) +
+                          "（在「设置 → 成绩口径」改）";
 
         WeightList.Children.Clear();
 
@@ -265,14 +257,18 @@ public sealed partial class DeskExamsPage : Page
         {
             WeightList.Children.Add(new TextBlock
             {
-                Text = "没考试时只有平时分，权重不起作用。",
+                Text = "还没有考试，导入成绩后可逐场设置权重。",
                 Style = Styled("DeskSecondaryText"),
             });
             WeightSumText.Text = "";
+            WeightSumRow.Visibility = Visibility.Collapsed;
             _loading = false;
             UpdateImpact();
             return;
         }
+
+        WeightSumRow.Visibility = Visibility.Visible;
+        BalanceButton.Visibility = Visibility.Visible;
 
         foreach (var exam in _exams)
         {
@@ -347,9 +343,11 @@ public sealed partial class DeskExamsPage : Page
             ? _ranking.Rows.Average(r => (double)r.Points)
             : 0;
 
-        ImpactText.Text = examMean <= 0
-            ? "没有成绩，看不出实际影响。导入后按全班平均换算。"
-            : SchemeMath.ImpactText(examMean, pointsMean, _scheme);
+        ImpactText.Text = _exams.Count == 0
+            ? ""
+            : examMean <= 0
+                ? "还没有成绩。"
+                : SchemeMath.ImpactText(examMean, pointsMean, _scheme);
 
         FormulaText.Text = _scheme.FormulaText + " · 平时分 = 累计积分";
     }
@@ -358,35 +356,19 @@ public sealed partial class DeskExamsPage : Page
     {
         if (_loading) return;
 
-        var exam = (int)System.Math.Round(ExamWeightSlider.Value / 5) * 5;
+        var exam = (int)System.Math.Round(WeightSlider.Value / 5) * 5;
         exam = System.Math.Clamp(exam, 0, 100);
         _scheme.ExamWeight = exam / 100.0;
         _scheme.DailyWeight = 1 - _scheme.ExamWeight;
 
         _loading = true;
-        ExamWeightSlider.Value = exam;
-        DailyWeightSlider.Value = 100 - exam;
-        ExamWeightLabel.Text = $"考试占 {exam}%";
-        DailyWeightLabel.Text = $"平时占 {100 - exam}%";
+        if (System.Math.Abs(WeightSlider.Value - exam) > 0.01) WeightSlider.Value = exam;
+        DailyWeightLabel.Text = $"平时 {100 - exam}%";
+        ExamWeightLabel.Text = $"考试 {exam}%";
         _loading = false;
 
         Services.Exams.SaveScheme(_scheme);
         DebouncedRecompute();
-    }
-
-    private void OnNormalizeChanged(object sender, RoutedEventArgs e)
-    {
-        if (_loading) return;
-        _scheme.Normalize = NormalizeCheck.IsChecked == true;
-        Services.Exams.SaveScheme(_scheme);
-        Recompute(resetBaseline: false);
-    }
-
-    private void OnPolicyChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_loading || PolicyCombo.SelectedIndex < 0) return;
-        Services.Settings.AbsencePolicy = Policies[PolicyCombo.SelectedIndex];
-        Recompute(resetBaseline: false);
     }
 
     private void OnAutoBalance(object sender, RoutedEventArgs e)
@@ -422,7 +404,6 @@ public sealed partial class DeskExamsPage : Page
     {
         try
         {
-            var period = Services.CurrentPeriod;
             _ranking = Services.Exams.BuildRanking(_students, _termPoints, _scheme,
                 Services.Settings.AbsencePolicy);
 
@@ -643,7 +624,7 @@ public sealed partial class DeskExamsPage : Page
             Style = Styled("DeskSecondaryText"),
             TextWrapping = TextWrapping.Wrap,
             MaxWidth = 620,
-            Text = "只按姓名匹配。同名的跳过，汇总行也跳过。",
+            Text = "按姓名匹配，同名与汇总行跳过。",
         };
 
         var panel = new StackPanel { Spacing = 12, Width = 640 };

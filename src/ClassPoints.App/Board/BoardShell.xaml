@@ -6,111 +6,81 @@
     xmlns:controls="using:ClassPoints.App.Controls">
 
     <!--
-        大屏端的样子：左侧窄图标轨 + 顶上常驻状态条。
-        56 宽不是随手定的：48 会让点击落点偏小，64 又要从卡片宽度里再挤出一列。
+        大屏端：同一个原生 NavigationView，只是 PaneDisplayMode=LeftCompact ——
+        平时收成 56 宽的图标轨（教室两米外看得清图标，看不清小字），
+        点左上角汉堡或按键盘就能展开成带文字的侧栏。
 
-        导航项和电脑端完全一样（AppNav 十项），差别只在排版 ——
-        大屏用图标轨（教室两米外看不清小字），电脑用文字侧栏（半米内要看全）。
-        展开面板里每一项也是「56 宽的图标格 + 文字」，图标中心与收起时的图标中心重合，
-        展开/收起之间图标不会横向跳一下。
+        折叠、展开、遮罩、键盘操作全部由系统组件负责，不再自己摆一层 PaneLayer：
+        自己摆的那层要么忘关遮罩，要么展开时把卡片挤得重排。
     -->
     <Grid Background="{ThemeResource BoardBgBrush}">
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="56" />
-            <ColumnDefinition Width="*" />
-        </Grid.ColumnDefinitions>
+        <NavigationView x:Name="Nav"
+                        Background="{ThemeResource BoardBgBrush}"
+                        IsBackButtonVisible="Collapsed"
+                        IsSettingsVisible="False"
+                        IsPaneToggleButtonVisible="True"
+                        PaneDisplayMode="LeftCompact"
+                        CompactPaneLength="56"
+                        OpenPaneLength="248"
+                        IsPaneOpen="False"
+                        SelectionChanged="OnNavSelectionChanged">
 
-        <!-- ===== 左侧图标轨 ===== -->
-        <Border Grid.Column="0" Background="{ThemeResource CardBgBrush}"
-                BorderBrush="{ThemeResource CardStrokeBrush}" BorderThickness="0,0,1,0">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                    <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
-
-                <Border Grid.Row="0" Width="36" Height="36" CornerRadius="10" Margin="0,10,0,10"
-                        HorizontalAlignment="Center"
+            <NavigationView.PaneHeader>
+                <Border Width="36" Height="36" CornerRadius="10" Margin="0,4,0,10"
+                        HorizontalAlignment="Left"
                         Background="{ThemeResource SelectStrokeBrush}">
                     <FontIcon Glyph="&#xE8F1;" FontSize="17" Foreground="{ThemeResource OnAccentBrush}" />
                 </Border>
+            </NavigationView.PaneHeader>
 
-                <StackPanel x:Name="RailStack" Grid.Row="1" Spacing="2" Margin="0,0,0,0" />
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="56" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
 
-                <Button Grid.Row="2" x:Name="PaneToggle" Width="48" Height="48" Margin="0,0,0,8"
-                        HorizontalAlignment="Center"
-                        Background="Transparent" BorderThickness="0"
-                        Click="OnPaneToggleClick" ToolTipService.ToolTip="展开导航">
-                    <FontIcon Glyph="&#xE700;" FontSize="18" Foreground="{ThemeResource TextSecondaryBrush}" />
-                </Button>
-            </Grid>
-        </Border>
+                <!-- 顶上常驻状态条：班级 / 形态 / 周期 · 身份 · 同步 / 日期 / 时钟 -->
+                <Border Grid.Row="0" Background="{ThemeResource CardBgBrush}"
+                        BorderBrush="{ThemeResource CardStrokeBrush}" BorderThickness="0,0,0,1">
+                    <Grid Padding="16,0" ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
 
-        <!-- ===== 内容区（顶上是常驻状态条） ===== -->
-        <Grid Grid.Column="1">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="56" />
-                <RowDefinition Height="*" />
-            </Grid.RowDefinitions>
-
-            <Border Grid.Row="0" Background="{ThemeResource CardBgBrush}"
-                    BorderBrush="{ThemeResource CardStrokeBrush}" BorderThickness="0,0,0,1">
-                <Grid Padding="16,0" ColumnSpacing="12">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-
-                    <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                        <TextBlock x:Name="HeadClassText" Style="{StaticResource BodyText}"
-                                   FontSize="17" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
-                                   MaxWidth="360" />
-                        <Border Background="{ThemeResource AccentBgBrush}" CornerRadius="10" Padding="10,2"
-                                VerticalAlignment="Center">
-                            <TextBlock x:Name="HeadModeText" Text="大屏" FontSize="13"
-                                       Foreground="{ThemeResource SelectStrokeBrush}" />
-                        </Border>
-                        <TextBlock x:Name="HeadPeriodText" Style="{StaticResource SmallText}"
-                                   VerticalAlignment="Center" />
-                    </StackPanel>
-
-                    <controls:IdentityChip x:Name="IdentityChip" Grid.Column="1"
-                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
-
-                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="14"
-                                VerticalAlignment="Center">
-                        <TextBlock x:Name="HeadSyncText" Style="{StaticResource SmallText}" VerticalAlignment="Center" />
-                        <TextBlock x:Name="HeadDateText" Style="{StaticResource SmallText}" VerticalAlignment="Center" />
-                        <TextBlock x:Name="HeadClockText" FontFamily="{StaticResource NumberFont}" FontSize="20"
-                                   FontWeight="SemiBold" Foreground="{ThemeResource TextPrimaryBrush}" />
-                    </StackPanel>
-                </Grid>
-            </Border>
-
-            <Grid Grid.Row="1">
-                <Frame x:Name="ContentFrame" />
-
-                <!-- 展开的导航：压在内容上，不推挤网格（推挤会让 48 张卡在展开瞬间重排） -->
-                <Grid x:Name="PaneLayer" Visibility="Collapsed">
-                    <Rectangle Fill="{ThemeResource ScrimBrush}" Tapped="OnPaneScrimTapped" />
-                    <Border Width="248" HorizontalAlignment="Left"
-                            Background="{ThemeResource CardBgBrush}"
-                            BorderBrush="{ThemeResource CardStrokeBrush}"
-                            BorderThickness="0,0,1,0">
-                        <StackPanel Margin="0,12,0,12" Spacing="2">
-                            <TextBlock x:Name="PaneClassText" Style="{StaticResource SecondaryText}"
-                                       Margin="16,0,16,10" TextTrimming="CharacterEllipsis" />
-                            <StackPanel x:Name="PaneStack" Spacing="2" />
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                            <TextBlock x:Name="HeadClassText" Style="{StaticResource BodyText}"
+                                       FontSize="17" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                                       MaxWidth="360" />
+                            <Border Background="{ThemeResource AccentBgBrush}" CornerRadius="10" Padding="10,2"
+                                    VerticalAlignment="Center">
+                                <TextBlock x:Name="HeadModeText" Text="大屏" FontSize="13"
+                                           Foreground="{ThemeResource SelectStrokeBrush}" />
+                            </Border>
+                            <TextBlock x:Name="HeadPeriodText" Style="{StaticResource SmallText}"
+                                       VerticalAlignment="Center" />
                         </StackPanel>
-                    </Border>
-                </Grid>
+
+                        <controls:IdentityChip x:Name="IdentityChip" Grid.Column="1"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center" />
+
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="14"
+                                    VerticalAlignment="Center">
+                            <TextBlock x:Name="HeadSyncText" Style="{StaticResource SmallText}" VerticalAlignment="Center" />
+                            <TextBlock x:Name="HeadDateText" Style="{StaticResource SmallText}" VerticalAlignment="Center" />
+                            <TextBlock x:Name="HeadClockText" FontFamily="{StaticResource NumberFont}" FontSize="20"
+                                       FontWeight="SemiBold" Foreground="{ThemeResource TextPrimaryBrush}" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <Frame x:Name="ContentFrame" Grid.Row="1" />
             </Grid>
-        </Grid>
+        </NavigationView>
 
         <!-- ===== 认人覆盖层 ===== -->
-        <Grid x:Name="IdentifyLayer" Grid.ColumnSpan="2" Visibility="Collapsed"
+        <Grid x:Name="IdentifyLayer" Visibility="Collapsed"
               Background="{ThemeResource ScrimBrush}">
             <Border HorizontalAlignment="Center" VerticalAlignment="Center"
                     Width="560" Padding="36"
@@ -140,7 +110,7 @@
             </Border>
         </Grid>
 
-        <controls:PinPad x:Name="Pin" Grid.ColumnSpan="2" />
-        <controls:Toast x:Name="ToastLayer" Grid.ColumnSpan="2" />
+        <controls:PinPad x:Name="Pin" />
+        <controls:Toast x:Name="ToastLayer" />
     </Grid>
 </UserControl>

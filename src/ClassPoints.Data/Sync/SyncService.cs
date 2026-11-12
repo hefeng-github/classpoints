@@ -304,17 +304,19 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         {
             if (row is not JsonObject o) continue;
             Database.Exec(conn, tx, """
-                INSERT INTO rules (id, label, delta, icon, sort, preset_key, cap_value, cap_scope, archived_at, rev, updated_at, deleted_at)
-                VALUES ($id, $label, $delta, $icon, $sort, $preset, $cap, $scope, $archived, $rev, $updated, $deleted)
+                INSERT INTO rules (id, label, delta, icon, sort, preset_key, owner_id, cap_value, cap_scope, archived_at, rev, updated_at, deleted_at)
+                VALUES ($id, $label, $delta, $icon, $sort, $preset, $owner, $cap, $scope, $archived, $rev, $updated, $deleted)
                 ON CONFLICT(id) DO UPDATE SET
                   label = excluded.label, delta = excluded.delta, icon = excluded.icon, sort = excluded.sort,
-                  preset_key = excluded.preset_key, cap_value = excluded.cap_value, cap_scope = excluded.cap_scope,
+                  preset_key = excluded.preset_key, owner_id = excluded.owner_id,
+                  cap_value = excluded.cap_value, cap_scope = excluded.cap_scope,
                   archived_at = excluded.archived_at, rev = excluded.rev, updated_at = excluded.updated_at,
                   deleted_at = excluded.deleted_at
                 """,
                 ("$id", S(o, "id")), ("$label", S(o, "label")), ("$delta", L(o, "delta") ?? 0),
                 ("$icon", S(o, "icon")), ("$sort", L(o, "sort") ?? 0), ("$preset", S(o, "preset_key")),
-                ("$cap", L(o, "cap_value")), ("$scope", S(o, "cap_scope")), ("$archived", L(o, "archived_at")),
+                ("$owner", S(o, "owner_id")), ("$cap", L(o, "cap_value")), ("$scope", S(o, "cap_scope")),
+                ("$archived", L(o, "archived_at")),
                 ("$rev", L(o, "rev") ?? 1), ("$updated", L(o, "updated_at")), ("$deleted", L(o, "deleted_at")));
             n++;
         }

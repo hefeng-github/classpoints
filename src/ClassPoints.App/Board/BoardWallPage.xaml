@@ -108,7 +108,7 @@
             </StackPanel>
         </Grid>
 
-        <TextBlock x:Name="EmptyText" Grid.Row="1" Text="还没有学生。到电脑端导入名单。"
+        <TextBlock x:Name="EmptyText" Grid.Row="1" Text="还没有学生。到「名单」页导入。"
                    Style="{StaticResource BodyText}" Foreground="{ThemeResource TextSecondaryBrush}"
                    HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap"
                    TextAlignment="Center" MaxWidth="600" Visibility="Collapsed" />

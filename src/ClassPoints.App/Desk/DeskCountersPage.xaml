@@ -88,7 +88,7 @@
 
                     <StackPanel Padding="16,14,16,8" Spacing="2">
                         <TextBlock Text="最近记录" Style="{StaticResource DeskH2Text}" />
-                        <TextBlock Text="每按一次±都是一条，可核对" Style="{StaticResource DeskSecondaryText}" />
+                        <TextBlock Text="每按一次 ± 都会留一条流水" Style="{StaticResource DeskSecondaryText}" />
                     </StackPanel>
 
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="0,0,0,10">

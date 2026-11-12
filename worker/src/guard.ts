@@ -31,6 +31,8 @@ export const RULES: Record<string, Rule> = {
   create: { maxFails: 10, windowMs: 60 * 60_000, blockMs: 60 * 60_000 },
   // refresh 失败通常是设备被撤销或换了机器，门槛放宽，只拦明显的循环重试
   refresh: { maxFails: 30, windowMs: 10 * 60_000, blockMs: 10 * 60_000 },
+  // 网页管理台登录：只认班主任密码，和 /pair 同一级别，甚至更值得防
+  admin: { maxFails: 6, windowMs: 5 * 60_000, blockMs: 15 * 60_000 },
 };
 
 interface Row {

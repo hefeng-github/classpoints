@@ -145,7 +145,13 @@ public sealed partial class BoardScorePage : Page
         _barTimer.Stop();
     }
 
-    private void OnSessionChanged() => RefreshIdentityText();
+    private void OnSessionChanged()
+    {
+        RefreshIdentityText();
+
+        // 快捷项是按人分的：换了身份，按钮就该换成那个人的那一套
+        BuildRuleButtons();
+    }
 
     private void OnHostSizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -215,6 +221,10 @@ public sealed partial class BoardScorePage : Page
         Empty.Configure("\uE716",
             "还没有学生。粘一列姓名就能开始。",
             "粘贴一列姓名", "刷新");
+
+        // 刷新计时器每 20 秒调一次这里：先退订再挂，否则"粘贴"会一次弹出好几个框
+        Empty.PrimaryInvoked -= OnPasteNames;
+        Empty.SecondaryInvoked -= OnEmptyRefresh;
         Empty.PrimaryInvoked += OnPasteNames;
         Empty.SecondaryInvoked += OnEmptyRefresh;
     }
@@ -318,7 +328,9 @@ public sealed partial class BoardScorePage : Page
     private void BuildRuleButtons()
     {
         RulePanel.Children.Clear();
-        _rules = Services.Rules.ListAll();
+
+        // 全班共用 + 我自己那几项。换个人刷卡，多出来的是他自己的按钮。
+        _rules = Services.Rules.ListForMember(Services.Operator.Id);
 
         foreach (var rule in _rules)
         {
@@ -389,12 +401,141 @@ public sealed partial class BoardScorePage : Page
         if (_rules.Count == 0)
             RulePanel.Children.Add(new TextBlock
             {
-                Text = "还没有加减分项。到「设置 → 加分与扣分项」新建一项。",
+                Text = "还没有加减分项。点「快捷项」建一个，或到设置里新建。",
                 Foreground = TextSecondary,
                 FontSize = 16,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(8, 0, 0, 0),
             });
+
+        RulePanel.Children.Add(BuildOtherButton());
+    }
+
+    /// <summary>
+    /// 「其他」：这一次临时起意的加分。名称和分值都手输，
+    /// 不落库、不进按钮 —— 下节课还在的项目请走「快捷项」。
+    /// </summary>
+    private Button BuildOtherButton()
+    {
+        var button = new Button
+        {
+            Width = 150,
+            Height = 56,
+            Padding = new Thickness(14, 0, 14, 0),
+            CornerRadius = new CornerRadius(12),
+            BorderThickness = new Thickness(1),
+            BorderBrush = Stroke,
+            Background = Pal.TileBg,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
+        ToolTipService.SetToolTip(button, "手动输入名称与分值，只记这一次");
+
+        var panel = new Grid { ColumnSpacing = 8 };
+        panel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        panel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var icon = new FontIcon
+        {
+            Glyph = "\uE710",
+            FontFamily = new FontFamily(IconCatalog.FontFamily),
+            FontSize = 16,
+            Foreground = TextSecondary,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(icon, 0);
+        panel.Children.Add(icon);
+
+        var label = new TextBlock
+        {
+            Text = "其他",
+            FontSize = 16,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = TextPrimary,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(label, 1);
+        panel.Children.Add(label);
+
+        button.Content = panel;
+        button.Click += OnOtherClick;
+        return button;
+    }
+
+    private async void OnOtherClick(object sender, RoutedEventArgs e)
+    {
+        if (_selected.Count == 0)
+        {
+            Toast("先点几个学生，再选加分项");
+            return;
+        }
+        if (!EnsureWritable()) return;
+
+        var nameBox = new TextBox { Header = "项目名称", PlaceholderText = "例如：帮老师搬作业" };
+        var deltaBox = new NumberBox
+        {
+            Header = "分值（负数表示扣分）",
+            Value = 10,
+            Minimum = -500,
+            Maximum = 500,
+            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
+        };
+
+        var panel = new StackPanel { Spacing = 10, Width = 360 };
+        panel.Children.Add(nameBox);
+        panel.Children.Add(deltaBox);
+        panel.Children.Add(new TextBlock
+        {
+            Text = "只记这一次，不会加到按钮里。",
+            Foreground = TextSecondary,
+            FontSize = 13,
+            TextWrapping = TextWrapping.Wrap,
+        });
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "其他",
+            Content = panel,
+            PrimaryButtonText = "下一步",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+
+        var label = NameNormalizer.Clean(nameBox.Text);
+        if (label.Length == 0)
+        {
+            Toast("名称不能为空");
+            return;
+        }
+
+        var delta = double.IsNaN(deltaBox.Value) ? 10 : (int)deltaBox.Value;
+        if (delta == 0)
+        {
+            Toast("分值不能为 0");
+            return;
+        }
+
+        // Id 留空 = 一次性项：入账时 rule_id 记空、source 记 custom，
+        // 台账上仍看得到项目名，但按钮不会多出来。
+        ShowConfirm(new Rule { Label = label, Delta = delta }, delta, null, SelectedIds(), forceOverCap: false);
+    }
+
+    private async void OnQuickRulesClick(object sender, RoutedEventArgs e)
+    {
+        // 不用管理密码：这里能改的只有「我自己的」按钮，改不到班级的分值项，
+        // 也改不到别人的。班委给自己加两个常用项，正是这个功能要解决的事。
+        if (!Session.CanWrite)
+        {
+            Toast("请先刷卡（或输入密码）再调快捷项");
+            return;
+        }
+
+        var dialog = new QuickRulesDialog(XamlRoot, Services.Operator.Id);
+        if (await dialog.ShowAsync()) BuildRuleButtons();
     }
 
     /// <summary>长按类型按钮 500 ms = 输入自定义分值。单击走默认分，都要过确认条。</summary>
@@ -414,6 +555,9 @@ public sealed partial class BoardScorePage : Page
 
         button.PointerPressed += (_, _) =>
         {
+            // 每次按下都清掉上一次长按留下的标记：长按后在按钮外面松手不会产生 Click，
+            // 标记就会一直挂着，把下一次正常点选吞掉（老师会以为第一次点没反应）。
+            _suppressClick = false;
             fired = false;
             timer.Start();
         };
@@ -527,23 +671,20 @@ public sealed partial class BoardScorePage : Page
     {
         if (studentIds.Count == 0) return;
 
-        // 新的一次点选直接顶掉旧的确认条（旧的按取消处理），不做队列
+        // 新的一次点选直接顶掉旧的确认（旧的按取消处理），不做队列
         HideBar();
 
         _pending = new PendingAward(rule, delta, studentIds, note, forceOverCap, studentIds.Count);
         _barMode = BarMode.Confirm;
 
         var sign = delta >= 0 ? "+" : "";
-        BarText.Text = studentIds.Count == 1
-            ? $"{_students[_indexById[studentIds[0]]].Name} · {rule.Label} {sign}{delta}"
-            : $"给 {studentIds.Count} 人 · {rule.Label} {sign}{delta} · 合计 {sign}{delta * studentIds.Count}";
+        ConfirmText.Text = studentIds.Count == 1
+            ? $"{_students[_indexById[studentIds[0]]].Name} · {rule.Label} {sign}{delta}" +
+              (string.IsNullOrWhiteSpace(note) ? "" : $"（{note}）")
+            : $"给 {studentIds.Count} 人 · {rule.Label} {sign}{delta} · 合计 {sign}{delta * studentIds.Count}" +
+              (string.IsNullOrWhiteSpace(note) ? "" : $"（{note}）");
 
-        BarAuxButton.Visibility = Visibility.Collapsed;
-        BarCancelButton.Content = "取消";
-        BarCancelButton.Visibility = Visibility.Visible;
-        BarOkButton.Content = "确定";
-        BarOkButton.Visibility = Visibility.Visible;
-        BarHost.Visibility = Visibility.Visible;
+        ConfirmHost.Visibility = Visibility.Visible;
 
         _barTimer.Interval = TimeSpan.FromSeconds(8);
         _barTimer.Start();
@@ -554,15 +695,8 @@ public sealed partial class BoardScorePage : Page
         HideBar();
         _undoneBatchId = batchId;
         _barMode = BarMode.Undo;
-        BarText.Text = text;
-
-        BarAuxButton.Content = "备注";
-        BarAuxButton.Visibility = Visibility.Visible;
-        BarCancelButton.Content = "撤销";
-        BarCancelButton.Visibility = Visibility.Visible;
-        BarOkButton.Content = "知道了";
-        BarOkButton.Visibility = Visibility.Visible;
-        BarHost.Visibility = Visibility.Visible;
+        UndoText.Text = text;
+        UndoHost.Visibility = Visibility.Visible;
 
         _barTimer.Interval = TimeSpan.FromSeconds(5);
         _barTimer.Start();
@@ -572,8 +706,17 @@ public sealed partial class BoardScorePage : Page
     {
         _barTimer.Stop();
         _barMode = BarMode.Hidden;
-        BarHost.Visibility = Visibility.Collapsed;
+        ConfirmHost.Visibility = Visibility.Collapsed;
+        UndoHost.Visibility = Visibility.Collapsed;
         _pending = null;
+    }
+
+    /// <summary>点遮罩 = 取消。误触的代价是"这次没记上"，比"确认了"轻得多。</summary>
+    private void OnConfirmScrimTapped(object sender, TappedRoutedEventArgs e)
+    {
+        if (_barMode != BarMode.Confirm) return;
+        HideBar();
+        Session.Interaction = _selected.Count > 0 ? InteractionState.Scoring : InteractionState.Idle;
     }
 
     private void OnBarCancelClick(object sender, RoutedEventArgs e)
@@ -603,7 +746,8 @@ public sealed partial class BoardScorePage : Page
         if (pending is null) return;
 
         _barTimer.Stop();
-        BarHost.Visibility = Visibility.Collapsed;
+        ConfirmHost.Visibility = Visibility.Collapsed;
+        UndoHost.Visibility = Visibility.Collapsed;
         _barMode = BarMode.Hidden;
 
         try
@@ -1040,7 +1184,6 @@ public sealed partial class BoardScorePage : Page
         if (sender is not StudentCard card || card.Student is null) return;
 
         var student = card.Student;
-        var period = Services.CurrentPeriod;
         ProfileName.Text = student.Name;
         ProfileSub.Text = $"{student.SeatText} · 本周期 {_totals.GetValueOrDefault(student.Id)} 分 · 累计 {Services.Entries.CumulativeTotals().GetValueOrDefault(student.Id)} 分";
 
@@ -1094,7 +1237,7 @@ public sealed partial class BoardScorePage : Page
         if (ProfileList.Children.Count == 0)
             ProfileList.Children.Add(new TextBlock
             {
-                Text = "这个周期还没有这个人的记录。",
+                Text = "还没有这个人的记录。",
                 Foreground = Pal.Secondary,
                 FontSize = 16,
             });

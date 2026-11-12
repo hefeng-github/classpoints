@@ -22,6 +22,12 @@ public sealed partial class NumberPad : UserControl
     private bool _negative;
     private int _alreadyInPeriod;
 
+    /// <summary>
+    /// 面板打开时预填的是这一项的默认分。第一个数字键应当替换它，而不是接在后面：
+    /// 默认 +10，想给 8 却得到 108，是这套键盘之前最容易被当成"按键失灵"的一处。
+    /// </summary>
+    private bool _freshEntry;
+
     public NumberPad()
     {
         InitializeComponent();
@@ -60,6 +66,7 @@ public sealed partial class NumberPad : UserControl
         _alreadyInPeriod = alreadyInPeriod;
         _negative = rule.Delta < 0;
         _raw = System.Math.Abs(rule.Delta);
+        _freshEntry = true;
 
         TitleText.Text = rule.Label;
         ReasonBox.Text = "";
@@ -86,6 +93,14 @@ public sealed partial class NumberPad : UserControl
         if (sender is not Button b || b.Tag is not string digit) return;
         if (!int.TryParse(digit, out var d)) return;
 
+        if (_freshEntry)
+        {
+            _raw = d;
+            _freshEntry = false;
+            Refresh();
+            return;
+        }
+
         // 四位数封顶：这个系统里没有需要五位数的分值，多按一位只可能是手滑
         if (_raw > 999) return;
         _raw = _raw * 10 + d;
@@ -95,6 +110,7 @@ public sealed partial class NumberPad : UserControl
 
     private void OnBackspaceClick(object sender, RoutedEventArgs e)
     {
+        _freshEntry = false;
         _raw /= 10;
         Refresh();
     }
@@ -123,15 +139,20 @@ public sealed partial class NumberPad : UserControl
         }
         else
         {
-            HintText.Text = _rule is null ? "" : DescribeScope();
-            HintText.Foreground = TextSecondary;
+            HintText.Text = effective == 0
+                ? "分值为 0 不会入账"
+                : _rule is null ? "" : DescribeScope();
+            HintText.Foreground = effective == 0 ? Warn : TextSecondary;
             OverCapButton.Visibility = Visibility.Collapsed;
         }
 
         ScopeText.Text = _peopleCount <= 1 ? "" : $"将给 {_peopleCount} 人各记一次";
+
+        // 0 分不是一次操作：入账层会写出一条 delta=0 的记录，榜单没变化却多了一条流水。
+        ConfirmButton.IsEnabled = effective != 0;
         ConfirmButton.Content = _peopleCount <= 1
-            ? $"确定 {(effective >= 0 ? "+" : "")}{effective}"
-            : $"确定 · {_peopleCount} 人 各 {(effective >= 0 ? "+" : "")}{effective}";
+            ? effective == 0 ? "确定" : $"确定 {(effective >= 0 ? "+" : "")}{effective}"
+            : effective == 0 ? "确定" : $"确定 · {_peopleCount} 人 各 {(effective >= 0 ? "+" : "")}{effective}";
     }
 
     private string DescribeScope()
@@ -145,6 +166,7 @@ public sealed partial class NumberPad : UserControl
 
     private void OnConfirmClick(object sender, RoutedEventArgs e)
     {
+        if (SignedValue == 0) return;
         Confirmed?.Invoke(SignedValue, Reason());
     }
 

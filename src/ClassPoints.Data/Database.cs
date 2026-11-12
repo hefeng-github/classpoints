@@ -14,6 +14,15 @@ public sealed class Database
 
     public static string DefaultDbPath => Path.Combine(RootDir, "classpoints.db");
     public static string BackupRoot => Path.Combine(RootDir, "backups");
+
+    /// <summary>
+    /// 备份的默认落地处：<c>文档\班级积分备份</c>。
+    /// 不放 %LOCALAPPDATA%：备份是给人拿的 —— 要能一眼找到、能直接拷进 U 盘或 OneDrive，
+    /// 而 AppData 是隐藏目录，老师找不到就等于没有备份。
+    /// </summary>
+    public static string DefaultBackupDir => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "班级积分备份");
+
     public static string SessionPath => Path.Combine(RootDir, "session.bin");
     public static string RecoveryPath => Path.Combine(RootDir, "recovery.bin");
     public static string LogDir => Path.Combine(RootDir, "logs");
@@ -24,7 +33,6 @@ public sealed class Database
     {
         DbPath = dbPath ?? DefaultDbPath;
         Directory.CreateDirectory(Path.GetDirectoryName(DbPath)!);
-        Directory.CreateDirectory(BackupRoot);
         Directory.CreateDirectory(LogDir);
 
         _connectionString = new SqliteConnectionStringBuilder
@@ -93,6 +101,37 @@ public sealed class Database
         // v3：周期改用序号（「第 N 周期」），学期那条线拿掉；分组功能移除。
         RenumberPeriods(conn);
         if (version < 3) SetSetting(conn, null, "schema_note", "v3: 周期按序号 + 移除分组");
+
+        // v4：备份默认目录从 %LOCALAPPDATA%\ClassPoints\backups 挪到「文档\班级积分备份」。
+        // 老库里这一项被写成了绝对路径，不清掉就会一直沿用 C 盘那个隐藏目录。
+        if (GetSetting(conn, "backup_dir") is { Length: > 0 } dir &&
+            string.Equals(dir.TrimEnd('\\'), BackupRoot.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+            SetSetting(conn, null, "backup_dir", "");
+
+        // v4：加分项可以只属于某个成员（「我的快捷项」）。NULL = 全班共用，
+        // 所以老库补一列就够，不需要回填。
+        if (EnsureColumn(conn, "rules", "owner_id", "TEXT"))
+            SetSetting(conn, null, "schema_note", "v4: 加分项可归属个人");
+        Exec(conn, "CREATE INDEX IF NOT EXISTS idx_rules_owner ON rules(owner_id)");
+    }
+
+    /// <summary>
+    /// 补一列（SQLite 没有 ADD COLUMN IF NOT EXISTS）。返回 true 表示这次真的补了。
+    /// 老库升级必须先走这里，否则 SELECT * 的结果里少一列，映射器直接抛异常。
+    /// </summary>
+    private static bool EnsureColumn(SqliteConnection conn, string table, string column, string type)
+    {
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = $"PRAGMA table_info({table})";
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+                if (string.Equals(r.GetString(1), column, StringComparison.OrdinalIgnoreCase))
+                    return false;
+        }
+
+        Exec(conn, $"ALTER TABLE {table} ADD COLUMN {column} {type}");
+        return true;
     }
 
     /// <summary>
@@ -257,7 +296,8 @@ public sealed class Database
             ("sound_on", "1"),
             ("board_rotate_sec", "20"),
             ("absence_policy", "redistribute"),
-            ("backup_dir", BackupRoot),
+            // 留空 = 跟随默认（文档\班级积分备份）。写死绝对路径会让默认值以后再也改不动。
+            ("backup_dir", ""),
             ("last_backup_at", "0"),
             ("window_w", "1920"),
             ("window_h", "1048"),

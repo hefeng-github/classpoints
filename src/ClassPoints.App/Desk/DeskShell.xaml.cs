@@ -17,14 +17,10 @@ namespace ClassPoints.App.Desk;
 /// </summary>
 public sealed partial class DeskShell : UserControl, IShellHost
 {
-    private static readonly SolidColorBrush ActiveBg = Pal.AccentBg;
-    private static readonly SolidColorBrush ActiveFg = Pal.Accent;
-    private static readonly SolidColorBrush IdleFg = Pal.Secondary;
-    private static readonly SolidColorBrush Transparent = new(Windows.UI.Color.FromArgb(0x00, 0, 0, 0));
-
-    private readonly Dictionary<int, Button> _navButtons = new();
+    private readonly Dictionary<int, NavigationViewItem> _navItems = new();
     private TaskCompletionSource<Member?>? _identifyTcs;
     private int _index = -1;
+    private bool _navSyncing;
 
     public DeskShell()
     {
@@ -47,6 +43,22 @@ public sealed partial class DeskShell : UserControl, IShellHost
 
         if (_index < 0) Navigate(AppNav.Score);
         Services.Pump.Start();
+
+        // 只在「已经选过端口」时启动读卡器：办公室电脑的 COM1 常常是主板串口，
+        // 无脑探一遍会让设置页一开机就顶着一行红字"读卡器没有回应"。
+        // 没配端口的机器，要用的时候在「设置 → 读卡器」点一下「重新连接」即可。
+        if (!string.IsNullOrWhiteSpace(Services.Settings.ReaderPort))
+        {
+            try
+            {
+                Services.Reader.Start(Services.Settings.ReaderPort);
+            }
+            catch (Exception ex)
+            {
+                Services.LogError("reader-start", ex);
+            }
+        }
+
         Refresh();
 
         Session.Changed += OnSessionChanged;
@@ -64,6 +76,7 @@ public sealed partial class DeskShell : UserControl, IShellHost
             Session.Changed -= OnSessionChanged;
             UpdateCenter.Current.Changed -= OnUpdateStateChanged;
             UpdateCenter.Current.Found -= OnUpdateFound;
+            Services.Reader.Stop();
         };
     }
 
@@ -99,63 +112,65 @@ public sealed partial class DeskShell : UserControl, IShellHost
 
     private void BuildNavigation()
     {
-        NavStack.Children.Clear();
-        _navButtons.Clear();
+        Nav.MenuItems.Clear();
+        _navItems.Clear();
 
         foreach (var (index, title, glyph) in AppNav.Items)
         {
-            var button = new Button
+            var item = new NavigationViewItem
             {
-                Style = (Style)Application.Current.Resources["DeskNavButton"],
+                Content = title,
                 Tag = index,
+                Icon = new FontIcon
+                {
+                    Glyph = glyph,
+                    FontFamily = new FontFamily(IconCatalog.FontFamily),
+                },
             };
 
-            var row = new Grid { ColumnSpacing = 10 };
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-            var icon = new FontIcon
-            {
-                Glyph = glyph,
-                FontSize = 16,
-                Width = 24,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-                Foreground = IdleFg,
-            };
-            Grid.SetColumn(icon, 0);
-            row.Children.Add(icon);
-
-            var text = new TextBlock
-            {
-                Text = title,
-                FontSize = 14,
-                VerticalAlignment = VerticalAlignment.Center,
-                Foreground = IdleFg,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-            };
-            Grid.SetColumn(text, 1);
-            row.Children.Add(text);
-
-            button.Content = row;
-            button.Click += OnNavClick;
-            NavStack.Children.Add(button);
-            _navButtons[index] = button;
+            Nav.MenuItems.Add(item);
+            _navItems[index] = item;
         }
     }
 
-    private void OnNavClick(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// 原生 NavigationView 的选中回调。权限不够时要把它弹回原来那一项 ——
+    /// 否则侧栏会停在「设置」上，右边还是记分台。
+    /// </summary>
+    private void OnNavSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
-        if (sender is not Button b || b.Tag is not int index) return;
+        if (_navSyncing) return;
+        if (args.SelectedItemContainer?.Tag is not int index) return;
+        if (index == _index) return;
+
         _ = NavigateAsync(index);
+    }
+
+    private void SelectWithoutNotify(int index)
+    {
+        _navSyncing = true;
+        if (_navItems.TryGetValue(index, out var item)) Nav.SelectedItem = item;
+        _navSyncing = false;
     }
 
     private async Task NavigateAsync(int index)
     {
-        if (AppNav.NeedsIdentity(index) && !Session.CanWrite)
+        // 管理类页面要管理态（班委能记分，但不能改名单/口径/设置）
+        if (AppNav.NeedsAdmin(index))
         {
-            var ok = await EnsureIdentifiedAsync();
-            if (!ok) return;
+            if (!await EnsureIdentifiedAsync(requireAdmin: true))
+            {
+                SelectWithoutNotify(_index);
+                return;
+            }
+        }
+        else if (AppNav.NeedsIdentity(index) && !Session.CanWrite)
+        {
+            if (!await EnsureIdentifiedAsync())
+            {
+                SelectWithoutNotify(_index);
+                return;
+            }
         }
         Navigate(index);
     }
@@ -165,6 +180,7 @@ public sealed partial class DeskShell : UserControl, IShellHost
         _index = index;
         var page = DeskPages.Map(index);
         if (DeskFrame.CurrentSourcePageType != page) DeskFrame.Navigate(page);
+        SelectWithoutNotify(index);
         Refresh();
     }
 
@@ -177,30 +193,21 @@ public sealed partial class DeskShell : UserControl, IShellHost
 
     public void Toast(string message, double seconds = 3) => ToastLayer.Show(message, seconds);
 
+    public void RefreshChrome() => Refresh();
+
     private void Refresh()
     {
         ClassNameText.Text = Services.ClassName;
         PeriodText.Text = Services.PeriodName;
         ModeText.Text = App.Mode.ToDisplay() + " · 本机存储";
 
-        foreach (var (index, button) in _navButtons)
-        {
-            var active = index == _index;
-            button.Background = active ? ActiveBg : Transparent;
-            if (button.Content is not Grid grid) continue;
-            foreach (var child in grid.Children)
-            {
-                if (child is FontIcon icon) icon.Foreground = active ? ActiveFg : IdleFg;
-                else if (child is TextBlock text) text.Foreground = active ? ActiveFg : IdleFg;
-            }
-        }
-
         var last = Services.Settings.LastBackupAt;
         BackupText.Text = last <= 0
             ? "还没有备份"
             : $"上次备份 {Clock.LocalDate(last):MM-dd HH:mm}";
 
-        VersionText.Text = "班级积分 v" + AppServices.AppVersion + " · 本机存储";
+        // 侧栏底部只有一两行的位置：形态已经写着「本机存储」，这里再缀一次就被裁掉了
+        VersionText.Text = "班级积分 v" + AppServices.AppVersion;
         RefreshUpdateBadge();
     }
 
@@ -234,7 +241,7 @@ public sealed partial class DeskShell : UserControl, IShellHost
         VersionText.Text = $"班级积分 v{AppServices.AppVersion} · 可更新到 {manifest.Version}";
     }
 
-    private void OnUpdateBadgeClick(object sender, RoutedEventArgs e) => Navigate(AppNav.Settings);
+    private void OnUpdateBadgeClick(object sender, RoutedEventArgs e) => _ = NavigateAsync(AppNav.Settings);
 
     // ================= 认人 =================
 
@@ -253,6 +260,13 @@ public sealed partial class DeskShell : UserControl, IShellHost
 
         if (requireAdmin && Session.CanWrite)
         {
+            if (!Services.HasManagerPin)
+            {
+                Session.EnterAdmin();
+                Toast("还没设管理密码，先以管理态进来；建议到设置里补一个");
+                return true;
+            }
+
             var ok = await AskPinAsync("管理模式密码", "改名单、改分值、撤销记录都要这一步", requireManager: true);
             if (ok) Session.EnterAdmin();
             return ok;

@@ -117,10 +117,46 @@ public sealed partial class DeskPeriodsPage : Page
         }
     }
 
+    /// <summary>
+    /// 历史周期该按「当时在班里的学生」统计：既包括现在仍在册的，
+    /// 也包括已经转走、或后来停用删掉、但在这个周期记过分的人。
+    /// 直接拿 ListActive() 会让转走的学生从旧榜上整条消失 —— 老师回头查账会以为分丢了。
+    /// </summary>
+    private static List<Student> StudentsForArchive(IReadOnlyDictionary<string, int> periodTotals)
+    {
+        var list = new List<Student>();
+        foreach (var s in Services.Students.ListAll())
+        {
+            if (s.Active && !s.IsDeleted)
+            {
+                list.Add(s);
+                continue;
+            }
+
+            // 没在这个周期记过分的人，没必要出现在旧榜上
+            if (!periodTotals.ContainsKey(s.Id)) continue;
+
+            // RankingCalculator 只算 Active 的学生，这里给一份「当年在册」的副本，
+            // 不去改库里的真实记录。
+            list.Add(new Student
+            {
+                Id = s.Id,
+                Name = s.Name,
+                StudentNo = s.StudentNo,
+                SeatNo = s.SeatNo,
+                Active = true,
+                Rev = s.Rev,
+                UpdatedAt = s.UpdatedAt,
+                CreatedAt = s.CreatedAt,
+            });
+        }
+        return list;
+    }
+
     private async Task ShowRankingAsync(Period period)
     {
         var totals = Services.Entries.PeriodTotals(period.Id);
-        var students = Services.Students.ListActive()
+        var students = StudentsForArchive(totals)
             .OrderByDescending(s => totals.GetValueOrDefault(s.Id))
             .ThenBy(s => s.Name, StringComparer.CurrentCulture)
             .ToList();
@@ -174,12 +210,15 @@ public sealed partial class DeskPeriodsPage : Page
                 FileFilter.Excel, "xlsx");
             if (path is null) return;
 
-            var students = Services.Students.ListActive();
             var scheme = Services.Exams.ActiveScheme();
-            var totalPoints = Services.Entries.CumulativeTotals();
-            var ranking = Services.Exams.BuildRanking(students, totalPoints, scheme,
-                Services.Settings.AbsencePolicy);
             var exams = Services.Exams.ListExams(period.Id);
+
+            // 历史周期的"看榜单/导出"必须用那个周期的积分与场次：
+            // 用 CumulativeTotals 会把今天的分写进过去的榜，用全部考试会把之后才考的算进去。
+            var periodPoints = Services.Entries.PeriodTotals(period.Id);
+            var students = StudentsForArchive(periodPoints);
+            var ranking = Services.Exams.BuildRanking(students, periodPoints, scheme,
+                Services.Settings.AbsencePolicy, exams);
 
             var bundle = new ClassPoints.Data.ExportBundle(
                 ranking, exams,
@@ -208,7 +247,7 @@ public sealed partial class DeskPeriodsPage : Page
         var dialog = new ContentDialog
         {
             XamlRoot = XamlRoot,
-            Title = "给这个周期改个名字",
+            Title = "重命名周期",
             Content = box,
             PrimaryButtonText = "保存",
             CloseButtonText = "取消",

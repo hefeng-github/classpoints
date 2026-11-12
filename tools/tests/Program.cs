@@ -56,6 +56,8 @@ internal static class Program
         CounterTests.Run(Check);
         Section("同步凭据");
         SyncStoreTests.Run(Check);
+        Section("设备特征码");
+        FingerprintTests.Run(Check);
         Section("版本与更新");
         await UpdateTests.RunAsync(Check);
 

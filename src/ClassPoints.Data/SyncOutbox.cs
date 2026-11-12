@@ -126,6 +126,7 @@ public static class Mappers
         Icon = r.GetStrOrNull("icon") ?? IconCatalog.Default,
         Sort = r.GetInt("sort"),
         PresetKey = r.GetStrOrNull("preset_key"),
+        OwnerId = r.GetStrOrNull("owner_id"),
         CapValue = r.GetIntOrNull("cap_value"),
         CapScope = r.GetStrOrNull("cap_scope") switch
         {

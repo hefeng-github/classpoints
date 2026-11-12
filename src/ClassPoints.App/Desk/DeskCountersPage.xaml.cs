@@ -95,7 +95,14 @@ public sealed partial class DeskCountersPage : Page
 
         for (var i = 0; i < _counters.Count; i++)
         {
-            var cell = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+            // 表头跟单元格里的数字/加减按钮一样靠右：单元格内容是右对齐的，
+            // 表头靠左会让人以为「−」在「迟到」两个字的左边。
+            var cell = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+                HorizontalAlignment = HorizontalAlignment.Right,
+            };
             cell.Children.Add(new FontIcon
             {
                 Glyph = _counters[i].Glyph,

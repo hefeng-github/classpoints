@@ -150,8 +150,37 @@ custom_domain = true
 | POST | `/api/v1/periods/reset` | 两阶段重置（`request` / `renew` / `abort` / `commit`）🔒 |
 | POST/PATCH | `/api/v1/:entity` | `students` / `rules` / `members` / `note_templates` / `schemes` 🔒 |
 | POST | `/api/v1/schemes/:id/weights` | 换整张考试权重表，不是逐条改 🔒 |
+| GET | `/admin` | 网页管理台（设备白名单）；HTML 页面，不走 `/api/v1` |
+| POST | `/api/v1/admin/session` | 管理台登录：**只认班主任密码和恢复码**，成员口令一律 401 |
+| GET | `/api/v1/admin/devices` | 待审 / 已通过 / 已拒绝三张清单 + 当前模式 🔒 |
+| POST | `/api/v1/admin/devices` | 手动把一串特征码加进白名单（老师提前放行办公室那台）🔒 |
+| POST | `/api/v1/admin/devices/:id/approve\|reject\|revoke` | 通过 / 拒绝 / 撤销 🔒 |
+| DELETE | `/api/v1/admin/devices/:id` | 移出白名单（下次会重新进待审）🔒 |
+| PATCH | `/api/v1/admin/settings` | 切 `joinMode`：`open` / `approval` 🔒 |
 
 🔒 = 只给班主任和班长，班委令牌调用返回 `403 forbidden_role`。
+
+### 设备白名单
+
+班级有两种入班模式，存在 `classes.join_mode`：
+
+- `open`（默认）—— 班级码 + 口令对了就进，老班不受影响。
+- `approval` —— 口令对了还要过机器：客户端上报的**设备特征码**必须在白名单里是 `approved`。
+  新机器第一次来只落一条 `pending` 记录，**不签令牌**，响应是
+  `403 device_pending`，话术里直接给出可抄的特征码。
+
+特征码是客户端算的（`MachineGuid` + 机器名 → SHA-256 前 10 字节），20 位十六进制，
+界面上显示成 4 位一段。它不是强身份凭证，伪造成本只比抄班级码高一点 ——
+它的价值是把"谁进得来"变成一件需要班主任点头、并且留下记录的事。
+
+三条容易写错的规则，都已经有用例钉住：
+
+1. **开审核模式时，现役设备自动入白名单。** 那些机器本来就是班主任亲手配进来的，
+   开个开关不该让教室里的设备陆续掉线。
+2. **撤销 = 当场断续期。** 网页上点撤销会把该指纹下所有 `devices` 行置 `revoked_at`，
+   那台机器下一次 `/refresh` 直接 `401 device_revoked`。已签发的 access 仍能用到过期（最长 12 小时）。
+3. **待审不算失败次数。** `/pair` 的口令已经验过了，等待批准不是猜密码 ——
+   把待审记进 `auth_throttle`，学生点两次就会被封 15 分钟，而屏幕上只会显示"尝试次数太多"。
 撤销（`/entries/batch/:id/reverse`）故意不设门槛：本地规则允许班委 5 分钟内撤掉自己刚记的那批，
 云端要是比本地严，就会出现"界面上撤了、账对不上"。
 
@@ -176,6 +205,12 @@ custom_domain = true
 `migrations/0002_security.sql` 只有一张表：`auth_throttle(scope, fp)` ——
 防爆破的失败计数。`fp` 是 IP+UA 的加盐哈希（盐就是 `TOKEN_SECRET`），不是 IP 本身。
 这张表不按班隔离：一个人换了班级码继续猜，也应该被同一个计数器挡住。
+
+`migrations/0003_roles.sql` 给 `devices` 补了 `role` / `member_id`（令牌得说真话）；
+`0004_rule_owner.sql` 给 `rules` 补 `owner_id`（记分台上的私有快捷项）；
+`0005_device_grants.sql` 是白名单：`classes.join_mode`、`devices.fingerprint`，
+外加 `device_grants(class_id, fingerprint)` 唯一索引 —— 同班同指纹只允许一行，
+pending 被批准是原地改状态，不是新增。
 
 ## 六、注意
 

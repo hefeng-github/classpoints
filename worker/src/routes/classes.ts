@@ -30,6 +30,7 @@ import {
   uuidv7,
 } from '../util';
 import { assertNotBlocked, clear, fingerprint, record } from '../guard';
+import { displayFingerprint, gateDevice, normalizeFingerprint } from './grants';
 
 interface CreateClassBody {
   name?: string;
@@ -38,6 +39,8 @@ interface CreateClassBody {
   recoveryCode?: string;
   kind?: 'board' | 'desk';
   deviceLabel?: string;
+  /** 客户端算的机器特征码。班级开了审核时是必填项。 */
+  deviceFingerprint?: string;
 }
 
 interface PairBody {
@@ -45,6 +48,7 @@ interface PairBody {
   secret?: string;
   kind?: 'board' | 'desk';
   deviceLabel?: string;
+  deviceFingerprint?: string;
 }
 
 async function issueDevice(
@@ -54,6 +58,7 @@ async function issueDevice(
   role: Role,
   memberId: string | null,
   label: string | null,
+  fingerprint: string | null = null,
 ): Promise<{ deviceId: string; access: string; refresh: string; accessExpiresAt: number; refreshExpiresAt: number }> {
   const deviceId = uuidv7();
   const refresh = randomHex(32);
@@ -63,9 +68,9 @@ async function issueDevice(
   await env.DB.batch([
     // role 和 member_id 要落库：refresh 时得原样换回去，否则班委的令牌刷一次就变回班主任
     env.DB.prepare(
-      `INSERT INTO devices (id, class_id, kind, label, refresh_hash, created_at, last_seen_at, expires_at, role, member_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(deviceId, classId, kind, label, await sha256Hex(refresh), at, at, refreshExpiresAt, role, memberId),
+      `INSERT INTO devices (id, class_id, kind, label, refresh_hash, created_at, last_seen_at, expires_at, role, member_id, fingerprint)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(deviceId, classId, kind, label, await sha256Hex(refresh), at, at, refreshExpiresAt, role, memberId, fingerprint),
   ]);
 
   const access = await signToken(env, { sid: deviceId, cid: classId, kind, role, mid: memberId }, accessTtlSec(env));
@@ -110,8 +115,9 @@ export async function createClass(env: Env, request: Request): Promise<Response>
   // 在那台机器上校验管理密码的依据。用班级密码那套 hex 的话，一同步就废了。
   const memberPin = await hashPinPhc(pin);
   const recovery = body.recoveryCode ? await hashPassword(env, body.recoveryCode) : null;
+  const deviceFp = normalizeFingerprint(body.deviceFingerprint);
 
-  await env.DB.batch([
+  const statements = [
     env.DB.prepare(
       `INSERT INTO classes (id, name, code, owner_pin, owner_salt, recovery_hash, recovery_salt, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -121,9 +127,29 @@ export async function createClass(env: Env, request: Request): Promise<Response>
        VALUES (?, ?, ?, 'owner', ?, ?, 1, ?)`,
     ).bind(ownerId, classId, ownerName, memberPin, at, at),
     changeStmt(env.DB, classId, 'members', ownerId, 'upsert', at),
-  ]);
+  ];
+  // 建班那台机器顺手进白名单：老师刚把这个班建起来，它当然应该在里面。
+  // 不写这一条的话，之后一开审核模式，建班的电脑下次续期就被自己拦在门外。
+  if (deviceFp) {
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO device_grants (id, class_id, fingerprint, label, status, role, member_id, attempts, created_at, last_seen_at, decided_at, decided_by)
+         VALUES (?, ?, ?, ?, 'approved', 'owner', ?, 1, ?, ?, ?, ?)
+         ON CONFLICT(class_id, fingerprint) DO NOTHING`,
+      ).bind(uuidv7(), classId, deviceFp, body.deviceLabel ?? null, ownerId, at, at, at, ownerId),
+    );
+  }
+  await env.DB.batch(statements);
 
-  const tokens = await issueDevice(env, classId, body.kind ?? 'board', 'owner', ownerId, body.deviceLabel ?? null);
+  const tokens = await issueDevice(
+    env,
+    classId,
+    body.kind ?? 'board',
+    'owner',
+    ownerId,
+    body.deviceLabel ?? null,
+    deviceFp,
+  );
   // role 和 /pair 的响应保持同一个形状：调用方不该为了读一个字段而区分两个端点
   return json({ classId, code, ownerId, role: 'owner', memberId: ownerId, ...tokens }, 201);
 }
@@ -135,6 +161,7 @@ interface PairIdentity {
 
 interface ClassRow {
   id: string;
+  join_mode: string;
   owner_pin: string;
   owner_salt: string;
   recovery_hash: string | null;
@@ -190,7 +217,7 @@ export async function pair(env: Env, request: Request): Promise<Response> {
   const secret = requireString(body.secret, 'secret', 64);
 
   const row = await env.DB.prepare(
-    'SELECT id, owner_pin, owner_salt, recovery_hash, recovery_salt FROM classes WHERE code = ? AND deleted_at IS NULL',
+    'SELECT id, join_mode, owner_pin, owner_salt, recovery_hash, recovery_salt FROM classes WHERE code = ? AND deleted_at IS NULL',
   )
     .bind(code)
     .first<ClassRow>();
@@ -207,6 +234,41 @@ export async function pair(env: Env, request: Request): Promise<Response> {
     throw new HttpError(401, 'bad_secret', '密码不对');
   }
 
+  // 第二道门：机器先过白名单，再谈令牌。
+  // 顺序不能反 —— 先验口令的意义在于，白名单里出现"谁在试进这个班"的记录，
+  // 只可能来自知道口令的人，而不是随便谁都能往队列里灌行。
+  const deviceFp = normalizeFingerprint(body.deviceFingerprint);
+  if (row.join_mode === 'approval' && !deviceFp) {
+    await record(env, 'pair', fp);
+    throw new HttpError(
+      422,
+      'device_fingerprint_required',
+      '这个班开启了设备审核，但这台机器没上报设备特征码。请把客户端升级到最新版后再配对。',
+    );
+  }
+  if (row.join_mode === 'approval' && deviceFp) {
+    const gate = await gateDevice(env, row.id, deviceFp, body.deviceLabel ?? null, identity.role, identity.memberId);
+    const shown = displayFingerprint(deviceFp);
+    // 这里不再记失败次数：口令已经验过了，待审只是"还没点通过"，
+    // 不是猜密码。记了会让学生在等待期间点两次就被封 15 分钟。
+    if (gate.kind === 'pending' || gate.kind === 'queue_full') {
+      throw new HttpError(
+        403,
+        gate.kind === 'queue_full' ? 'review_queue_full' : 'device_pending',
+        gate.kind === 'queue_full'
+          ? '这个班的待审设备太多，请让班主任先在管理台清理一下。'
+          : `这台设备还没被批准。设备特征码 ${shown}，请让班主任打开班级管理台，在「待审核」里点通过，然后再试一次。`,
+      );
+    }
+    if (gate.kind === 'blocked') {
+      throw new HttpError(
+        403,
+        'device_blocked',
+        `这台设备被班主任拒绝过（特征码 ${shown}）。需要恢复的话，请班主任在管理台里把它改成通过。`,
+      );
+    }
+  }
+
   await clear(env, 'pair', fp);
   const tokens = await issueDevice(
     env,
@@ -215,6 +277,7 @@ export async function pair(env: Env, request: Request): Promise<Response> {
     identity.role,
     identity.memberId,
     body.deviceLabel ?? null,
+    deviceFp,
   );
   // role 回给客户端：界面要据此决定配对完是"进了管理模式"还是"只能记分"
   return json({ classId: row.id, code, role: identity.role, memberId: identity.memberId, ...tokens });
@@ -230,7 +293,7 @@ export async function refresh(env: Env, request: Request): Promise<Response> {
   const hash = await sha256Hex(token);
 
   const device = await env.DB.prepare(
-    `SELECT d.id, d.class_id, d.kind, d.expires_at, d.revoked_at, d.role, d.member_id
+    `SELECT d.id, d.class_id, d.kind, d.expires_at, d.revoked_at, d.role, d.member_id, d.fingerprint
        FROM devices d WHERE d.refresh_hash = ?`,
   )
     .bind(hash)
@@ -242,6 +305,7 @@ export async function refresh(env: Env, request: Request): Promise<Response> {
       revoked_at: number | null;
       role: string | null;
       member_id: string | null;
+      fingerprint: string | null;
     }>();
 
   if (!device || device.revoked_at || device.expires_at < now()) {
@@ -250,6 +314,29 @@ export async function refresh(env: Env, request: Request): Promise<Response> {
     if (!device) throw new HttpError(401, 'bad_refresh', '设备凭据无效，请重新配对');
     if (device.revoked_at) throw new HttpError(401, 'device_revoked', '这台设备已被撤销');
     throw new HttpError(401, 'refresh_expired', '设备凭据已过期，请重新配对');
+  }
+
+  // 白名单是"现在"说了算，不看签发时的快照：网页上撤销一台机器之后，
+  // 它手里那张 refresh 必须当场失效，而不是等 90 天慢慢过期。
+  // 只在设备记着指纹时才检查 —— 升级前配对的老设备没有指纹，不能因此把人家踢下线。
+  if (device.fingerprint) {
+    const cls = await env.DB.prepare('SELECT join_mode FROM classes WHERE id = ?')
+      .bind(device.class_id)
+      .first<{ join_mode: string }>();
+    if (cls?.join_mode === 'approval') {
+      const grant = await env.DB.prepare(
+        'SELECT status FROM device_grants WHERE class_id = ? AND fingerprint = ?',
+      )
+        .bind(device.class_id, device.fingerprint)
+        .first<{ status: string }>();
+      if (grant?.status !== 'approved') {
+        await env.DB.prepare('UPDATE devices SET revoked_at = ? WHERE id = ? AND class_id = ?')
+          .bind(now(), device.id, device.class_id)
+          .run();
+        await record(env, 'refresh', fp);
+        throw new HttpError(401, 'device_revoked', '这台设备已不在班级的设备白名单里，请班主任重新通过后再配对');
+      }
+    }
   }
 
   // 身份以"现在"为准，不照抄签发时的快照：
@@ -315,4 +402,62 @@ export async function ping(env: Env, request: Request): Promise<Response> {
   await requireAuth(env, request);
   const row = await env.DB.prepare('SELECT 1 AS ok').first<{ ok: number }>();
   return json({ ok: row?.ok === 1, serverTime: now() });
+}
+
+interface AdminBody {
+  code?: string;
+  secret?: string;
+  label?: string;
+}
+
+/**
+ * 网页管理台登录。**只认班主任密码和恢复码**。
+ *
+ * 不复用 /pair 是因为两件事的门槛不一样：配对是班里每个人都要做的事，
+ * 用谁的口令就得到谁的身份；审批设备是班主任一个人的事，班长和班委
+ * 不该有"通过一台新机器"的权力 —— 否则白名单就成了摆设（学生拿班长口令
+ * 就能批自己的电脑）。所以这里走独立入口，拒绝成员口令。
+ *
+ * 也不受 join_mode 影响：班主任得先进得来，才能批别人进来。
+ */
+export async function adminSession(env: Env, request: Request): Promise<Response> {
+  const fp = await fingerprint(request, env);
+  await assertNotBlocked(env, 'admin', fp);
+
+  const body = await readJson<AdminBody>(request);
+  const code = requireString(body.code, 'code', 16).trim().toUpperCase();
+  const secret = requireString(body.secret, 'secret', 64);
+
+  const row = await env.DB.prepare(
+    `SELECT id, name, code, join_mode, owner_pin, owner_salt, recovery_hash, recovery_salt
+       FROM classes WHERE code = ? AND deleted_at IS NULL`,
+  )
+    .bind(code)
+    .first<ClassRow & { name: string; code: string }>();
+
+  if (!row) {
+    await record(env, 'admin', fp);
+    throw new HttpError(404, 'class_not_found', '班级码不对，或者这个班已经注销');
+  }
+
+  let ok = await verifyPassword(env, secret, row.owner_pin, row.owner_salt);
+  if (!ok && row.recovery_hash && row.recovery_salt) {
+    ok = await verifyPassword(env, secret, row.recovery_hash, row.recovery_salt);
+  }
+  if (!ok) {
+    await record(env, 'admin', fp);
+    throw new HttpError(401, 'bad_secret', '班主任密码不对');
+  }
+
+  await clear(env, 'admin', fp);
+  // 网页也要登记一行设备：管理台自己也是一个能撤销别人、能改模式的入口，
+  // 让它出现在设备表里，将来排查"谁动过"才有据可查。
+  const tokens = await issueDevice(env, row.id, 'desk', 'owner', null, body.label ?? '网页管理台', null);
+  return json({
+    classId: row.id,
+    className: row.name,
+    code: row.code,
+    joinMode: row.join_mode === 'approval' ? 'approval' : 'open',
+    ...tokens,
+  });
 }

@@ -5,7 +5,7 @@ namespace ClassPoints.Data;
 /// </summary>
 public static class Sql
 {
-    public const int SchemaVersion = 3;
+    public const int SchemaVersion = 4;
 
     public const string Pragmas = """
         PRAGMA journal_mode = WAL;
@@ -60,6 +60,8 @@ public static class Sql
           icon        TEXT,
           sort        INTEGER NOT NULL DEFAULT 0,
           preset_key  TEXT UNIQUE,
+          -- NULL = 全班共用；非空 = 只属于这个成员的快捷项
+          owner_id    TEXT,
           cap_value   INTEGER CHECK (cap_value IS NULL OR cap_value > 0),
           cap_scope   TEXT CHECK (cap_scope IN ('single','period')),
           archived_at INTEGER,
