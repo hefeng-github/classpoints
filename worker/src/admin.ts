@@ -345,8 +345,10 @@ export const ADMIN_HTML = `<!doctype html>
 
       $('className').textContent = data.className;
       $('classCode').textContent = '班级码 ' + data.code;
+      var legacy = data.legacyDevices || 0;
       $('stats').textContent = (data.joinMode === 'approval' ? '新模式：新设备需批准' : '当前模式：口令对了就能进')
-        + ' · 在线设备 ' + data.activeDevices + ' 台';
+        + ' · 在线设备 ' + data.activeDevices + ' 台'
+        + (legacy ? '（其中 ' + legacy + ' 台是升级前配的，没有特征码，不受白名单限制）' : '');
       $('mode').checked = data.joinMode === 'approval';
 
       var pending = data.grants.filter(function (g) { return g.status === 'pending'; });
@@ -369,7 +371,7 @@ export const ADMIN_HTML = `<!doctype html>
           { text: '撤销', cls: 'bad', run: function () { return api('/devices/' + g.id + '/revoke', { method: 'POST' }).then(function () { toast('已撤销'); }); } },
           { text: '移出', cls: 'ghost', run: function () { return api('/devices/' + g.id, { method: 'DELETE' }).then(function () { toast('已移出白名单'); }); } },
         ]);
-      }, '白名单还是空的。可以等设备来申请，也可以在下面手动添加。');
+      }, '白名单还是空的。升级前配好的设备没有特征码、不受影响；它们重新配对时会出现在待审里。也可以在下面手动添加。');
 
       fill('blockedList', blocked, function (g) {
         return grantRow(g, [

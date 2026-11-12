@@ -149,13 +149,14 @@ jobs:
           cat /tmp/wrangler.log
           exit 1
 
-      - name: 接口契约冒烟（92 项，含多班隔离与安全用例）
-        run: timeout 240 npm run test:smoke
-
-      # 白名单单独一步：它建自己的班、改自己的模式，和冒烟里的角色用例互不干扰，
-      # 混在一个脚本里跑会把"哪一步红"这件事掩盖掉。
+      # 顺序有讲究：白名单必须先跑。冒烟里最后一项是"连续猜错密码会被限流"，
+      # 跑完这个来源就在 15 分钟封禁期里了 —— 反过来的话，白名单那一步的配对
+      # 全部会拿到 429，看起来像白名单坏了。
       - name: 设备白名单（35 项）
         run: timeout 240 npm run test:grants
+
+      - name: 接口契约冒烟（92 项，含多班隔离与安全用例）
+        run: timeout 240 npm run test:smoke
 
       - name: 失败时把 Worker 日志带上来
         if: failure()

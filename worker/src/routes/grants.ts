@@ -165,10 +165,12 @@ export async function listGrants(env: Env, classId: string): Promise<Response> {
     .all<GrantRow>();
 
   const devices = await env.DB.prepare(
-    `SELECT count(*) AS n FROM devices WHERE class_id = ? AND revoked_at IS NULL`,
+    `SELECT count(*) AS n,
+            sum(CASE WHEN fingerprint IS NULL THEN 1 ELSE 0 END) AS legacy
+       FROM devices WHERE class_id = ? AND revoked_at IS NULL`,
   )
     .bind(classId)
-    .first<{ n: number }>();
+    .first<{ n: number; legacy: number | null }>();
 
   return json({
     classId,
@@ -176,6 +178,9 @@ export async function listGrants(env: Env, classId: string): Promise<Response> {
     code: cls.code,
     joinMode: cls.join_mode === 'approval' ? 'approval' : 'open',
     activeDevices: devices?.n ?? 0,
+    // 升级前配对的老设备没有特征码，白名单管不到它们 —— 网页上要能说清这件事，
+    // 否则老师会问"我这里明明有 4 台在用，白名单怎么是空的"。
+    legacyDevices: devices?.legacy ?? 0,
     grants: (rows.results ?? []).map(toView),
   });
 }

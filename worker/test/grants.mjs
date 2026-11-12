@@ -64,6 +64,12 @@ const code = created.data?.code;
 check('建班的设备也记下了指纹', !!created.data?.access);
 
 const openPair = await call('POST', '/pair', { body: { code, secret: PIN, kind: 'desk', deviceFingerprint: hex(2) } });
+if (openPair.status === 429) {
+  // 本地反复跑这个脚本会把 pair 的失败计数堆到阈值（比如刚跑过冒烟里的限流用例）。
+  // 这时报 429 不是白名单的问题，直接说清楚怎么清，别让人去翻代码。
+  console.log('  被限流了：本地先执行 npx wrangler d1 execute classpoints --local --command "DELETE FROM auth_throttle" 再跑');
+  process.exit(1);
+}
 check('open 模式下新指纹直接配对成功', openPair.status === 200, `status=${openPair.status}`);
 const openRefresh = openPair.data?.refresh;
 
