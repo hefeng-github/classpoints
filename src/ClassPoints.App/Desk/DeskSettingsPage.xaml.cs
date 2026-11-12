@@ -139,17 +139,13 @@ public sealed partial class DeskSettingsPage : Page
     {
         var body = Section("这台电脑", "一个程序两种排版，换形态不动数据。");
 
-        // 当前是哪一种，看按钮就够了（选中的那个是实心蓝）。
-        // 原来还单列一行「当前形态 · 触屏用…」，和下面的按钮说的是同一件事。
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        foreach (var mode in new[] { AppMode.Board, AppMode.Desk })
-        {
-            var button = Small(mode.ToDisplay(), () => SwitchMode(mode));
-            if (mode == App.Mode) button.Style = Styled("DeskPrimaryButton");
-            row.Children.Add(button);
-        }
-        body.Children.Add(LabelledHint("界面形态",
-            App.Mode.ToDisplay() + " · " + App.Mode.ToHint(), row));
+        // 当前是哪一种，看选中的那一段就够了。
+        var modes = new[] { AppMode.Board, AppMode.Desk };
+        var modeBar = Selector(
+            modes.Select(m => m.ToDisplay()).ToArray(),
+            Array.IndexOf(modes, App.Mode),
+            i => SwitchMode(modes[i]));
+        body.Children.Add(LabelledHint("界面形态", App.Mode.ToHint(), modeBar));
 
         var footer = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         footer.Children.Add(Small("重新运行首次配置…", async () =>
@@ -183,28 +179,26 @@ public sealed partial class DeskSettingsPage : Page
     {
         var body = Section("外观", "浅色为默认，投影更清楚。切换立即生效。");
 
-        var current = Services.Settings.Theme;
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-
-        (AppTheme Theme, string Label)[ ] choices =
+        (AppTheme Theme, string Label)[] choices =
         [
             (AppTheme.Light, "浅色"),
             (AppTheme.Dark, "深色"),
             (AppTheme.System, "跟随系统"),
         ];
 
-        foreach (var (theme, label) in choices)
-        {
-            var button = Small(label, () =>
+        var bar = Selector(
+            choices.Select(c => c.Label).ToArray(),
+            Array.FindIndex(choices, c => c.Theme == Services.Settings.Theme),
+            i =>
             {
-                App.ApplyTheme(theme);
-                Reload();
-            });
-            if (theme == current) button.Style = Styled("DeskPrimaryButton");
-            row.Children.Add(button);
-        }
+                App.ApplyTheme(choices[i].Theme);
 
-        body.Children.Add(Labelled("配色", row));
+                // 主题一换，整页的 ThemeResource 都变；重画放到下一个消息循环，
+                // 别在 SelectorBar 自己的事件里把它的父节点换掉。
+                DispatcherQueue.TryEnqueue(Reload);
+            });
+
+        body.Children.Add(Labelled("配色", bar));
     }
 
     // ---------------- 计时与音效 ----------------
@@ -2093,4 +2087,29 @@ public sealed partial class DeskSettingsPage : Page
     }
 
     private static Style Styled(string key) => (Style)Application.Current.Resources[key];
+
+    /// <summary>
+    /// 原生 SelectorBar：一排互斥选项。选中态、指示条、键盘左右切换都由系统控件负责，
+    /// 以前这里是「一排 Button + 给选中那个换主按钮样式」—— 那等于自己实现了一遍单选。
+    /// </summary>
+    private static SelectorBar Selector(string[] labels, int selected, Action<int> onPick)
+    {
+        var bar = new SelectorBar { HorizontalAlignment = HorizontalAlignment.Left };
+        var items = new List<SelectorBarItem>();
+
+        for (var i = 0; i < labels.Length; i++)
+        {
+            var item = new SelectorBarItem { Text = labels[i], Tag = i };
+            bar.Items.Add(item);
+            items.Add(item);
+        }
+
+        if (selected >= 0 && selected < items.Count) bar.SelectedItem = items[selected];
+
+        bar.SelectionChanged += (s, _) =>
+        {
+            if (s.SelectedItem?.Tag is int index) onPick(index);
+        };
+        return bar;
+    }
 }

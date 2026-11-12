@@ -64,10 +64,10 @@ public sealed partial class DeskStudentsPage : Page
             .ThenBy(s => s.Name, StringComparer.CurrentCulture)
             .ToList();
 
-        RowList.Children.Clear();
+        RowList.Items.Clear();
         EmptyPanel.Visibility = _all.All(s => s.IsDeleted) ? Visibility.Visible : Visibility.Collapsed;
 
-        foreach (var s in rows) RowList.Children.Add(BuildRow(s));
+        foreach (var s in rows) RowList.Items.Add(BuildRow(s));
     }
 
     private UIElement BuildRow(Student s)

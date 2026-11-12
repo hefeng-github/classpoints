@@ -54,6 +54,20 @@
             <SolidColorBrush x:Key="StrokeStrongBrush" Color="#FFC3CDDA" />
             <SolidColorBrush x:Key="OnAccentBrush" Color="#FFFFFFFF" />
             <SolidColorBrush x:Key="FloatingBgBrush" Color="#FBFFFFFF" />
+            <!-- 原生 AccentButtonStyle 取的就是这几个键：主按钮不再自带模板，
+                 悬停/按下/禁用全部由系统模板处理，只把颜色换成本项目的强调色。 -->
+            <SolidColorBrush x:Key="AccentButtonBackground" Color="#FF0F6FC4" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#FF0C5FA8" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#FF0A528F" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundDisabled" Color="#FFE1E6ED" />
+            <SolidColorBrush x:Key="AccentButtonForeground" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="AccentButtonForegroundPointerOver" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="AccentButtonForegroundPressed" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="AccentButtonForegroundDisabled" Color="#FF9AA5B3" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrush" Color="Transparent" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrushPointerOver" Color="Transparent" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrushPressed" Color="Transparent" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrushDisabled" Color="Transparent" />
             <SolidColorBrush x:Key="AccentTintBrush" Color="#2E0F6FC4" />
         </ResourceDictionary>
 
@@ -93,6 +107,20 @@
             <SolidColorBrush x:Key="StrokeStrongBrush" Color="#FF3A4350" />
             <SolidColorBrush x:Key="OnAccentBrush" Color="#FF0B1016" />
             <SolidColorBrush x:Key="FloatingBgBrush" Color="#F21C222B" />
+            <!-- 原生 AccentButtonStyle 取的就是这几个键：主按钮不再自带模板，
+                 悬停/按下/禁用全部由系统模板处理，只把颜色换成本项目的强调色。 -->
+            <SolidColorBrush x:Key="AccentButtonBackground" Color="#FF4CC2FF" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#FF6FD0FF" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#FF35AEEB" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundDisabled" Color="#FF2A3341" />
+            <SolidColorBrush x:Key="AccentButtonForeground" Color="#FF0B1016" />
+            <SolidColorBrush x:Key="AccentButtonForegroundPointerOver" Color="#FF0B1016" />
+            <SolidColorBrush x:Key="AccentButtonForegroundPressed" Color="#FF0B1016" />
+            <SolidColorBrush x:Key="AccentButtonForegroundDisabled" Color="#FF7A8595" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrush" Color="Transparent" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrushPointerOver" Color="Transparent" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrushPressed" Color="Transparent" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrushDisabled" Color="Transparent" />
             <SolidColorBrush x:Key="AccentTintBrush" Color="#334CC2FF" />
         </ResourceDictionary>
 
@@ -132,6 +160,18 @@
             <SolidColorBrush x:Key="StrokeStrongBrush" Color="#FFC3CDDA" />
             <SolidColorBrush x:Key="OnAccentBrush" Color="#FFFFFFFF" />
             <SolidColorBrush x:Key="FloatingBgBrush" Color="#FBFFFFFF" />
+            <SolidColorBrush x:Key="AccentButtonBackground" Color="#FF0F6FC4" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#FF0C5FA8" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#FF0A528F" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundDisabled" Color="#FFE1E6ED" />
+            <SolidColorBrush x:Key="AccentButtonForeground" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="AccentButtonForegroundPointerOver" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="AccentButtonForegroundPressed" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="AccentButtonForegroundDisabled" Color="#FF9AA5B3" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrush" Color="Transparent" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrushPointerOver" Color="Transparent" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrushPressed" Color="Transparent" />
+            <SolidColorBrush x:Key="AccentButtonBorderBrushDisabled" Color="Transparent" />
             <SolidColorBrush x:Key="AccentTintBrush" Color="#2E0F6FC4" />
         </ResourceDictionary>
 

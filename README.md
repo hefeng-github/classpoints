@@ -610,9 +610,18 @@ CP_SNAP="…/shots/wizard" ClassPoints.exe          # 不带 CP_MODE 就截向�
 默认 `Stretch`，而 `Stretch` 遇上显式 `Width` 会被摆到容器正中 —— 手写一个 `new TextBox { Width = 460 }`
 塞进竖向 `StackPanel`，它就会飘到屏幕中间，和上面的标签错开。
 
-**主按钮自带模板。** `DeskPrimaryButton` / `TouchPrimaryButton` 不用系统模板：WinUI 在 PointerOver
-和 Pressed 两个状态下会把前景换成近黑色，蓝底白字一悬停就变蓝底黑字。模板里前景走 `TemplateBinding`，
-状态只改不透明度，白字一直是白的。
+**主按钮用系统的 `AccentButtonStyle`。** 颜色不写在样式里，而是覆盖 Palette.xaml 的
+`AccentButtonBackground* / AccentButtonForeground*` 那组主题键 —— 悬停、按下、禁用、焦点矩形
+全部由系统模板处理，和系统应用的按钮完全一致。**不要**直接给 Button 设 `Background`：
+系统模板的 PointerOver 状态会把前景换成 `ButtonForegroundPointerOver`（近黑），
+蓝底白字一悬停就变黑字 —— 之前的整套手写 ControlTemplate 就是为了绕开这个坑，
+换成 `AccentButtonStyle` 之后那 60 行模板已经删掉。
+
+**能用系统控件的都不要自己画。** 左侧栏是 `NavigationView`（`Left` / `LeftCompact`）；
+「本周 / 本周期」「浅色 / 深色」这种互斥选项是 `SelectorBar`；提示条是 `InfoBar`
+（`IsClosable=False`，自己定时关闭）；名单是 `ListView`（行内容仍自己拼，容器不再手写
+`ScrollViewer + StackPanel`）。判断标准：如果系统控件已经实现了「选中态 / 悬停 / 键盘 /
+无障碍」中的任何一项，就不要再手写一遍。
 
 **确认用居中弹窗，不用底部横条。** 记分台的入账确认是屏幕正中的一张卡（带遮罩、点遮罩即取消），
 撤销提示仍留在底部 —— 前者要人做决定，后者只是告知。

@@ -63,9 +63,20 @@
 
         <Border Grid.Row="3" Style="{StaticResource DeskCardBorder}" CornerRadius="0,0,8,8" Padding="0">
             <Grid>
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel x:Name="RowList" />
-                </ScrollViewer>
+                <!-- 原生 ListView：滚动、键盘上下选择、虚拟化都由系统负责。
+                     行内容仍是自己拼的 Grid，但容器不再是一个 ScrollViewer + StackPanel。 -->
+                <ListView x:Name="RowList" SelectionMode="None"
+                          Background="Transparent" BorderThickness="0" Padding="0"
+                          IsItemClickEnabled="False">
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="ListViewItem">
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            <Setter Property="Padding" Value="0" />
+                            <Setter Property="Margin" Value="0" />
+                            <Setter Property="MinHeight" Value="0" />
+                        </Style>
+                    </ListView.ItemContainerStyle>
+                </ListView>
 
                 <StackPanel x:Name="EmptyPanel" VerticalAlignment="Center" HorizontalAlignment="Center"
                             Spacing="10" Visibility="Collapsed">

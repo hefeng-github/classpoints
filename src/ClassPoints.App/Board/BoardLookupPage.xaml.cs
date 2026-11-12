@@ -174,8 +174,7 @@ public sealed partial class BoardLookupPage : Page
             ? "目前是班里积分最高的，继续保持"
             : gap > 0 ? $"距前一名 {gap} 分" : "和前一名的分一样高";
 
-        WeekToggle.IsChecked = _weekView;
-        PeriodToggle.IsChecked = !_weekView;
+        RangeBar.SelectedItem = _weekView ? WeekItem : PeriodItem;
 
         BuildDistribution(student, period.Id);
         BuildRecent(student);
@@ -329,13 +328,9 @@ public sealed partial class BoardLookupPage : Page
         }
     }
 
-    private void OnRangeToggle(object sender, RoutedEventArgs e)
+    private void OnRangeChanged(SelectorBar sender, SelectorBarSelectionChangedEventArgs args)
     {
-        if (sender is not ToggleButton b || b.Tag is not string tag) return;
-
-        _weekView = tag == "week";
-        WeekToggle.IsChecked = _weekView;
-        PeriodToggle.IsChecked = !_weekView;
+        _weekView = ReferenceEquals(sender.SelectedItem, WeekItem);
 
         if (_person is not null) ShowPersonal(_person);
         ResetTimeout();

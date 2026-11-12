@@ -68,12 +68,11 @@
                 <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="8">
                     <TextBlock x:Name="RankLine" Style="{StaticResource BodyText}" />
                     <TextBlock x:Name="GapLine" Style="{StaticResource SecondaryText}" />
-                    <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,6,0,0">
-                        <ToggleButton x:Name="WeekToggle" Content="本周" Style="{StaticResource BoardTabButton}"
-                                      Click="OnRangeToggle" Tag="week" />
-                        <ToggleButton x:Name="PeriodToggle" Content="本周期" Style="{StaticResource BoardTabButton}"
-                                      Click="OnRangeToggle" Tag="period" IsChecked="True" />
-                    </StackPanel>
+                    <!-- 原生 SelectorBar：选中态、指示条、键盘左右键都由系统管 -->
+                    <SelectorBar x:Name="RangeBar" Margin="0,6,0,0" SelectionChanged="OnRangeChanged">
+                        <SelectorBarItem x:Name="WeekItem" Text="本周" Tag="week" />
+                        <SelectorBarItem x:Name="PeriodItem" Text="本周期" Tag="period" IsSelected="True" />
+                    </SelectorBar>
                 </StackPanel>
             </Grid>
 
