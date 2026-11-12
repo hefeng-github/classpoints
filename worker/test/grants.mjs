@@ -1,7 +1,7 @@
 /**
  * 设备白名单的回归。
  *
- * 跑之前先起服务：npx wrangler dev --port 8790 --local
+ * 跑之前先起服务：npx wrangler dev --port 8787 --local
  * 然后：node test/grants.mjs
  *
  * 覆盖的是这条链路上的每一个判定点，而不是"能跑通"：
@@ -11,7 +11,7 @@
  */
 import { randomUUID, randomBytes, pbkdf2Sync } from 'node:crypto';
 
-const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:8790/api/v1';
+const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:8787/api/v1';
 
 /** 客户端 Security.cs 里的格式：pbkdf2$轮数$base64盐$base64密钥 */
 const pinHash = (pin, iterations = 100000) => {
