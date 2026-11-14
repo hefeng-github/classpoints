@@ -93,6 +93,26 @@ public sealed class AppServices
 
         var services = new AppServices(db);
         services.Session = new BoardSession(services.Members);
+        // 启动时先把只读态摆好：sync.json 里记着"这台还在等通过"，
+        // 界面第一帧就得是只读，不能先放人进去写两条再切回来。
+        services.Session.ReadOnly = services.Sync.IsReadOnly;
+
+        // 验收脚本用：强制进只读态，好截"待审核"那一版界面。
+        // 和 CP_MODE / CP_SNAP 一样只影响这一次运行、不写库，也不参与正常业务。
+        if (Environment.GetEnvironmentVariable("CP_FORCE_READONLY") == "1")
+            services.Session.ReadOnly = true;
+
+        // 只读是服务端说了算的，变化有两个来源：配对/续期/拉取里发现状态变了。
+        // 统一在这里落到会话上，顺带刷新外壳 —— 页面不必知道同步的内部细节。
+        services.Sync.ReadOnlyChanged += () =>
+        {
+            var readOnly = services.Sync.IsReadOnly;
+            services.Session.ReadOnly = readOnly;
+            App.Host?.RefreshChrome();
+            if (!readOnly)
+                App.Host?.Toast("班主任已通过这台设备，记分和改名单恢复了", 8);
+        };
+
         Instance = services;
 
         services.Log($"启动 db={db.DbPath} schema={Sql.SchemaVersion} mode={services.Settings.AppMode?.ToDb() ?? "(未选)"}");
@@ -231,19 +251,6 @@ public sealed class AppServices
             DeskOperator.DisplayName,
             DateTime.Now,
             warnings);
-    }
-
-    public PrintContext BuildPrintContext()
-    {
-        var period = CurrentPeriod;
-        return new PrintContext(
-            ClassName,
-            period.Name,
-            period.RangeText,
-            Exams.ActiveScheme().FormulaText,
-            DeskOperator.DisplayName,
-            DateTime.Now,
-            Crypto.RandomHex(3).ToUpperInvariant());
     }
 
     // ---------------- 日志 ----------------

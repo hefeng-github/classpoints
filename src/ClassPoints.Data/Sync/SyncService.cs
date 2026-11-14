@@ -16,9 +16,14 @@ public sealed record SyncReport(
     /// <summary>建班时把班级码回传给向导显示，其余场景为 null。</summary>
     public string? CreatedCode { get; init; }
 
+    /// <summary>本轮之后是不是只读（待审设备）。true = 能看不能写。</summary>
+    public bool ReadOnly { get; init; }
+
+    /// <summary>配对时服务端给的「待审」话术，里面带着特征码，界面直接显示。</summary>
+    public string? PendingMessage { get; init; }
+
     public static SyncReport Skipped(string reason) => new(false, reason, 0, 0, 0, 0, DateTime.Now);
 }
-
 /// <summary>
 /// 同步编排：先推、再拉。
 ///
@@ -39,6 +44,29 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
     public const string KeyLastPullAt = "last_pull_at";
 
     public bool IsConfigured => _store.Load() is not null;
+
+    private bool? _readOnly;
+
+    /// <summary>云端判定这台机器只能看时触发。界面据此切只读、通过后自动恢复。</summary>
+    public event Action? ReadOnlyChanged;
+
+    /// <summary>
+    /// 现在是不是「待审只读」。
+    ///
+    /// 值来自服务端：配对时 readOnly=true，或者续期时白名单仍是 pending。
+    /// 首次读取才去解密 sync.json，之后缓存在内存里 —— 界面每轮状态条都会问它，
+    /// 不该每次都走一遍 DPAPI。
+    /// </summary>
+    public bool IsReadOnly
+    {
+        get => _readOnly ??= _store.Load()?.ReadOnly ?? false;
+        private set
+        {
+            if (_readOnly == value) return;
+            _readOnly = value;
+            ReadOnlyChanged?.Invoke();
+        }
+    }
 
     public long LastSeq => ReadState(KeyLastSeq) ?? 0;
 
@@ -87,9 +115,16 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
     {
         var normalized = SyncClient.NormalizeBaseUrl(baseUrl);
         using var client = new SyncClient(normalized);
-        var (classId, access, refresh) = await client.PairAsync(code, secret, kind, ct);
-        _store.Save(new SyncCredentials(normalized, classId, access, refresh, code));
-        return new SyncReport(true, null, 0, outbox.Count(), 0, 0, DateTime.Now);
+        var (classId, access, refresh, readOnly, message) = await client.PairAsync(code, secret, kind, ct);
+        _store.Save(new SyncCredentials(normalized, classId, access, refresh, code, readOnly));
+        IsReadOnly = readOnly;
+        // 待审不是失败：配对确实成功了，只是暂时只能看。Ok 仍然是 true，
+        // 界面据 ReadOnly 决定说"连上了，等通过"还是"配对成功，开始同步"。
+        return new SyncReport(true, null, 0, outbox.Count(), 0, 0, DateTime.Now)
+        {
+            ReadOnly = readOnly,
+            PendingMessage = readOnly ? message : null,
+        };
     }
 
     public void SignOut() => _store.Clear();
@@ -114,30 +149,41 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
             string? pushError = null;
 
             // ---- 推 ----
-            var due = outbox.Due(200);
-            if (due.Count > 0)
+            if (credentials.ReadOnly)
             {
-                var outcome = await _client.PushAsync(due, ct);
-
-                if (outcome.AuthExpired)
+                // 待审设备拿的是只读票：一条都不推。
+                // 推上去也是 403，而且会把 outbox 里的记录一条条标成"失败"退避 ——
+                // 队列越积越乱，等真通过时反而要先消化一堆退避时间。
+                // 所以原地不动，等班主任点通过、下一轮换到全权令牌再一次性补推。
+                pushError = null;
+            }
+            else
+            {
+                var due = outbox.Due(200);
+                if (due.Count > 0)
                 {
-                    var refreshed = await TryRefreshAsync(credentials, ct);
-                    if (refreshed is null)
-                        return new SyncReport(false, "同步凭据失效，请重新配对", 0, outbox.Count(), 0, LastSeq, DateTime.Now);
+                    var outcome = await _client.PushAsync(due, ct);
 
-                    _client.SetAccess(refreshed.Access);
-                    credentials = refreshed;
-                    outcome = await _client.PushAsync(due, ct);
-                }
+                    if (outcome.AuthExpired)
+                    {
+                        var refreshed = await TryRefreshAsync(credentials, ct);
+                        if (refreshed is null)
+                            return new SyncReport(false, "同步凭据失效，请重新配对", 0, outbox.Count(), 0, LastSeq, DateTime.Now);
 
-                foreach (var id in outcome.Done) outbox.Remove(id);
-                foreach (var id in outcome.Failed)
-                {
-                    var item = due.FirstOrDefault(i => i.Id == id);
-                    if (item is not null) outbox.Backoff(item);
+                        _client.SetAccess(refreshed.Access);
+                        credentials = refreshed;
+                        outcome = await _client.PushAsync(due, ct);
+                    }
+
+                    foreach (var id in outcome.Done) outbox.Remove(id);
+                    foreach (var id in outcome.Failed)
+                    {
+                        var item = due.FirstOrDefault(i => i.Id == id);
+                        if (item is not null) outbox.Backoff(item);
+                    }
+                    pushed = outcome.Done.Count;
+                    pushError = outcome.Failed.Count > 0 ? outcome.LastError : null;
                 }
-                pushed = outcome.Done.Count;
-                pushError = outcome.Failed.Count > 0 ? outcome.LastError : null;
             }
 
             // ---- 拉 ----
@@ -145,18 +191,40 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
             var next = LastSeq;
             for (var page = 0; page < maxPages; page++)
             {
-                var batch = await _client.PullAsync(next, 200, ct);
+                JsonObject batch;
+                try
+                {
+                    batch = await _client.PullAsync(next, 200, ct);
+                }
+                catch (SyncException ex) when (ex.IsAuthFailure)
+                {
+                    // 只读票最长 30 分钟，而只读期间没有推送，也就没人触发续期。
+                    // 这里不补一次的话，界面会永远停在"令牌过期，下一轮续期"，
+                    // 而下一轮同样没有推送 —— 等到班主任点通过也恢复不了。
+                    var refreshed = await TryRefreshAsync(credentials, ct);
+                    if (refreshed is null)
+                        return new SyncReport(false, "同步凭据失效，请重新配对", pushed, outbox.Count(), pulled, next, DateTime.Now);
+
+                    credentials = refreshed;
+                    _client.SetAccess(refreshed.Access);
+                    batch = await _client.PullAsync(next, 200, ct);
+                }
+
                 var hasMore = false;
                 var applied = Apply(batch, out hasMore);
                 pulled += applied;
                 next = batch["next"]?.GetValue<long>() ?? next;
                 WriteState(KeyLastSeq, next);
                 WriteState(KeyLastPullAt, Clock.NowMs());
+                AdoptReadOnly(batch, credentials);
                 if (!hasMore) break;
             }
 
             // 拉取成功但推送有失败时，也要让界面看到原因，而不是假装一切正常
-            return new SyncReport(pushError is null, pushError, pushed, outbox.Count(), pulled, next, DateTime.Now);
+            return new SyncReport(pushError is null, pushError, pushed, outbox.Count(), pulled, next, DateTime.Now)
+            {
+                ReadOnly = IsReadOnly,
+            };
         }
         catch (SyncException ex) when (ex.IsAuthFailure)
         {
@@ -179,15 +247,33 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
     {
         try
         {
-            var (access, refresh) = await _client!.RefreshAsync(credentials.Refresh, ct);
-            var next = credentials with { Access = access, Refresh = refresh };
+            var (access, refresh, readOnly) = await _client!.RefreshAsync(credentials.Refresh, ct);
+            var next = credentials with { Access = access, Refresh = refresh, ReadOnly = readOnly };
             _store.Save(next);
+            // 续期是"现在"的判定：班主任刚点通过，这一下就该把只读摘掉
+            IsReadOnly = readOnly;
             return next;
         }
         catch (Exception)
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// 按 /sync 的返回对齐本机的只读标记。
+    ///
+    /// 为什么信这一条而不是等续期：续期只在推送 401 时发生，而只读期间根本不推送，
+    /// 所以只读设备永远等不到续期 —— 班主任点了通过，客户端还是只读。
+    /// 拉取每 45 秒一次，是唯一稳定的心跳。
+    /// </summary>
+    private void AdoptReadOnly(JsonObject batch, SyncCredentials credentials)
+    {
+        var readOnly = batch["readOnly"]?.GetValue<bool>() ?? credentials.ReadOnly;
+        if (readOnly == credentials.ReadOnly) return;
+
+        _store.Save(credentials with { ReadOnly = readOnly });
+        IsReadOnly = readOnly;
     }
 
     // ---------------- 落库 ----------------

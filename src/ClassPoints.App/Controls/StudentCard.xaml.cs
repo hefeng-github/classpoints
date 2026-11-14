@@ -35,7 +35,7 @@ public sealed partial class StudentCard : UserControl
 
     public bool IsSelected { get; private set; }
 
-    /// <summary>查分页用：不显示分数，只显示姓名与座位（否则它就成了第二块公开榜单）。</summary>
+    /// <summary>查分页用：不显示分数（否则它就成了第二块公开榜单），只显示姓名。</summary>
     public bool ShowSeatOnly { get; set; }
 
     public void Bind(Student student, int points, int todayDelta)
@@ -43,16 +43,34 @@ public sealed partial class StudentCard : UserControl
         Student = student;
         _shownPoints = points;
         NameText.Text = student.Name;
-        ScoreText.Text = ShowSeatOnly ? SeatShort(student) : points.ToString();
+        // 座位已隐藏（v1.3）：查分卡片中间不再显示"N 号"，只留姓名
+        ScoreText.Text = ShowSeatOnly ? "" : points.ToString();
         TodayText.Text = ShowSeatOnly
             ? ""
             : todayDelta == 0 ? "" : $"今日 {(todayDelta > 0 ? "+" : "")}{todayDelta}";
         TodayText.Foreground = todayDelta >= 0 ? Positive : Negative;
         ApplyTypography();
+
+        // 查分卡片中间不再有"N 号"，那张大空卡片看着像加载失败 ——
+        // 把姓名放到卡片正中，一行字居中就是一张正常的"点我"卡片。
+        if (ShowSeatOnly)
+        {
+            ScoreText.Visibility = Visibility.Collapsed;
+            NameText.FontSize = 26;
+            NameText.HorizontalAlignment = HorizontalAlignment.Center;
+            NameText.TextAlignment = TextAlignment.Center;
+            NameText.VerticalAlignment = VerticalAlignment.Center;
+            if (Root.Child is Grid grid)
+            {
+                // 三行合成一行：姓名独占整个卡片高度，才会真的居中
+                grid.RowDefinitions[0].Height = new GridLength(1, GridUnitType.Star);
+                grid.RowDefinitions[1].Height = new GridLength(0);
+                grid.RowDefinitions[2].Height = new GridLength(0);
+            }
+        }
+
         UpdateStroke();
     }
-
-    private static string SeatShort(Student s) => s.SeatNo is int n ? $"{n} 号" : "";
 
     /// <summary>只更新「今日变化」那一行，不动分数（分数由 RollTo 负责动画）。</summary>
     public void UpdateToday(int todayDelta)

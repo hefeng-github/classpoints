@@ -31,7 +31,6 @@
                 <Button Content="粘贴一列姓名" Style="{StaticResource DeskButton}" Click="OnPasteNames" />
                 <Button Content="从 Excel 导入" Style="{StaticResource DeskButton}" Click="OnImportExcel" />
                 <Button Content="新增学生" Style="{StaticResource DeskPrimaryButton}" Click="OnAddStudent" />
-                <Button Content="座位布局" Style="{StaticResource DeskButton}" Click="OnSeatLayout" />
                 <Button Content="回收站" Style="{StaticResource DeskButton}" Click="OnRecycle" />
             </StackPanel>
         </Grid>
@@ -41,8 +40,7 @@
             <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="90" />
-                    <ColumnDefinition Width="180" />
-                    <ColumnDefinition Width="110" />
+                    <ColumnDefinition Width="240" />
                     <ColumnDefinition Width="100" />
                     <ColumnDefinition Width="100" />
                     <ColumnDefinition Width="90" />
@@ -51,13 +49,12 @@
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="学号" Style="{StaticResource DeskColumnHeader}" />
                 <TextBlock Grid.Column="1" Text="姓名" Style="{StaticResource DeskColumnHeader}" />
-                <TextBlock Grid.Column="2" Text="座位" Style="{StaticResource DeskColumnHeader}" />
-                <TextBlock Grid.Column="3" Text="本周期" Style="{StaticResource DeskColumnHeader}"
+                <TextBlock Grid.Column="2" Text="本周期" Style="{StaticResource DeskColumnHeader}"
                            HorizontalAlignment="Right" />
-                <TextBlock Grid.Column="4" Text="累计" Style="{StaticResource DeskColumnHeader}"
+                <TextBlock Grid.Column="3" Text="累计" Style="{StaticResource DeskColumnHeader}"
                            HorizontalAlignment="Right" />
-                <TextBlock Grid.Column="5" Text="状态" Style="{StaticResource DeskColumnHeader}" />
-                <TextBlock Grid.Column="6" Text="操作" Style="{StaticResource DeskColumnHeader}" />
+                <TextBlock Grid.Column="4" Text="状态" Style="{StaticResource DeskColumnHeader}" />
+                <TextBlock Grid.Column="5" Text="操作" Style="{StaticResource DeskColumnHeader}" />
             </Grid>
         </Border>
 
@@ -81,7 +78,7 @@
                 <StackPanel x:Name="EmptyPanel" VerticalAlignment="Center" HorizontalAlignment="Center"
                             Spacing="10" Visibility="Collapsed">
                     <TextBlock Text="名单还是空的" Style="{StaticResource DeskH2Text}" HorizontalAlignment="Center" />
-                    <TextBlock Text="粘贴一列姓名最快。也可以从 Excel 导入学号和座位。"
+                    <TextBlock Text="粘贴一列姓名最快。也可以从 Excel 导入学号。"
                                Style="{StaticResource DeskSecondaryText}" HorizontalAlignment="Center"
                                TextAlignment="Center" MaxWidth="420" />
                     <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">

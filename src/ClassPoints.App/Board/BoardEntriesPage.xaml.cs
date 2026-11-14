@@ -225,7 +225,7 @@ public sealed partial class BoardEntriesPage : Page
         var session = Services.Session;
         if (!session.CanWrite)
         {
-            Toast("请先刷卡");
+            Toast(session.WriteBlockedText);
             return;
         }
 

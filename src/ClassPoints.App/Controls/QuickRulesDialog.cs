@@ -34,9 +34,21 @@ public sealed class QuickRulesDialog
         _dialog = new ContentDialog
         {
             XamlRoot = _root,
-            Title = "快捷加分项",
+            Title = "管理快捷项",
             CloseButtonText = "关闭",
             DefaultButton = ContentDialogButton.Close,
+            // Content 只在这里设一次，之后列表 ⇄ 编辑只换 _body 的子元素。
+            // 千万不能在按钮的 Click 里换 Content：正在处理点击的那个按钮就在被换掉的树里，
+            // XAML 会抛 ArgumentException「Value does not fall within the expected range」，
+            // 表现是"新建加分项不填东西点返回，整个程序没了"。
+            Content = new ScrollViewer
+            {
+                Content = _body,
+                MaxHeight = 520,
+                // 顶对齐：不然 ScrollViewer 会撑满 ContentDialog 给的高度，
+                // 三条记录下面拖出一大片空白，看着像加载失败
+                VerticalAlignment = VerticalAlignment.Top,
+            },
         };
     }
 
@@ -78,14 +90,8 @@ public sealed class QuickRulesDialog
         footer.Children.Add(Small("新建扣分项", () => ShowEditor(null, -10)));
         _body.Children.Add(footer);
 
-        _dialog.Content = new ScrollViewer
-        {
-            Content = _body,
-            MaxHeight = 520,
-            // 顶对齐：不然 ScrollViewer 会撑满 ContentDialog 给的高度，
-            // 三条记录下面拖出一大片空白，看着像加载失败
-            VerticalAlignment = VerticalAlignment.Top,
-        };
+        // 从编辑态返回时要复位，否则标题还挂着上一次的「编辑「xxx」」
+        _dialog.Title = "管理快捷项";
     }
 
     private UIElement BuildRow(Rule rule)

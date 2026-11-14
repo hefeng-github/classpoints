@@ -60,7 +60,8 @@ public sealed partial class BoardScorePage : Page
     private Point _downCanvas;
     private Point _lastPointer;
     private bool _pointerDown;
-    private bool _moved;
+    /// <summary>上一下压到的是一整只手掌（接触面积过大），紧接着那次 Tapped 要作废。</summary>
+    private bool _palmRejected;
     private bool _lassoing;
     private int _columns = 8;
     private double _cellW = 220;
@@ -111,6 +112,11 @@ public sealed partial class BoardScorePage : Page
         CardGrid.PointerCanceled += OnPointerReleased;
         CardGrid.PointerCaptureLost += OnPointerCaptureLost;
         CardGrid.ContextRequested += OnContextRequested;
+        // 「点一下选中」走 Tapped，不走 PointerReleased：
+        // 手指按在 ScrollViewer 里时，指针常常被滚动手势抢走，PointerReleased 收不到，
+        // 于是触屏上单击永远选不中（鼠标正常）。Tapped 是框架判完"这是一次点击"之后
+        // 才给的，鼠标和手指都走它。
+        CardGrid.Tapped += OnCardTapped;
         Scroll.SizeChanged += (_, _) =>
         {
             _resizeDebounce.Stop();
@@ -207,6 +213,9 @@ public sealed partial class BoardScorePage : Page
             var card = new StudentCard { Index = i };
             card.Bind(student, _totals.GetValueOrDefault(student.Id), _today.GetValueOrDefault(student.Id));
             card.DoubleTapped += OnCardDoubleTapped;
+            // 卡片是自绘的（没有可读的控件语义），名字和分数得自己报给辅助功能
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(card,
+                $"{student.Name}，累计 {_totals.GetValueOrDefault(student.Id)} 分");
             CardGrid.Children.Add(card);
             _cards.Add(card);
         }
@@ -351,6 +360,11 @@ public sealed partial class BoardScorePage : Page
             ToolTipService.SetToolTip(button,
                 rule.HasCap ? $"{rule.Label} · {rule.CapText}" : $"{rule.Label} · 不封顶");
 
+            // 按钮的内容是自己拼的 Grid，读屏软件只能读到一个"无名按钮" ——
+            // 名字必须显式给，否则辅助功能树里这一排全是 button。
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(
+                button, $"{rule.Label} {rule.DeltaText}");
+
             var panel = new Grid { ColumnSpacing = 8 };
             panel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -401,7 +415,7 @@ public sealed partial class BoardScorePage : Page
         if (_rules.Count == 0)
             RulePanel.Children.Add(new TextBlock
             {
-                Text = "还没有加减分项。点「快捷项」建一个，或到设置里新建。",
+                Text = "还没有加减分项。点「管理快捷项」建一个，或到设置里新建。",
                 Foreground = TextSecondary,
                 FontSize = 16,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -413,7 +427,7 @@ public sealed partial class BoardScorePage : Page
 
     /// <summary>
     /// 「其他」：这一次临时起意的加分。名称和分值都手输，
-    /// 不落库、不进按钮 —— 下节课还在的项目请走「快捷项」。
+    /// 不落库、不进按钮 —— 下节课还在的项目请走「管理快捷项」。
     /// </summary>
     private Button BuildOtherButton()
     {
@@ -503,20 +517,30 @@ public sealed partial class BoardScorePage : Page
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
-
-        var label = NameNormalizer.Clean(nameBox.Text);
-        if (label.Length == 0)
+        // 校验放在弹窗里做，不放在"弹窗关了之后"做：
+        // 关掉再提示「名称不能为空」，人已经输了的分值也跟着没了，
+        // 只能从头再输一遍。所以这里循环重开同一个弹窗，输入原样保留。
+        string label;
+        int delta;
+        while (true)
         {
-            Toast("名称不能为空");
-            return;
-        }
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
 
-        var delta = double.IsNaN(deltaBox.Value) ? 10 : (int)deltaBox.Value;
-        if (delta == 0)
-        {
-            Toast("分值不能为 0");
-            return;
+            label = NameNormalizer.Clean(nameBox.Text);
+            if (label.Length == 0)
+            {
+                nameBox.Header = "项目名称（不能为空）";
+                continue;
+            }
+
+            delta = double.IsNaN(deltaBox.Value) ? 10 : (int)deltaBox.Value;
+            if (delta == 0)
+            {
+                deltaBox.Header = "分值（不能为 0）";
+                continue;
+            }
+
+            break;
         }
 
         // Id 留空 = 一次性项：入账时 rule_id 记空、source 记 custom，
@@ -530,7 +554,7 @@ public sealed partial class BoardScorePage : Page
         // 也改不到别人的。班委给自己加两个常用项，正是这个功能要解决的事。
         if (!Session.CanWrite)
         {
-            Toast("请先刷卡（或输入密码）再调快捷项");
+            Toast(Session.ReadOnly ? Session.WriteBlockedText : "请先刷卡（或输入密码）再管理快捷项");
             return;
         }
 
@@ -598,7 +622,7 @@ public sealed partial class BoardScorePage : Page
         if (Session.CanWrite) return true;
 
         // 不弹"请先登录"的模态框：让人知道我点到了，只是没权限
-        Toast("请先刷卡（或输入密码）再记分");
+        Toast(Session.ReadOnly ? Session.WriteBlockedText : "请先刷卡（或输入密码）再记分");
         Sounds.Play(Cue.Error);
         return false;
     }
@@ -905,14 +929,21 @@ public sealed partial class BoardScorePage : Page
         // 掌压过滤：接触面积通常是手指的 5 倍以上
         var contact = point.Properties.ContactRect;
         if (e.Pointer.PointerDeviceType == PointerDeviceType.Touch && contact.Width * contact.Height > 2400)
+        {
+            // 手掌压上来也会产生 Tapped，标记一下让那一次点击作废
+            _palmRejected = true;
             return;
+        }
 
         _downArgs = e;
         _downPoint = point.Position;
         _downCanvas = canvasPoint.Position;
         _lastPointer = _downCanvas;
         _pointerDown = true;
-        _moved = false;
+
+        // 每次按下都清掉上一次长按/框选留下的"吞掉下一次点击"标记：
+        // 长按后在别处松手不会产生 Tapped，标记会一直挂着。
+        _suppressClick = false;
 
         if (e.Pointer.PointerDeviceType == PointerDeviceType.Mouse)
         {
@@ -952,7 +983,7 @@ public sealed partial class BoardScorePage : Page
 
             // 手指动了就说明用户想滚动，放弃这次长按（阈值 12 DIP，介于抖动和真实拖动之间）
             _holdTimer.Stop();
-            _moved = true;
+            _pointerDown = false;
             return;
         }
 
@@ -994,13 +1025,36 @@ public sealed partial class BoardScorePage : Page
 
         if (!_lassoing)
         {
-            // 普通短按：选中/取消单张。滚动过的手势（_moved）不算点击。
-            if (_pointerDown && !_moved && HitIndex(_downPoint) is int idx) ToggleIndex(idx);
+            // 单击选中交给 OnCardTapped：这里只管收尾，不再判一次，
+            // 否则同一只手会"选上再取消"，表现成点了没反应。
             _pointerDown = false;
             return;
         }
 
         EndLasso(e, commit: true);
+    }
+
+    /// <summary>
+    /// 单击卡片 = 选中 / 取消。鼠标、手指、触笔都走这里。
+    /// 框选拖拽（_lassoing）和长按后的那次抬手不算点击。
+    /// </summary>
+    private void OnCardTapped(object sender, TappedRoutedEventArgs e)
+    {
+        if (_palmRejected)
+        {
+            _palmRejected = false;
+            return;
+        }
+        if (_lassoing) return;
+        if (_suppressClick)
+        {
+            _suppressClick = false;
+            return;
+        }
+
+        if (HitIndex(e.GetPosition(CardGrid)) is not int idx) return;
+        ToggleIndex(idx);
+        e.Handled = true;
     }
 
     private void OnPointerCaptureLost(object sender, PointerRoutedEventArgs e)
@@ -1158,6 +1212,16 @@ public sealed partial class BoardScorePage : Page
         RefreshVisual();
     }
 
+    private void OnSelectClassClick(object sender, RoutedEventArgs e)
+    {
+        // 全班：不管滚到哪儿。一班 45 人分两屏时，全选本屏只框得住 40 个。
+        for (var i = 0; i < _cards.Count; i++) _selected.Add(i);
+
+        Session.Interaction = InteractionState.Scoring;
+        Session.Touch();
+        RefreshVisual();
+    }
+
     private void OnClearClick(object sender, RoutedEventArgs e)
     {
         _selected.Clear();
@@ -1185,7 +1249,7 @@ public sealed partial class BoardScorePage : Page
 
         var student = card.Student;
         ProfileName.Text = student.Name;
-        ProfileSub.Text = $"{student.SeatText} · 本周期 {_totals.GetValueOrDefault(student.Id)} 分 · 累计 {Services.Entries.CumulativeTotals().GetValueOrDefault(student.Id)} 分";
+        ProfileSub.Text = $"本周期 {_totals.GetValueOrDefault(student.Id)} 分 · 累计 {Services.Entries.CumulativeTotals().GetValueOrDefault(student.Id)} 分";
 
         ProfileList.Children.Clear();
         foreach (var entry in Services.Entries.EntriesForStudent(student.Id, 8))

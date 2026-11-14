@@ -168,8 +168,9 @@ public sealed partial class BoardWallPage : Page
                 rank = i + 1;
                 lastPoints = points;
             }
-            RankPanel.Children.Add(BuildRow(rank, student.Name, points.ToString(), points >= 0 ? Primary : Negative,
-                student.SeatNo is int n ? $"{n} 号" : ""));
+            // 座位已隐藏（v1.3）：榜上只留姓名，不再缀"N 号"
+            RankPanel.Children.Add(BuildRow(rank, student.Name, points.ToString(),
+                points >= 0 ? Primary : Negative, ""));
         }
     }
 

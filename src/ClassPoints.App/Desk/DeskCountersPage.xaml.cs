@@ -17,8 +17,7 @@ namespace ClassPoints.App.Desk;
 /// </summary>
 public sealed partial class DeskCountersPage : Page
 {
-    private const double NameWidth = 160;
-    private const double SeatWidth = 56;
+    private const double NameWidth = 200;
     private const double CounterWidth = 132;
     private const double TotalWidth = 84;
 
@@ -53,7 +52,7 @@ public sealed partial class DeskCountersPage : Page
             if (filter.Length > 0)
                 students = students
                     .Where(s => s.Name.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
-                                (s.SeatNo?.ToString() ?? "") == filter)
+                                (s.StudentNo ?? "").Contains(filter, StringComparison.OrdinalIgnoreCase))
                     .ToList();
 
             // 事件流水还没接同步（worker 侧只放行固定几张表）。这句必须写出来：
@@ -86,12 +85,10 @@ public sealed partial class DeskCountersPage : Page
         HeaderHost.ColumnDefinitions.Clear();
 
         AddColumn(NameWidth, GridUnitType.Pixel);
-        AddColumn(SeatWidth, GridUnitType.Pixel);
         foreach (var _ in _counters) AddColumn(CounterWidth, GridUnitType.Pixel);
         AddColumn(TotalWidth, GridUnitType.Pixel);
 
         HeaderHost.Children.Add(Header("姓名", 0, HorizontalAlignment.Left));
-        HeaderHost.Children.Add(Header("座位", 1, HorizontalAlignment.Left));
 
         for (var i = 0; i < _counters.Count; i++)
         {
@@ -118,11 +115,11 @@ public sealed partial class DeskCountersPage : Page
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 MaxWidth = CounterWidth - 26,
             });
-            Grid.SetColumn(cell, 2 + i);
+            Grid.SetColumn(cell, 1 + i);
             HeaderHost.Children.Add(cell);
         }
 
-        var totalHeader = Header("合计", 2 + _counters.Count, HorizontalAlignment.Right);
+        var totalHeader = Header("合计", 1 + _counters.Count, HorizontalAlignment.Right);
         HeaderHost.Children.Add(totalHeader);
     }
 
@@ -156,7 +153,7 @@ public sealed partial class DeskCountersPage : Page
             return;
         }
 
-        var columns = 3 + _counters.Count;
+        var columns = 2 + _counters.Count;
 
         foreach (var student in students)
         {
@@ -167,8 +164,7 @@ public sealed partial class DeskCountersPage : Page
                     Width = new GridLength(i switch
                     {
                         0 => NameWidth,
-                        1 => SeatWidth,
-                        _ when i == 2 + _counters.Count => TotalWidth,
+                        _ when i == 1 + _counters.Count => TotalWidth,
                         _ => CounterWidth,
                     }, GridUnitType.Pixel),
                 });
@@ -183,15 +179,6 @@ public sealed partial class DeskCountersPage : Page
             Grid.SetColumn(name, 0);
             row.Children.Add(name);
 
-            var seat = new TextBlock
-            {
-                Text = student.SeatNo?.ToString() ?? "—",
-                Style = (Style)Application.Current.Resources["DeskSecondaryText"],
-                VerticalAlignment = VerticalAlignment.Center,
-            };
-            Grid.SetColumn(seat, 1);
-            row.Children.Add(seat);
-
             var rowTotal = 0;
             for (var i = 0; i < _counters.Count; i++)
             {
@@ -200,7 +187,7 @@ public sealed partial class DeskCountersPage : Page
                 rowTotal += value;
 
                 var cell = BuildCell(student, counter, value);
-                Grid.SetColumn(cell, 2 + i);
+                Grid.SetColumn(cell, 1 + i);
                 row.Children.Add(cell);
             }
 
@@ -213,7 +200,7 @@ public sealed partial class DeskCountersPage : Page
                 VerticalAlignment = VerticalAlignment.Center,
                 Foreground = rowTotal == 0 ? Pal.Secondary : Pal.Primary,
             };
-            Grid.SetColumn(totalText, 2 + _counters.Count);
+            Grid.SetColumn(totalText, 1 + _counters.Count);
             row.Children.Add(totalText);
 
             var host = new Border

@@ -36,12 +36,15 @@ public sealed partial class DeskStudentsPage : Page
             var period = Services.CurrentPeriod;
             _period = Services.Entries.PeriodTotals(period.Id);
             _term = Services.Entries.CumulativeTotals();
-            _all = Services.Students.ListAll();
+
+            // 必须带上已删除的：回收站就是从这个列表里筛 IsDeleted 的。
+            // 以前这里用默认参数（只取未删除），于是「停用」把学生置了 deleted_at 之后
+            // 既不在名单里、也不在回收站里 —— 界面上就是"人没了，也恢复不了"。
+            _all = Services.Students.ListAll(includeDeleted: true);
 
             var active = _all.Count(s => !s.IsDeleted);
             var deleted = _all.Count(s => s.IsDeleted);
-            SubText.Text = $"{active} 人在册" + (deleted > 0 ? $"，{deleted} 人在回收站（30 天内可恢复）" : "")
-                         + $" · 座位 {Services.Settings.SeatRows} 排 × {Services.Settings.SeatCols} 座";
+            SubText.Text = $"{active} 人在册" + (deleted > 0 ? $"，{deleted} 人在回收站（30 天内可恢复）" : "");
 
             Render();
         }
@@ -73,7 +76,9 @@ public sealed partial class DeskStudentsPage : Page
     private UIElement BuildRow(Student s)
     {
         var grid = new Grid { ColumnSpacing = 12, MinHeight = 44, Padding = new Thickness(12, 0, 12, 0) };
-        foreach (var w in new[] { 90d, 180d, 110d, 100d, 100d, 90d, 210d, 0d })
+        // 座位列已隐藏（v1.3）：列宽表与表头 XAML 必须一一对应，
+        // 改这里就要一起改 DeskStudentsPage.xaml 的 ColumnDefinitions。
+        foreach (var w in new[] { 90d, 240d, 100d, 100d, 90d, 210d, 0d })
             grid.ColumnDefinitions.Add(new ColumnDefinition
             {
                 Width = w <= 0 ? new GridLength(1, GridUnitType.Star) : new GridLength(w),
@@ -95,16 +100,9 @@ public sealed partial class DeskStudentsPage : Page
         };
         Add(grid, 1, name);
 
-        Add(grid, 2, new TextBlock
-        {
-            Text = s.SeatText,
-            Style = Styled("DeskSecondaryText"),
-            VerticalAlignment = VerticalAlignment.Center,
-        });
+        Add(grid, 2, PointsText(_period.GetValueOrDefault(s.Id)));
 
-        Add(grid, 3, PointsText(_period.GetValueOrDefault(s.Id)));
-
-        Add(grid, 4, PointsText(_term.GetValueOrDefault(s.Id)));
+        Add(grid, 3, PointsText(_term.GetValueOrDefault(s.Id)));
 
         var state = new TextBlock
         {
@@ -112,7 +110,7 @@ public sealed partial class DeskStudentsPage : Page
             Style = Styled("DeskSecondaryText"),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        Add(grid, 5, state);
+        Add(grid, 4, state);
 
         var actions = new StackPanel
         {
@@ -139,7 +137,7 @@ public sealed partial class DeskStudentsPage : Page
         toggle.Click += (_, _) => ToggleStudent(s);
         actions.Children.Add(toggle);
 
-        Add(grid, 6, actions);
+        Add(grid, 5, actions);
 
         return new Border
         {
@@ -182,59 +180,12 @@ public sealed partial class DeskStudentsPage : Page
         var nameBox = new TextBox { Header = "姓名", Text = s.Name, Width = 320 };
         var noBox = new TextBox { Header = "学号（可空）", Text = s.StudentNo ?? "", Width = 320 };
 
-        // 座位是"可选"的：有的班按学号站队、有的班还没排座，硬要一个数字反而逼人编一个。
-        // 指定时用「排 / 座」两个数——老师脑子里的座位就是这个形状，不是"第 37 号"。
-        var cols = System.Math.Max(1, Services.Settings.SeatCols);
-        var seatNo = s.SeatNo;
-        var seatOn = new CheckBox
-        {
-            Content = "指定座位",
-            IsChecked = seatNo is not null,
-            MinWidth = 0,
-        };
-
-        var rowBox = new NumberBox
-        {
-            Header = "第几排",
-            Value = seatNo is int sn ? (sn - 1) / cols + 1 : 1,
-            Minimum = 1,
-            Maximum = 99,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
-            Width = 140,
-            IsEnabled = seatNo is not null,
-        };
-        var colBox = new NumberBox
-        {
-            Header = "第几座",
-            Value = seatNo is int sc ? (sc - 1) % cols + 1 : 1,
-            Minimum = 1,
-            Maximum = cols,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
-            Width = 140,
-            IsEnabled = seatNo is not null,
-        };
-        seatOn.Checked += (_, _) => { rowBox.IsEnabled = true; colBox.IsEnabled = true; };
-        seatOn.Unchecked += (_, _) => { rowBox.IsEnabled = false; colBox.IsEnabled = false; };
-
-        var seatRow = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 12,
-            HorizontalAlignment = HorizontalAlignment.Left,
-        };
-        seatRow.Children.Add(rowBox);
-        seatRow.Children.Add(colBox);
-
+        // 座位功能已隐藏（v1.3）：界面不再让人指定排/座，
+        // 但库里已有的 seat_no 必须原样保留 —— 它是名单和记分台的排序依据。
+        // 所以这里既不读也不写 SeatNo，编辑姓名/学号不会把座位冲掉。
         var panel = new StackPanel { Spacing = 12, Width = 360 };
         panel.Children.Add(nameBox);
         panel.Children.Add(noBox);
-        panel.Children.Add(seatOn);
-        panel.Children.Add(seatRow);
-        panel.Children.Add(new TextBlock
-        {
-            Text = $"不指定座位的学生排在名单最后。当前每排 {cols} 座，可在「座位布局」里改。",
-            Style = Styled("DeskSecondaryText"),
-        });
 
         var dialog = new ContentDialog
         {
@@ -257,18 +208,6 @@ public sealed partial class DeskStudentsPage : Page
 
         s.Name = name;
         s.StudentNo = string.IsNullOrWhiteSpace(noBox.Text) ? null : noBox.Text.Trim();
-
-        if (seatOn.IsChecked == true)
-        {
-            var row = double.IsNaN(rowBox.Value) ? 1 : System.Math.Max(1, (int)rowBox.Value);
-            var col = double.IsNaN(colBox.Value) ? 1 : System.Math.Clamp((int)colBox.Value, 1, cols);
-            s.SeatNo = (row - 1) * cols + col;
-        }
-        else
-        {
-            s.SeatNo = null;
-        }
-
         s.Active = true;
 
         if (isNew) Services.Students.Insert(s); else Services.Students.Update(s);
@@ -311,18 +250,8 @@ public sealed partial class DeskStudentsPage : Page
             PlaceholderText = "一行一个姓名，例如：\n王小明\n李思远\n张伟",
             FontFamily = (FontFamily)Application.Current.Resources["TextFont"],
         };
-        var startSeat = new NumberBox
-        {
-            Header = "从第几个座位开始（默认接在最后）",
-            Value = (_all.Where(x => !x.IsDeleted).Max(x => x.SeatNo) ?? 0) + 1,
-            Minimum = 1,
-            Maximum = 999,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
-        };
-
         var panel = new StackPanel { Spacing = 12, Width = 420 };
         panel.Children.Add(box);
-        panel.Children.Add(startSeat);
 
         var dialog = new ContentDialog
         {
@@ -343,8 +272,9 @@ public sealed partial class DeskStudentsPage : Page
             return;
         }
 
-        var added = Services.Students.ImportNames(lines,
-            double.IsNaN(startSeat.Value) ? null : (int)startSeat.Value);
+        // 起始座位不再让用户填：座位不显示了，但内部仍接着往下编号，
+        // 保证新加的人排在上一次导入的后面，而不是全落到"未排座"里乱序。
+        var added = Services.Students.ImportNames(lines, null);
         Reload();
         Services.Audit.Add("students.import_paste", null, null, $"{added} 人");
         Shell?.Toast(added == 0 ? "全部重名，没有新增" : $"已导入 {added} 人", 3);
@@ -391,13 +321,6 @@ public sealed partial class DeskStudentsPage : Page
             };
             noCombo.SelectedIndex = options.FindIndex(o => o.Header.Contains("学号") || o.Header.Contains("编号"));
 
-            var seatCombo = new ComboBox
-            {
-                Header = "座位列（可选）", ItemsSource = options, Width = 320,
-                DisplayMemberPath = nameof(ColumnOption.Display),
-            };
-            seatCombo.SelectedIndex = options.FindIndex(o => o.Header.Contains("座"));
-
             var preview = new TextBlock { Style = Styled("DeskSecondaryText"), TextWrapping = TextWrapping.Wrap };
             void UpdatePreview()
             {
@@ -415,14 +338,13 @@ public sealed partial class DeskStudentsPage : Page
             var hint = new TextBlock
             {
                 Style = Styled("DeskSecondaryText"),
-                Text = "只按姓名匹配：重名跳过，没有的新增。学号、座位按列自动识别。",
+                Text = "只按姓名匹配：重名跳过，没有的新增。学号按列自动识别。",
             };
 
             var panel = new StackPanel { Spacing = 12, Width = 360 };
             panel.Children.Add(new TextBlock { Text = Path.GetFileName(picked), Style = Styled("DeskBodyText") });
             panel.Children.Add(nameCombo);
             panel.Children.Add(noCombo);
-            panel.Children.Add(seatCombo);
             panel.Children.Add(preview);
             panel.Children.Add(hint);
 
@@ -452,19 +374,14 @@ public sealed partial class DeskStudentsPage : Page
                 var exists = _all.Any(x => !x.IsDeleted && NameNormalizer.NormalizeKey(x.Name) == NameNormalizer.NormalizeKey(name));
                 if (exists) { skipped++; continue; }
 
-                int? seatNo = null;
-                if (seatCombo.SelectedItem is ColumnOption seatCol
-                    && int.TryParse(grid.Cell(r, seatCol.Index), out var parsedSeat) && parsedSeat > 0)
-                    seatNo = parsedSeat;
-                seatNo ??= ++seat;
-
                 var student = new Student
                 {
                     Name = name,
                     StudentNo = noCombo.SelectedItem is ColumnOption noCol && grid.Cell(r, noCol.Index).Length > 0
                         ? grid.Cell(r, noCol.Index).Trim()
                         : null,
-                    SeatNo = seatNo,
+                    // 座位功能隐藏后不再从表格里认座位列，只按导入顺序往下编号
+                    SeatNo = ++seat,
                 };
                 Services.Students.Insert(student);
                 _all.Add(student);
@@ -480,69 +397,6 @@ public sealed partial class DeskStudentsPage : Page
             Services.LogError("import-students", ex);
             Shell?.Toast("导入失败：" + ex.Message, 6);
         }
-    }
-
-    // ---------------- 座位布局 ----------------
-
-    private async void OnSeatLayout(object sender, RoutedEventArgs e)
-    {
-        var rows = new NumberBox
-        {
-            Header = "排数",
-            Value = Services.Settings.SeatRows,
-            Minimum = 2,
-            Maximum = 10,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
-        };
-        var cols = new NumberBox
-        {
-            Header = "每排座位数",
-            Value = Services.Settings.SeatCols,
-            Minimum = 4,
-            Maximum = 12,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
-        };
-        var reflow = new CheckBox
-        {
-            Content = "按当前顺序重排座位号（1 起顺排）",
-            IsChecked = true,
-        };
-
-        var panel = new StackPanel { Spacing = 12, Width = 320 };
-        panel.Children.Add(rows);
-        panel.Children.Add(cols);
-        panel.Children.Add(reflow);
-        panel.Children.Add(new TextBlock
-        {
-            Text = "决定大屏上「几排几座」的显示和记分台的列数。",
-            Style = Styled("DeskSecondaryText"),
-        });
-
-        var dialog = new ContentDialog
-        {
-            XamlRoot = XamlRoot,
-            Title = "座位布局",
-            Content = panel,
-            PrimaryButtonText = "保存",
-            CloseButtonText = "取消",
-            DefaultButton = ContentDialogButton.Primary,
-        };
-
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
-
-        Services.Settings.SeatRows = (int)rows.Value;
-        Services.Settings.SeatCols = (int)cols.Value;
-
-        if (reflow.IsChecked == true)
-        {
-            var ordered = _all.Where(s => !s.IsDeleted)
-                .OrderBy(s => s.SeatNo ?? int.MaxValue).ThenBy(s => s.Name)
-                .Select(s => s.Id).ToList();
-            Services.Students.ReassignSeats(ordered);
-        }
-
-        Reload();
-        Shell?.Toast("座位布局已保存", 3);
     }
 
     // ---------------- 回收站 ----------------
@@ -725,7 +579,7 @@ public sealed partial class DeskStudentsPage : Page
         {
             panel.Children.Add(new TextBlock
             {
-                Text = "停用的不进榜单、不占座位，数据保留，随时恢复。",
+                Text = "停用的不进榜单、不计入人数，数据保留，随时恢复。",
                 Style = Styled("DeskSecondaryText"),
             });
 
@@ -737,7 +591,7 @@ public sealed partial class DeskStudentsPage : Page
 
                 var text = new TextBlock
                 {
-                    Text = $"{s.Name} · {s.SeatText} · 累计 {_term.GetValueOrDefault(s.Id)}",
+                    Text = $"{s.Name} · 累计 {_term.GetValueOrDefault(s.Id)}",
                     Style = Styled("DeskBodyText"),
                     VerticalAlignment = VerticalAlignment.Center,
                 };

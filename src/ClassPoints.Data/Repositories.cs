@@ -601,7 +601,20 @@ public sealed class AuditRepository(Database db)
     public void Add(string action, string? actorId = null, string? target = null, string? detail = null)
     {
         using var conn = db.Open();
-        Database.Exec(conn, "INSERT INTO audit_log (at, actor_id, action, target, detail) VALUES ($at, $a, $act, $t, $d)",
+        Add(conn, null, action, actorId, target, detail);
+    }
+
+    /// <summary>
+    /// 在调用方已经打开的事务里写审计。
+    ///
+    /// 不能"先开事务写业务、再另开一条连接写审计" —— SQLite 同一时刻只允许一个写者，
+    /// 第二条连接会一直等第一条释放写锁，而第一条正卡在这里等审计返回：5 秒后
+    /// 抛 SQLite Error 5 (database is locked)。撤销上一步曾经 100% 失败就是这个原因。
+    /// </summary>
+    public void Add(SqliteConnection conn, SqliteTransaction? tx,
+        string action, string? actorId = null, string? target = null, string? detail = null)
+    {
+        Database.Exec(conn, tx, "INSERT INTO audit_log (at, actor_id, action, target, detail) VALUES ($at, $a, $act, $t, $d)",
             ("$at", Clock.NowMs()), ("$a", actorId), ("$act", action), ("$t", target), ("$d", detail));
     }
 

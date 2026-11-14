@@ -15,8 +15,16 @@
             BorderThickness="1"
             CornerRadius="18"
             Padding="10,4,4,4">
-        <StackPanel Orientation="Horizontal" Spacing="8">
-            <Border x:Name="Avatar" Width="26" Height="26" CornerRadius="13"
+        <!-- 用 Grid 而不是横向 StackPanel：电脑端这颗胶囊只有 248 宽的侧栏可放，
+             名字必须能被压缩（TextTrimming 要有确定宽度才生效），否则后加的两个按钮会把它挤出边框。 -->
+        <Grid ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <Border x:Name="Avatar" Grid.Column="0" Width="26" Height="26" CornerRadius="13"
                     Background="{ThemeResource SelectStrokeBrush}" VerticalAlignment="Center">
                 <TextBlock x:Name="AvatarText" Text="?"
                            FontSize="13" FontWeight="SemiBold"
@@ -24,7 +32,7 @@
                            HorizontalAlignment="Center" VerticalAlignment="Center" />
             </Border>
 
-            <StackPanel VerticalAlignment="Center" Spacing="0">
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="0">
                 <TextBlock x:Name="NameText" Text="未认人"
                            FontSize="14" FontWeight="SemiBold"
                            Foreground="{ThemeResource TextPrimaryBrush}"
@@ -34,12 +42,23 @@
                            Foreground="{ThemeResource TextSecondaryBrush}" MaxLines="1" />
             </StackPanel>
 
-            <Button x:Name="SwitchButton" Content="切换"
-                    Height="30" MinWidth="56" Padding="10,0" CornerRadius="15"
-                    FontSize="12"
-                    Background="Transparent" BorderThickness="0"
-                    Foreground="{ThemeResource SelectStrokeBrush}"
-                    Click="OnSwitchClick" />
-        </StackPanel>
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="0" VerticalAlignment="Center">
+                <Button x:Name="SwitchButton" Content="切换"
+                        Height="30" MinWidth="52" Padding="8,0" CornerRadius="15"
+                        FontSize="12"
+                        Background="Transparent" BorderThickness="0"
+                        Foreground="{ThemeResource SelectStrokeBrush}"
+                        Click="OnSwitchClick" />
+
+                <!-- 退出 = 回到「未认人」。切换是换一个人，退出是让下一个人必须重新认 ——
+                     班委记完分把机器交回去，不退出的话下一个过来直接就能记。 -->
+                <Button x:Name="ExitButton" Content="退出"
+                        Height="30" MinWidth="52" Padding="8,0" CornerRadius="15"
+                        FontSize="12"
+                        Background="Transparent" BorderThickness="0"
+                        Foreground="{ThemeResource TextSecondaryBrush}"
+                        Click="OnExitClick" />
+            </StackPanel>
+        </Grid>
     </Border>
 </UserControl>

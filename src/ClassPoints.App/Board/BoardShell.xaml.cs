@@ -202,7 +202,8 @@ public sealed partial class BoardShell : UserControl, IShellHost
             RefreshHeader();
             IdentityChip.Refresh();
 
-            // 身份被清掉时，停在需要身份的页面上没有意义
+            // 身份被清掉时，停在需要身份的页面上没有意义。
+            // 只读设备根本进不来这些页（导航闸门已经挡了），所以这里不用再分情况。
             if (!Session.CanWrite && AppNav.NeedsIdentity(_currentIndex))
                 Navigate(AppNav.Wall);
         });
@@ -224,7 +225,9 @@ public sealed partial class BoardShell : UserControl, IShellHost
         {
             Session.SignOut();
             Navigate(AppNav.Wall);
-            Toast("已回到看板");
+            // 说清"为什么回去了"，并且多留一会儿：演示时这句一闪而过，
+            // 台下只会看到"画面自己跳了"。
+            Toast($"已回到看板（{settings.IdleTimeoutSec} 秒没有操作）", 6);
         }
 
         RefreshClock();
@@ -266,6 +269,10 @@ public sealed partial class BoardShell : UserControl, IShellHost
 
     private void HandleCard(Member? member, CardRead read)
     {
+        // 密码框正开着：这张卡归 AskPinAsync 的临时订阅管（它还要判"是不是管理员的卡"），
+        // 这里必须让路，否则一次刷卡会连着弹「换人确认」，把密码框压在下面。
+        if (Pin.IsOpen) return;
+
         if (member is null)
         {
             Toast($"这张卡还没登记（{read.ShortUid}）");
@@ -321,6 +328,14 @@ public sealed partial class BoardShell : UserControl, IShellHost
     public async Task<bool> EnsureIdentifiedAsync(bool requireAdmin = false)
     {
         if (Session.CanWrite && (!requireAdmin || Session.IsAdmin)) return true;
+
+        // 待审设备：认人没有意义，写了也会被服务端 403 挡回来。
+        // 单独一条，是为了不走下面"还没设过密码就直接放行"的兜底。
+        if (Session.ReadOnly)
+        {
+            Toast("这台设备还在等班主任通过，现在只能查看", 6);
+            return false;
+        }
 
         if (!Services.HasAnyCredential)
         {
@@ -418,14 +433,62 @@ public sealed partial class BoardShell : UserControl, IShellHost
         return true;
     }
 
+    public void ExitIdentity()
+    {
+        if (Session.Current is null) return;
+
+        var name = Session.Current.DisplayName;
+        Session.SignOut();
+        IdentityChip.Refresh();
+        RefreshHeader();
+        // 大屏退出身份就回看板：那里是「谁都能看、谁都不能改」的状态，
+        // 停在记分台会让人以为还能接着记，点下去才发现全灰。
+        Navigate(AppNav.Wall);
+        Toast($"{name} 已退出，记分请重新刷卡", 5);
+    }
+
     // ================= 复用的小工具 =================
 
     /// <summary>PIN 校验。返回 true 表示通过并已认人（管理态由调用方决定）。</summary>
     public Task<bool> AskPinAsync(string title, string sub, bool requireManager)
     {
+        // 待审设备只能看：认人会显示"已认人、能记分"，点下去才发现写不进去。
+        if (Session.ReadOnly)
+        {
+            Toast("这台设备还在等班主任通过，现在只能查看", 6);
+            return Task.FromResult(false);
+        }
+
         var tcs = new TaskCompletionSource<bool>();
 
-        Pin.ShowVerify(title, sub, pin =>
+        // 密码框开着时也收卡。★ 这里必须和外壳常驻的那个订阅互斥：
+        // HandleCard 看到 Pin.IsOpen 会直接让路，把卡交给这里的临时订阅处理，
+        // 否则一次刷卡会同时触发「换人确认」和「验卡通过」，两个面板叠在一起。
+        Action<CardRead>? onCard = null;
+
+        void Detach()
+        {
+            Pin.Completed -= OnCompleted;
+            Pin.Cancelled -= OnCancelled;
+            if (onCard is not null)
+            {
+                Services.Reader.CardDetected -= onCard;
+                onCard = null;
+            }
+        }
+
+        void Finish(bool ok)
+        {
+            Detach();
+            Pin.Hide();
+            tcs.TrySetResult(ok);
+        }
+
+        void OnCompleted(string _) => Finish(true);
+        void OnCancelled() => Finish(false);
+
+        var readerOn = Services.Reader.Status.IsRunning;
+        Pin.ShowVerify(title, readerOn ? sub + "。也可以刷卡。" : sub, pin =>
         {
             if (Session.IsPinLocked) return $"请等 {Session.PinLockSecondsLeft} 秒再试";
 
@@ -444,18 +507,28 @@ public sealed partial class BoardShell : UserControl, IShellHost
             return null;
         });
 
-        void OnCompleted(string _)
+        if (readerOn)
         {
-            Pin.Completed -= OnCompleted;
-            Pin.Cancelled -= OnCancelled;
-            tcs.TrySetResult(true);
-        }
+            onCard = read => DispatcherQueue.TryEnqueue(() =>
+            {
+                if (tcs.Task.IsCompleted) return;
 
-        void OnCancelled()
-        {
-            Pin.Completed -= OnCompleted;
-            Pin.Cancelled -= OnCancelled;
-            tcs.TrySetResult(false);
+                var member = Services.Members.FindByCard(read.Uid);
+                if (member is null)
+                {
+                    Pin.ShowError($"这张卡还没登记（{read.ShortUid}）");
+                    return;
+                }
+                if (requireManager && !member.IsManager)
+                {
+                    Pin.ShowError("这不是班主任或班长的卡");
+                    return;
+                }
+
+                ApplyIdentity(member);
+                Finish(true);
+            });
+            Services.Reader.CardDetected += onCard;
         }
 
         Pin.Completed += OnCompleted;

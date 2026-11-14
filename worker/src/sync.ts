@@ -96,6 +96,9 @@ export async function pull(env: Env, request: Request): Promise<Response> {
     hasMore,
     since,
     serverTime: Date.now(),
+    // 客户端每轮拉取都会看到这个标记：一直 true = 还在等通过；
+    // 哪一轮突然变 false，就是班主任点了通过，界面当场恢复写权限。
+    readOnly: claims.ro === true,
   });
 }
 

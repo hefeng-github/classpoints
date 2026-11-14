@@ -138,7 +138,7 @@ public static class WorkbookBuilder
 
         string[] headers =
         {
-            "名次", "姓名", "座位", "考试总分", normalized ? "考试百分制" : "考试总分（加权）",
+            "名次", "姓名", "考试总分", normalized ? "考试百分制" : "考试总分（加权）",
             "平时分（积分）", normalized ? "总评（百分制）" : "总评（加权和，非百分制）", "缺考",
         };
 
@@ -157,12 +157,11 @@ public static class WorkbookBuilder
         {
             ws.Cell(row, 1).Value = item.Rank;
             ws.Cell(row, 2).Value = item.Name;
-            ws.Cell(row, 3).Value = item.SeatNo is int s ? s : "";
-            ws.Cell(row, 4).Value = System.Math.Round(item.ExamRaw, 1);
-            ws.Cell(row, 5).Value = System.Math.Round(item.ExamPercent, 1);
-            ws.Cell(row, 6).Value = item.Points;
-            ws.Cell(row, 7).Value = System.Math.Round(item.Total, 1);
-            ws.Cell(row, 8).Value = item.AbsentExams.Count == 0
+            ws.Cell(row, 3).Value = System.Math.Round(item.ExamRaw, 1);
+            ws.Cell(row, 4).Value = System.Math.Round(item.ExamPercent, 1);
+            ws.Cell(row, 5).Value = item.Points;
+            ws.Cell(row, 6).Value = System.Math.Round(item.Total, 1);
+            ws.Cell(row, 7).Value = item.AbsentExams.Count == 0
                 ? ""
                 : $"缺考 · {string.Join("、", item.AbsentExams)}（{PolicyShort(b.Policy)}）";
 
@@ -192,7 +191,7 @@ public static class WorkbookBuilder
         var weights = SchemeMath.BuildExamWeights(exams, b.Weights);
         var scoreMap = b.Scores.ToDictionary(x => (x.ExamId, x.StudentId), x => x);
 
-        var headers = new List<string> { "姓名", "座位" };
+        var headers = new List<string> { "姓名" };
         foreach (var e in exams) headers.Add($"{e.Name}（满分 {e.FullScore:0.#}，权重 {weights.GetValueOrDefault(e.Id) * 100:0.#}%）");
         headers.Add("考试总分（加权）");
         headers.Add("平时分（积分）");
@@ -218,9 +217,8 @@ public static class WorkbookBuilder
             if (!rows.TryGetValue(st.Id, out var rank)) continue;
 
             ws.Cell(row, 1).Value = st.Name;
-            ws.Cell(row, 2).Value = st.SeatNo is int sn ? sn : "";
 
-            var col = 3;
+            var col = 2;
             foreach (var e in exams)
             {
                 if (scoreMap.TryGetValue((e.Id, st.Id), out var sc) && !sc.Absent && sc.Score is double v)
@@ -249,7 +247,7 @@ public static class WorkbookBuilder
         }
 
         ws.SheetView.FreezeRows(1);
-        ws.SheetView.FreezeColumns(2);
+        ws.SheetView.FreezeColumns(1);
         Finish(ws, headers.Count);
     }
 

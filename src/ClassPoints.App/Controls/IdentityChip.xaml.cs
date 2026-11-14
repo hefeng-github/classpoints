@@ -22,11 +22,17 @@ public sealed partial class IdentityChip : UserControl
 
     private static BoardSession? Session => App.Services?.Session;
 
+    private bool _showSwitch = true;
+
     /// <summary>不显示「切换」按钮（外壳自己的常驻状态条上用）。</summary>
     public bool ShowSwitch
     {
-        get => SwitchButton.Visibility == Visibility.Visible;
-        set => SwitchButton.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+        get => _showSwitch;
+        set
+        {
+            _showSwitch = value;
+            Refresh();
+        }
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
@@ -53,7 +59,26 @@ public sealed partial class IdentityChip : UserControl
         var session = Session;
         if (session is null) return;
 
+        // 待审设备：这里不是"未认人"，是"这台机器还不许写"。
+        // 两者长得像（都不能记分），但下一步动作完全相反：一个是去刷卡，
+        // 一个是等班主任在网页上点通过 —— 文案必须分开。
+        if (session.ReadOnly)
+        {
+            NameText.Text = "待审核 · 只读";
+            RoleText.Text = "等班主任点通过";
+            AvatarText.Text = "待";
+            Avatar.Background = Theme.Pal.Warn;
+            ExitButton.Visibility = Visibility.Collapsed;
+            // 只读时「切换」也是个死按钮（点了只会弹"等班主任通过"），干脆收掉，
+            // 顺便把宽度让给"待审核 · 只读"这行字 —— 侧栏只有 248 宽。
+            SwitchButton.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        SwitchButton.Visibility = _showSwitch ? Visibility.Visible : Visibility.Collapsed;
+
         var who = session.Current;
+        ExitButton.Visibility = who is null ? Visibility.Collapsed : Visibility.Visible;
         if (who is null)
         {
             NameText.Text = "未认人";
@@ -73,6 +98,14 @@ public sealed partial class IdentityChip : UserControl
     {
         if (App.Host is not { } host) return;
         await host.SwitchIdentityAsync();
+        Refresh();
+    }
+
+    private void OnExitClick(object sender, RoutedEventArgs e)
+    {
+        if (Session?.Current is null) return;
+        if (App.Host is not { } host) return;
+        host.ExitIdentity();
         Refresh();
     }
 }

@@ -83,7 +83,54 @@ public partial class App : Application
                 // 日志本身出错就放弃，不能让异常处理再抛一次
             }
         };
+
+        // 下面三条是"静默退出"的取证网。
+        //
+        // XAML 的 UnhandledException 只兜 UI 线程上的托管异常。实测中遇到过一次
+        // 「点一下输入框，进程直接没了：没有 ERROR 日志、没有 WER 事件、没有 dump」——
+        // 那种情况要么异常在 native 回调里先被吃了，要么进程连托管异常都没走到。
+        // 有了这三条，下次再发生至少能留下一行可查的证据。
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            try
+            {
+                var ex = e.ExceptionObject as Exception;
+                Services?.LogError("appdomain-unhandled" + (e.IsTerminating ? "（进程即将终止）" : ""),
+                    ex ?? new Exception(e.ExceptionObject?.ToString() ?? "未知异常对象"));
+            }
+            catch (Exception)
+            {
+            }
+        };
+
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            try { Services?.LogError("unobserved-task", e.Exception); } catch (Exception) { }
+            e.SetObserved();
+        };
+
+        // native 层 fail-fast 之前，托管侧往往先抛一次 COM/SEH 异常。
+        // 数量封顶：这个回调很吵，正常流程里也有被 try 吃掉的一次性异常。
+        _firstChanceBudget = 40;
+        AppDomain.CurrentDomain.FirstChanceException += (_, e) =>
+        {
+            if (_firstChanceBudget <= 0) return;
+            var ex = e.Exception;
+            if (ex is not (System.Runtime.InteropServices.COMException
+                or System.Runtime.InteropServices.SEHException
+                or AccessViolationException)) return;
+
+            _firstChanceBudget--;
+            try { Services?.LogError("first-chance " + ex.GetType().Name, ex); } catch (Exception) { }
+        };
+
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            try { Services?.Log($"进程退出 code={Environment.ExitCode}"); } catch (Exception) { }
+        };
     }
+
+    private static int _firstChanceBudget;
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {

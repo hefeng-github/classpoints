@@ -46,7 +46,38 @@ public sealed class BoardSession(MemberRepository members)
 
     public event Action? Changed;
 
-    public bool CanWrite => Identity != IdentityState.Anonymous;
+    private bool _readOnly;
+
+    /// <summary>
+    /// 云端说这台机器只能看（设备还在等班主任通过）。
+    ///
+    /// 放在会话层而不是各页面各判一遍：所有写操作本来就要先认人，
+    /// 认人这一道统一挡住，就不会出现"这个页面忘了判"的漏网之鱼。
+    /// 它和身份是两回事 —— 身份是"你是谁"，这是"这台机器能不能写"。
+    /// </summary>
+    public bool ReadOnly
+    {
+        get => _readOnly;
+        set
+        {
+            if (_readOnly == value) return;
+            _readOnly = value;
+            // 变成只读时立刻退回未认人：不能让界面继续显示"管理 · 可写"
+            if (value) SignOut();
+            else Changed?.Invoke();
+        }
+    }
+
+    public bool CanWrite => !ReadOnly && Identity != IdentityState.Anonymous;
+
+    /// <summary>
+    /// 写操作被挡住时该说哪句话。
+    ///
+    /// 「待审核」和「没认人」在界面上长得一样（都不能写），但下一步动作完全相反：
+    /// 一个去刷卡，一个等班主任在网页上点通过。说错一句，老师就会一直在那儿刷卡。
+    /// </summary>
+    public string WriteBlockedText =>
+        ReadOnly ? "这台电脑还在等班主任通过，现在只能查看" : "请先刷卡（或输入密码）";
 
     public bool IsAdmin => Identity == IdentityState.Admin;
 
@@ -66,6 +97,8 @@ public sealed class BoardSession(MemberRepository members)
     {
         get
         {
+            // 只读优先说出来：老师最先要知道的不是"同步了几条"，而是"为什么记不了分"
+            if (ReadOnly) return PendingCount > 0 ? $"待审核 · 只读（{PendingCount} 条待同步）" : "待审核 · 只读";
             if (!SyncEnabled) return "本机存储";
             if (!IsOnline) return PendingCount > 0 ? $"离线 · 待同步 {PendingCount} 条" : "离线";
             return PendingCount > 0 ? $"待同步 {PendingCount} 条" : "已同步";
@@ -77,6 +110,9 @@ public sealed class BoardSession(MemberRepository members)
     /// <summary>刷卡 / PIN 成功。同一个人再刷一次不重算；换人要上层先确认。</summary>
     public bool Identify(Member member, bool asAdmin = false)
     {
+        // 待审设备不认人：认了也写不进去（服务端 403），界面上却会显示"已认人、可以记分"，
+        // 老师点下去才发现全灰 —— 不如在认人这一步就说清楚。
+        if (ReadOnly) return false;
         var same = Current?.Id == member.Id && Identity != IdentityState.Anonymous;
         Current = member;
         Identity = asAdmin || member.IsManager ? (asAdmin ? IdentityState.Admin : IdentityState.Identified) : IdentityState.Identified;

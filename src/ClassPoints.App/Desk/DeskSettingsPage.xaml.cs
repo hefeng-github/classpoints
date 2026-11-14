@@ -80,7 +80,7 @@ public sealed partial class DeskSettingsPage : Page
         var body = Section("班级信息", "班级名显示在大屏顶部。");
 
         var nameBox = new TextBox { Text = Services.Settings.ClassName, Width = 300 };
-        var save = Small("保存", () =>
+        var save = Small("保存班级名称", () =>
         {
             var name = NameNormalizer.Clean(nameBox.Text);
             if (name.Length == 0)
@@ -105,9 +105,9 @@ public sealed partial class DeskSettingsPage : Page
         body.Children.Add(ValueRow("数据文件", Services.Db.DbPath,
             "名单、积分、成绩都在这一个文件里。备份用下面的「立即备份」，不要手动复制正在写的库。"));
 
-        var seatButton = Small("打开名单与座位", () => Shell?.Navigate(AppNav.Students));
-        body.Children.Add(Labelled($"座位布局　{Services.Settings.SeatRows} 排 × {Services.Settings.SeatCols} 座",
-            seatButton));
+        // 「座位布局」入口已隐藏（v1.3）：排/座不再是一个可配置的概念，
+        // 名单页也不再显示座位。seat_rows / seat_cols 两个设置项保留在库里，
+        // 记分台的列数仍然读 SeatCols —— 它只影响一屏放几列，不对外解释成"座位"。
 
         // 示例数据是向导里明确勾选才写进来的，所以也要能一键清掉。
         if (Services.Settings.DemoData)
@@ -240,27 +240,74 @@ public sealed partial class DeskSettingsPage : Page
         body.Children.Add(Labelled("音效", sound));
     }
 
+    /// <summary>
+    /// 数字输入框：TextBox + 加减两个按钮。
+    ///
+    /// 为什么不用原生 NumberBox：它要等"焦点离开且校验通过"才把文本写进 Value，
+    /// 而这里的数字没有保存按钮 —— 老师把 30 改成 600 之后直接去点别的区块，
+    /// 界面显示 600、库里还是 30，重启又弹回 30。看起来像"改了不生效"。
+    ///
+    /// 这里改成"离开输入框或按回车就当场落库"，并且把落库后的真实值写回框里：
+    /// 越界（比如把 600 打到 6000）会立刻看到它被夹回上限，而不是表面接受了、实际没用。
+    /// </summary>
     private UIElement NumberField(string label, string hint, double min, double max, double step,
         Func<double> get, Action<double> set, string unit)
     {
-        var box = new NumberBox
+        var box = new TextBox
         {
-            Value = get(),
-            Minimum = min,
-            Maximum = max,
-            SmallChange = step,
-            LargeChange = step * 3,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
-            Width = 160,
+            Text = ((int)get()).ToString(),
+            Width = 96,
+            Height = 34,
+            MinWidth = 96,
+            TextAlignment = TextAlignment.Right,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        box.ValueChanged += (_, e) =>
+
+        var committed = get();
+
+        void Commit()
         {
-            if (double.IsNaN(e.NewValue)) return;
-            set(e.NewValue);
+            var raw = box.Text.Trim();
+            if (!double.TryParse(raw, out var v) || double.IsNaN(v))
+            {
+                // 乱输入（空、字母、"6OO"）不写库，框里退回真正生效的值
+                box.Text = ((int)committed).ToString();
+                return;
+            }
+
+            v = System.Math.Clamp(System.Math.Round(v), min, max);
+            set(v);
+            committed = v;
+            var text = ((int)v).ToString();
+            if (box.Text != text) box.Text = text;
+        }
+
+        box.LostFocus += (_, _) => Commit();
+        box.KeyDown += (_, e) =>
+        {
+            if (e.Key != Windows.System.VirtualKey.Enter) return;
+            Commit();
+            e.Handled = true;
         };
 
-        var line = Wrap(box, ValueText(unit));
+        var minus = Small("\u2212", () =>
+        {
+            Commit();
+            var next = System.Math.Clamp(committed - step, min, max);
+            set(next);
+            committed = next;
+            box.Text = ((int)next).ToString();
+        }, width: 38);
+        var plus = Small("+", () =>
+        {
+            Commit();
+            var next = System.Math.Clamp(committed + step, min, max);
+            set(next);
+            committed = next;
+            box.Text = ((int)next).ToString();
+        }, width: 38);
+
+        var line = Wrap(minus, box, plus, ValueText(unit));
         return LabelledHint(label, hint, line);
     }
 
@@ -539,9 +586,7 @@ public sealed partial class DeskSettingsPage : Page
             }
         });
 
-        var printCard = Small("打印恢复卡", () => Shell?.Navigate(AppNav.Print));
-
-        body.Children.Add(Labelled("恢复码", Wrap(codeText, generate, saveTxt, printCard)));
+        body.Children.Add(Labelled("恢复码", Wrap(codeText, generate, saveTxt)));
         body.Children.Add(Note("明文只显示一次，库里只存哈希。忘了密码只能靠它或本机重置。"));
     }
 
@@ -1130,7 +1175,7 @@ public sealed partial class DeskSettingsPage : Page
             Spacing = 8,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        dirActions.Children.Add(Small("保存", () =>
+        dirActions.Children.Add(Small("保存备份目录", () =>
         {
             var path = dirBox.Text.Trim();
             if (!Services.Backups.SetBackupRoot(path))
@@ -1426,13 +1471,13 @@ public sealed partial class DeskSettingsPage : Page
 
     private void BuildProvisionSection()
     {
-        var body = Section("预配置", "把云端地址、班级码、座位与名单导出成一个文件，带到学校导入。");
+        var body = Section("预配置", "把云端地址、班级码与名单导出成一个文件，带到学校导入。");
 
         var credentials = new SyncStore().Load();
         body.Children.Add(ValueRow("当前可下发的配置",
             string.IsNullOrWhiteSpace(Services.ClassName) ? "还没配班级信息" : Services.ClassName,
             credentials is null
-                ? "这台还没连云端。导出的是纯本地配置（班级名、座位与名单）。"
+                ? "这台还没连云端。导出的是纯本地配置（班级名与名单）。"
                 : $"云端 {credentials.BaseUrl}，班级码 {credentials.ClassCode}。" +
                   "文件里带班级码和配对口令，到学校导入即自动配对。"));
 
@@ -1698,9 +1743,15 @@ public sealed partial class DeskSettingsPage : Page
                 }
 
                 var report = await sync.PairAsync(baseUrl, code, pin, "desk");
-                Services.Log($"同步配对成功 {baseUrl}");
+                Services.Log($"同步配对成功 {baseUrl} readOnly={report.ReadOnly}");
                 Services.Pump.Start();
-                Shell?.Toast(report.Ok ? "配对成功，开始后台同步" : "配对失败：" + report.Error, 5);
+                // 待审不算失败：连上了、能看，只是暂时写不了。话术里带特征码，
+                // 老师要拿它去找班主任点通过，6 秒读不完一串十六进制。
+                Shell?.Toast(
+                    report.ReadOnly
+                        ? report.PendingMessage ?? "配对成功，但设备还在等班主任通过，暂时只能查看。"
+                        : "配对成功，开始后台同步",
+                    report.ReadOnly ? 16 : 5);
                 Reload();
             }
             catch (Exception ex)
@@ -1856,7 +1907,7 @@ public sealed partial class DeskSettingsPage : Page
         };
         var feedRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         feedRow.Children.Add(feedBox);
-        feedRow.Children.Add(Small("保存", () =>
+        feedRow.Children.Add(Small("保存更新地址", () =>
         {
             try
             {
@@ -2061,16 +2112,21 @@ public sealed partial class DeskSettingsPage : Page
         Margin = new Thickness(0, 4, 0, 4),
     };
 
-    private Button Small(string text, Action action)
+    private Button Small(string text, Action action, double width = 0)
     {
         var button = new Button
         {
             Content = text,
             Style = Styled("DeskButton"),
             Height = 30,
-            MinWidth = 64,
+            MinWidth = width > 0 ? width : 64,
             FontSize = 13,
         };
+        if (width > 0)
+        {
+            button.Width = width;
+            button.Padding = new Thickness(0);
+        }
         button.Click += (_, _) =>
         {
             try

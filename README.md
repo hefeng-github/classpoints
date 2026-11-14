@@ -9,8 +9,8 @@
 | **电脑端** | 办公室电脑 | 236 宽文字侧栏，行高 40，键鼠密度 |
 
 **两端的页面和权限完全一致**：记分台 · 事件计数 · 看板 · 查分 · 明细 · 名单 · 考试与总评 ·
-打印与导出 · 周期 · 设置，十项都在两端。差别只有排版 —— 大屏用图标（教室三米外看不清小字），
-电脑用文字（半米内要看全）。老师不必为了建个名单跑去办公室，也不会因为大屏没有"导出"而被卡住。
+周期 · 设置，九项都在两端。差别只有排版 —— 大屏用图标（教室三米外看不清小字），
+电脑用文字（半米内要看全）。老师不必为了建个名单跑去办公室。
 
 ![看板](docs/screenshots/board-wall.png)
 
@@ -372,10 +372,10 @@ Cloudflare Workers 的 WebCrypto 对 PBKDF2 迭代数有**硬上限 100000**，�
 
 ### 预配置包：在家里配好，学校只用填分数
 
-Cloudflare 部署、班级码、座位排布这些一辈子只做一次的事，不该在教室那台机器上重做。
+Cloudflare 部署、班级码这些一辈子只做一次的事，不该在教室那台机器上重做。
 
 电脑端「设置 → 预配置 → 导出配置包」，得到 `.cpcfg` 文件（U 盘拷走即可）。包里带：
-云端地址、班级码、班级名、周期起止、座位布局、分值方案、加减分项定义、名单。
+云端地址、班级码、班级名、周期起止、分值方案、加减分项定义、名单。
 **不带**名单、成绩、流水，也**不带**班主任密码 —— 密码只存在账号里，不进包。
 
 到学校那台机器，向导的第 2 步就是「预配置」：选文件、填口令、点「套用」，
@@ -397,24 +397,24 @@ Cloudflare 部署、班级码、座位排布这些一辈子只做一次的事，
 src/
   ClassPoints.Core/      领域层，无 UI 无 IO：排名、加权、缺考策略、姓名归一、密码哈希、图标目录
     Config/              预配置包（.cpcfg）的序列化、口令加密、校验与导入
-  ClassPoints.Data/      数据层：SQLite 建表与迁移、仓储、入账、备份、打印数据、同步客户端
+  ClassPoints.Data/      数据层：SQLite 建表与迁移、仓储、入账、备份、同步客户端
     Sync/                Dpapi（DPAPI 加密）、SyncStore、SyncClient、SyncService
     Update/              更新清单校验、直连下载、安装流程（不带任何凭据）
     Net/                 出网地址规范化（只认 https，回环例外）
-  ClassPoints.App/       WinUI 3 界面（两端共用十个功能页，只有排版不同）
+  ClassPoints.App/       WinUI 3 界面（两端共用九个功能页，只有排版不同）
     Board/               大屏排版：记分台、事件计数、看板、查分、明细、外壳
-    Desk/                电脑排版：名单、考试与总评、打印导出、周期、事件计数、设置、外壳
+    Desk/                电脑排版：名单、考试与总评、周期、事件计数、设置、外壳
     Controls/            图标选择器、分数键盘（右侧抽屉）、身份胶囊、空状态、Toast
     Onboarding/          首次启动向导（形态 → 预配置 → 班级 → 名单 → 加减分项 → 密码 → 自检）
     Theme/               色板与样式（大屏 20/40/72，电脑 15/26/34，两套独立不缩放；浅/深两套取色）
-    Services/            组合根、会话、导航表、外壳接口、PNG 自截图、打印、同步心跳、PN532 读卡、更新中心、
-                         FileDialogs（Win32 公共对话框）、WebViewHost（WebView2 数据目录）
+    Services/            组合根、会话、导航表、外壳接口、PNG 自截图、同步心跳、PN532 读卡、更新中心、
+                         FileDialogs（Win32 公共对话框）
 worker/                  Cloudflare Worker + D1 同步中枢（TypeScript，不含更新通道）
   migrations/            D1 迁移（上过线之后只能加 0002_xxx.sql）
   src/admin.ts           网页管理台（单文件页面，零依赖零外链）
   src/routes/grants.ts   设备白名单：指纹闸门、待审队列、审批与撤销
   test/smoke.mjs         接口契约测试（92 项，含多班隔离与安全用例）
-  test/grants.mjs        设备白名单回归（35 项，待审 → 批准 → 撤销 → 切回 open）
+  test/grants.mjs        设备白名单回归（43 项，待审只读 → 批准升级 → 撤销 → 切回 open）
 installer/               Inno Setup 安装脚本 + 简体中文语言包
 tools/
   seed/                  演示数据生成器
@@ -510,10 +510,10 @@ scripts/prune-cnb-releases.sh    清理 CNB 旧版本（保留 stable）
 ## 七、测试
 
 ```bash
-# 1) Core + Data + 更新单测 209 项（纯内存，无需任何服务）
+# 1) Core + Data + 更新单测 225 项（纯内存，无需任何服务）
 dotnet run --project tools/tests
 
-# 2) Worker 接口契约 92 项 + 设备白名单 35 项（需要本地 wrangler dev 在 8787）
+# 2) Worker 接口契约 92 项 + 设备白名单 43 项（需要本地 wrangler dev 在 8787）
 cd worker && npx wrangler dev --port 8787 --local
 node test/smoke.mjs
 node test/grants.mjs
@@ -527,13 +527,13 @@ dotnet run --project tools/tests -- --sync http://127.0.0.1:8787
 dotnet run --project tools/tests -- --update-feed http://127.0.0.1:8892/demo/dist
 ```
 
-合计 **362 项断言**（第 4 项另加 3 项，用于发布前核对真实产物）。
+合计 **386 项断言**（第 4 项另加 3 项，用于发布前核对真实产物）。
 
 Worker 那 92 项里有 17 项专打多班隔离：两个班同时存在，学号 `01` 各算各的，
 B 拉到 A 的学生/流水/周期/考试都是 0 条，B 删 A 的行返回 200 但不改一行，
 B 抢 A 的主键被 `ON CONFLICT` 里的 `class_id` 守卫挡掉，B 撤 A 的批次、改 A 的权重都是 404。
 
-那 209 项里有 29 项是事件计数（加减、改准确值、撤销、周期隔离、归档、图标迁移幂等），
+那 225 项里有 29 项是事件计数（加减、改准确值、撤销、周期隔离、归档、图标迁移幂等），
 有 17 项是 Excel 往返（ClosedXML 写 → NPOI 读，`.xlsx` 和 `.xls` 各来一遍），
 有 29 项是版本与更新（三段式版本号、清单白名单校验、**直连地址拼接、不带凭据、404 视为无正式版**、
 下载复用、哈希不符丢弃、断流不留残片）：
@@ -547,7 +547,7 @@ B 抢 A 的主键被 `ON CONFLICT` 里的 `class_id` 守卫挡掉，B 撤 A 的�
 
 - **GitHub Actions**：
   - `build.yml`（每次 push）：`windows-latest` 编客户端 + 跑单测 + `publish.ps1` 出包并上传产物；
-    `ubuntu-latest` 起 worker 跑 92 + 35 项契约测试；另有一条密钥扫描 job。
+    `ubuntu-latest` 起 worker 跑 92 + 43 项契约测试；另有一条密钥扫描 job。
   - `release.yml`（**手动触发**，填版本号）：编译安装包、生成清单、上传 CNB 的 `v<版本>` 与 `stable` 两个标签。
     日常 push 永远不产生正式版。
 - **CNB 云原生构建**（`.cnb.yml`）：一条管线跑 worker 冒烟，一条用 `dotnet/sdk:10.0` 编 `tools/tests`
@@ -563,18 +563,14 @@ B 抢 A 的主键被 `ON CONFLICT` 里的 `class_id` 守卫挡掉，B 撤 A 的�
 ```bash
 CP_MODE=board  CP_SNAP="…/shots/board"  ClassPoints.exe
 CP_MODE=desk   CP_SNAP="…/shots/desk"   ClassPoints.exe
-CP_MODE=viewer CP_SNAP="…/shots/viewer" ClassPoints.exe
 CP_SNAP="…/shots/wizard" ClassPoints.exe          # 不带 CP_MODE 就截向导本身
 ```
 
-逐页产出 PNG（`board-1-wall … board-6b-settings-bottom`、`desk-1-home … desk-8-theme-switched`、
-`viewer-1-lookup … viewer-3-counters`、`wizard-1 … wizard-7`），长页面自动滚到底再补一张，
-电脑端最后还会当场切一次主题验证共享画刷。
+逐页产出 PNG（`board-1-wall … board-9-settings-bottom`、`desk-1-score … desk-9-settings`、
+`wizard-1 … wizard-7`），长页面自动滚到底再补一张，电脑端最后还会当场切一次主题验证共享画刷。
 
-`CP_MODE` 只覆盖这一次运行、不写库，所以同一台机器可以连跑三组。
+`CP_MODE` 只覆盖这一次运行、不写库，所以同一台机器可以连跑两组。
 长页面的中段两头都拍不到，加 `CP_SNAP_SCROLL=0.6`（0–1）会额外抓一张 `*-mid.png`。
-**WebView2 的内容抓不到**（独立合成表面，`RenderTargetBitmap` 拍不到），打印页的预览区在截图里是空白，
-这不代表预览坏了。
 
 ---
 
@@ -594,7 +590,7 @@ CP_SNAP="…/shots/wizard" ClassPoints.exe          # 不带 CP_MODE 就截向�
 | 顶部 | 56 常驻状态条（班级 / 周期 / **身份胶囊** / 同步 / 日期 / 时钟） | 侧栏底部常驻身份胶囊，页内标题区 |
 | 字号 | 20 / 40 / 72 | 15 / 26 / 34 |
 | 行高 | 68 起，按钮 48 / 64 / 72 | 40，按钮 28 / 34 |
-| 页面 | 十项全有；名单/考试/打印/周期用电脑版页面（这些不是触屏高频操作） | 十项全有；记分台/看板/查分/明细用大屏版页面（鼠标同样能点） |
+| 页面 | 九项全有；名单/考试/周期用电脑版页面（这些不是触屏高频操作） | 九项全有；记分台/看板/查分/明细用大屏版页面（鼠标同样能点） |
 
 **按钮只有三档高度**：40 / 48 / 64（电脑端 28 / 34）。以前散着 40、44、48、52、56、60 六种，
 同一行里两个按钮差 4 像素，比差 20 像素更显脏 —— 所以收成三档，`BtnSm` / `TouchSecondaryButton` / `BtnLg`。
@@ -627,19 +623,19 @@ CP_SNAP="…/shots/wizard" ClassPoints.exe          # 不带 CP_MODE 就截向�
 撤销提示仍留在底部 —— 前者要人做决定，后者只是告知。
 
 **测试弹窗时不要用截图工具验证。** 程序自带的 `CP_SNAP` 走 `RenderTargetBitmap`，它抓不到
-WebView2 和 ContentDialog（前者是独立合成层，后者在弹出层），截出来是白的或没截到。
+`ContentDialog`（在独立弹出层里），截出来是白的或没截到。
 要看弹窗，直接跑起来用系统截图工具抓窗口。
 
 ---
 
-## 八点五、记分台的「快捷项」与「其他」
+## 八点五、记分台的「管理快捷项」与「其他」
 
 记分台底部的项目按钮分三类，都在 `BuildRuleButtons` 里生成：
 
 | 来源 | 谁能看到 | 怎么改 |
 | --- | --- | --- |
 | 全班共用（`owner_id` 为空） | 所有刷卡的人 | 「设置 → 加分与扣分项」，要管理态 |
-| 我自己的快捷项（`owner_id` = 我） | 只有我刷卡时 | 记分台底部「快捷项」弹窗，只要身份、不要管理密码 |
+| 我自己的快捷项（`owner_id` = 我） | 只有我刷卡时 | 记分台底部「管理快捷项」弹窗，只要身份、不要管理密码 |
 | 「其他」 | 所有人 | 不用改：每次手输名称与分值，只记这一次 |
 
 **为什么分人。** 同一个班常常不只一个人记分：班主任盯课堂，班长盯早读。全班共用项是
@@ -800,8 +796,8 @@ CNB_REPO=<用户>/<仓库> CNB_TOKEN=<令牌> DRY_RUN=1 bash scripts/prune-cnb-r
 - 安装版启动后 10 秒在后台静默检查一次，有新版本时侧栏出现常驻标记并提示一次；
   老师点「下载并安装」才执行，不打断上课。可以在设置里关掉自动检查。
 - 便携版不能自更新，只把下好的包选中给老师自己覆盖。
-- 升级会短暂关闭程序，装完自动重新打开。数据库和 WebView2 缓存都在
-  `%LOCALAPPDATA%\ClassPoints`（备份在「文档\班级积分备份」），**不在安装目录**，覆盖升级和卸载都不碰。
+- 升级会短暂关闭程序，装完自动重新打开。数据库在 `%LOCALAPPDATA%\ClassPoints`
+  （备份在「文档\班级积分备份」），**不在安装目录**，覆盖升级和卸载都不碰。
 - 没配更新地址时不联网检查（静默跳过），不会去撞一个错地址。
 
 安装到 Program Files 需要管理员权限，因此每次升级会弹一次 UAC —— 这是全机安装
@@ -815,14 +811,17 @@ CNB_REPO=<用户>/<仓库> CNB_TOKEN=<令牌> DRY_RUN=1 bash scripts/prune-cnb-r
 - **事件计数不参与同步**（见第五节）。
 - **读卡器只支持 PN532 串口**（含模拟刷卡调试通道），没做 ACR122U 等 PC/SC 读卡器。
 - **同步不含文件存储**：只同步结构化数据，头像/照片没有。
-- **报告单导出 xlsx，不直出 PDF**：要 PDF 走「打印 → Microsoft Print to PDF」。
+- **不提供打印**：这一版把打印页整个去掉了，要纸质材料就导出 xlsx 再自己排版。
+- **不提供座位**（v1.3 隐藏）：名单不再显示座位、不再有「座位布局」，导出的 xlsx 里也没有座位列。
+  数据库的 `students.seat_no` 与 `seat_rows/seat_cols` 两个设置项都保留 —— 名单和记分台的
+  排序、大屏一屏放几列都还靠它，只是界面上不再出现"几排几座"这个词。
 - **事件次数还没进 Excel 导出**。
 - **更新每次升级弹一次 UAC**：装到 Program Files 是全机安装，写系统目录必须管理员授权；
   便携版没有这个限制，但也不能自更新（只能手动覆盖）。
 - **分发仓库必须公开**：CNB 私有仓库的 Release 附件不允许匿名下载，而客户端不持有令牌。
   所以安装包和清单放在一个单独的公开仓库里，源码仓库继续私有（见第九节）。
 - **卡可以克隆**（CUID 卡 UID 可写）：所以卡只定位成"认人"，不是"授权"。
-- **两端共用页面，排版不共用**：名单 / 考试 / 打印 / 周期这几页是电脑版式，在大屏上字号偏小，
+- **两端共用页面，排版不共用**：名单 / 考试 / 周期这几页是电脑版式，在大屏上字号偏小，
   适合偶尔用一次，不适合当触屏主界面。记分台反过来，桌面上按钮偏大 —— 这是刻意的取舍：
   功能一处不少，但主战场各自的排版才是为它调过的。
 - **示例数据是真实名单**：勾了「先用示例数据」会写进库（否则自检页没法排版），
@@ -839,10 +838,6 @@ CNB_REPO=<用户>/<仓库> CNB_TOKEN=<令牌> DRY_RUN=1 bash scripts/prune-cnb-r
 表现就是点了没反应。现在统一走 `Services/FileDialogs.cs` 里的 comdlg32 公共对话框 —— 它不依赖包标识，
 也不经过拾取器中介进程，提权进程里照常工作。**新加文件选择框不要再引 `Windows.Storage.Pickers`。**
 
-**打印页弹「无法创建数据目录 / Microsoft Edge 无法读取和写入其数据目录」。** WebView2 默认把用户数据
-放在 exe 旁边，装到 `Program Files` 后没有写权限。初始化必须走 `WebViewHost.EnsureAsync(view)`，
-它把数据目录固定到 `%LOCALAPPDATA%\ClassPoints\webview2`；直接调 `EnsureCoreWebView2Async()` 会复发。
-
 **同步请求 500。** .NET 默认继承系统代理，走代理时请求行会变成绝对 URI（`POST http://host/path`），
 Cloudflare 边缘与 `wrangler dev` 都只认 origin-form，直接回 500。客户端已默认 `UseProxy=false`；
 学校网络确实需要代理时，用 `CP_SYNC_PROXY` 显式指定。
@@ -857,11 +852,10 @@ Cloudflare 边缘与 `wrangler dev` 都只认 origin-form，直接回 500。客�
 `ExcelReader.CellText` 的 `catch` 吞成空串。所以 `ClassPoints.Data.csproj` 里必须**显式**引一次
 `SkiaSharp`。删掉那行 `PackageReference` 就会静默复发，`tools/tests` 里的 Excel 用例会立刻抓到。
 
-**退出时崩溃 `0xC0000005`。** 进程内 WebView2 未关闭会在 COM 终结器里崩。打印页已在 `Unloaded` 里
-关闭浏览器，退出前也会先离开打印页。改动打印页时请保住这两个动作。
-
-**打印没有系统对话框。** WinUI 版 WebView2 没有 `ShowPrintUIAsync`（那是 WPF/Win32 的 API），
-所以改成「选打印机 + 无页眉页脚直接打」，纸张与边距由 `CoreWebView2PrintSettings` 控制。
+**云端说这台机器「待审核」，怎么让它能记分。** 班级开了设备审核后，新机器配对拿到的是**只读令牌**：
+能看、不能写，界面上身份胶囊显示「待审核 · 只读」。让班主任打开班级管理台，在「待审核」里点通过即可 ——
+**不用重新配对**，客户端下一轮拉取（45 秒内）发现标记消失就自动恢复写权限。
+排查时先看 `%LOCALAPPDATA%\ClassPoints\sync.json` 里的 `readOnly`，再看管理台设备列表的 `status`。
 
 ---
 

@@ -31,6 +31,8 @@ public sealed class SyncPump(AppServices services)
         get
         {
             if (!services.Sync.IsConfigured) return "未启用";
+            // 只读优先：老师最先要知道的不是"同步了几条"，而是"为什么记不了分"
+            if (services.Sync.IsReadOnly) return "待审核 · 只读";
             if (_busy) return "同步中…";
             if (!string.IsNullOrEmpty(LastError)) return "上次失败：" + LastError;
             return services.Sync.LastSyncText;
@@ -87,6 +89,9 @@ public sealed class SyncPump(AppServices services)
 
     private void Notify()
     {
+        // 待同步条数也在这里顺手对一次：以前只有记分台会更新它，
+        // 只读设备停在别的页面时角标永远是 0，看起来像"什么都没攒"。
+        services.Session.PendingCount = services.Outbox.Count();
         var queue = DispatcherQueue.GetForCurrentThread();
         if (queue is null) Changed?.Invoke();
         else queue.TryEnqueue(() => Changed?.Invoke());

@@ -1,6 +1,7 @@
 using ClassPoints.App.Services;
 using ClassPoints.App.Theme;
 using ClassPoints.Core;
+using ClassPoints.Data;
 using ClassPoints.Data.Update;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -41,7 +42,7 @@ public sealed partial class DeskShell : UserControl, IShellHost
         BuildNavigation();
         EnsureDefaultIdentity();
 
-        if (_index < 0) Navigate(AppNav.Score);
+        if (_index < 0) Navigate(Session.ReadOnly ? AppNav.Wall : AppNav.Score);
         Services.Pump.Start();
 
         // 只在「已经选过端口」时启动读卡器：办公室电脑的 COM1 常常是主板串口，
@@ -101,10 +102,12 @@ public sealed partial class DeskShell : UserControl, IShellHost
         IdentityChip.Refresh();
         Refresh();
 
+        // 身份没了却停在需要身份的页面（记分台、名单…）没有意义：回看板。
+        // 只读设备走的是同一条路，只是话术不同 —— 它不是"退出了"，是"还不许写"。
         if (!Session.CanWrite && AppNav.NeedsIdentity(_index))
         {
             Navigate(AppNav.Wall);
-            Toast("身份已退出，回到看板");
+            Toast(Session.ReadOnly ? "这台电脑还在等班主任通过，先回看板" : "身份已退出，回到看板");
         }
     });
 
@@ -199,7 +202,7 @@ public sealed partial class DeskShell : UserControl, IShellHost
     {
         ClassNameText.Text = Services.ClassName;
         PeriodText.Text = Services.PeriodName;
-        ModeText.Text = App.Mode.ToDisplay() + " · 本机存储";
+        ModeText.Text = App.Mode.ToDisplay() + (Services.Sync.IsReadOnly ? " · 待审核只读" : " · 本机存储");
 
         var last = Services.Settings.LastBackupAt;
         BackupText.Text = last <= 0
@@ -248,6 +251,13 @@ public sealed partial class DeskShell : UserControl, IShellHost
     public async Task<bool> EnsureIdentifiedAsync(bool requireAdmin = false)
     {
         if (Session.CanWrite && (!requireAdmin || Session.IsAdmin)) return true;
+
+        // 待审设备：不走下面"还没设过密码就直接放行"的兜底
+        if (Session.ReadOnly)
+        {
+            Toast("这台电脑还在等班主任通过，现在只能查看", 6);
+            return false;
+        }
 
         if (!Services.HasAnyCredential)
         {
@@ -320,11 +330,55 @@ public sealed partial class DeskShell : UserControl, IShellHost
         return true;
     }
 
+    public void ExitIdentity()
+    {
+        if (Session.Current is null) return;
+
+        var name = Session.Current.DisplayName;
+        Session.SignOut();
+        RefreshChrome();
+        Toast($"{name} 已退出，下次记分要重新认人", 5);
+    }
+
     public Task<bool> AskPinAsync(string title, string sub, bool requireManager)
     {
+        // 待审设备：认人没有任何意义，写操作会被服务端 403 挡回来。
+        // 在这里一句话说清楚，比让老师输完密码再看见满屏灰按钮好。
+        if (Session.ReadOnly)
+        {
+            Toast("这台电脑还在等班主任通过，现在只能查看", 6);
+            return Task.FromResult(false);
+        }
+
         var tcs = new TaskCompletionSource<bool>();
 
-        Pin.ShowVerify(title, sub, pin =>
+        // 密码框开着的时候也收卡：卡本身就是身份凭证，班委没必要为了记一次分背一串数字。
+        // 订阅是临时的 —— 面板一关就摘掉，不和外壳别处的刷卡逻辑抢同一张卡。
+        Action<CardRead>? onCard = null;
+
+        void Detach()
+        {
+            Pin.Completed -= OnCompleted;
+            Pin.Cancelled -= OnCancelled;
+            if (onCard is not null)
+            {
+                Services.Reader.CardDetected -= onCard;
+                onCard = null;
+            }
+        }
+
+        void Finish(bool ok)
+        {
+            Detach();
+            Pin.Hide();
+            tcs.TrySetResult(ok);
+        }
+
+        void OnCompleted(string _) => Finish(true);
+        void OnCancelled() => Finish(false);
+
+        var readerOn = Services.Reader.Status.IsRunning;
+        Pin.ShowVerify(title, readerOn ? sub + "，也可以刷卡。" : sub, pin =>
         {
             if (Session.IsPinLocked) return $"请等 {Session.PinLockSecondsLeft} 秒再试";
 
@@ -336,18 +390,29 @@ public sealed partial class DeskShell : UserControl, IShellHost
             return null;
         });
 
-        void OnCompleted(string _)
+        if (readerOn)
         {
-            Pin.Completed -= OnCompleted;
-            Pin.Cancelled -= OnCancelled;
-            tcs.TrySetResult(true);
-        }
+            onCard = read => DispatcherQueue.TryEnqueue(() =>
+            {
+                if (tcs.Task.IsCompleted) return;
 
-        void OnCancelled()
-        {
-            Pin.Completed -= OnCompleted;
-            Pin.Cancelled -= OnCancelled;
-            tcs.TrySetResult(false);
+                var member = Services.Members.FindByCard(read.Uid);
+                if (member is null)
+                {
+                    Pin.ShowError($"这张卡还没登记（{read.ShortUid}）");
+                    return;
+                }
+                if (requireManager && !member.IsManager)
+                {
+                    Pin.ShowError("这不是班主任或班长的卡");
+                    return;
+                }
+
+                Session.Identify(member, asAdmin: member.IsManager);
+                IdentityChip.Refresh();
+                Finish(true);
+            });
+            Services.Reader.CardDetected += onCard;
         }
 
         Pin.Completed += OnCompleted;

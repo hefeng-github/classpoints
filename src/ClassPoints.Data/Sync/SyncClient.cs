@@ -111,7 +111,7 @@ public sealed class SyncClient : IDisposable
             json["refresh"]!.GetValue<string>());
     }
 
-    public async Task<(string ClassId, string Access, string Refresh)> PairAsync(
+    public async Task<(string ClassId, string Access, string Refresh, bool ReadOnly, string? Message)> PairAsync(
         string code, string secret, string kind, CancellationToken ct = default)
     {
         var body = new
@@ -124,17 +124,27 @@ public sealed class SyncClient : IDisposable
         };
         using var res = await _http.PostAsJsonAsync($"{BaseUrl}/api/v1/pair", body, Json, ct);
         var json = await ReadAsync(res, ct);
+        // 待审设备拿到的是只读票：配对算成功（能看班里数据），但写接口一律 403。
+        // 服务端把话术也一起给过来，客户端照着显示就行 —— 里面带着特征码，
+        // 老师要拿它去找班主任点通过，本地拼不出一模一样的句子。
+        var readOnly = json["readOnly"]?.GetValue<bool>() ?? false;
+        var message = json["message"]?.GetValue<string>();
         return (
             json["classId"]!.GetValue<string>(),
             json["access"]!.GetValue<string>(),
-            json["refresh"]!.GetValue<string>());
+            json["refresh"]!.GetValue<string>(),
+            readOnly,
+            message);
     }
 
-    public async Task<(string Access, string Refresh)> RefreshAsync(string refresh, CancellationToken ct = default)
+    public async Task<(string Access, string Refresh, bool ReadOnly)> RefreshAsync(string refresh, CancellationToken ct = default)
     {
         using var res = await _http.PostAsJsonAsync($"{BaseUrl}/api/v1/refresh", new { refresh }, Json, ct);
         var json = await ReadAsync(res, ct);
-        return (json["access"]!.GetValue<string>(), json["refresh"]!.GetValue<string>());
+        return (
+            json["access"]!.GetValue<string>(),
+            json["refresh"]!.GetValue<string>(),
+            json["readOnly"]?.GetValue<bool>() ?? false);
     }
 
     public async Task<bool> PingAsync(CancellationToken ct = default)

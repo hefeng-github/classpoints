@@ -78,12 +78,15 @@
                             MinWidth="110" Click="OnLassoButtonClick" />
                     <Button x:Name="UndoLastButton" Content="撤销上一步" Style="{StaticResource TouchSecondaryButton}"
                             MinWidth="150" Click="OnUndoLastClick" />
-                    <Button x:Name="QuickRulesButton" Content="快捷项" Style="{StaticResource TouchSecondaryButton}"
-                            MinWidth="110" Click="OnQuickRulesClick" />
+                    <Button x:Name="QuickRulesButton" Content="管理快捷项" Style="{StaticResource TouchSecondaryButton}"
+                            MinWidth="150" Click="OnQuickRulesClick" />
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right">
                     <Button x:Name="SelectAllButton" Content="全选本屏" Style="{StaticResource TouchSecondaryButton}"
                             MinWidth="120" Click="OnSelectAllClick" />
+                    <!-- 45 人的班滚两屏，「本屏」只能框住 40 个。要全班时不该靠拖框碰运气。 -->
+                    <Button x:Name="SelectClassButton" Content="全选全班" Style="{StaticResource TouchSecondaryButton}"
+                            MinWidth="120" Click="OnSelectClassClick" />
                     <Button x:Name="ClearButton" Content="清空" Style="{StaticResource TouchSecondaryButton}"
                             MinWidth="100" Click="OnClearClick" />
                 </StackPanel>

@@ -31,6 +31,25 @@ internal static class SyncStoreTests
             var raw = File.ReadAllText(path);
             check("refresh 是密文落盘", !raw.Contains("refresh-1"), "");
             check("access 不落盘（只在内存里活 12 小时）", !raw.Contains("access-in-memory"), "");
+            check("默认不是只读", loaded?.ReadOnly == false, loaded?.ReadOnly.ToString() ?? "null");
+
+            // 只读标记必须落盘：重启后界面不能又从"待审核"跳回"可写"，
+            // 否则老师会在一个根本没权限的界面上改半天，最后发现一条都没同步上去。
+            new SyncStore(path).Save(new SyncCredentials(
+                "https://sync.example.com", "cid-1", "a", "refresh-2", "ABC12345", ReadOnly: true));
+            check("只读标记能存回来", new SyncStore(path).Load()?.ReadOnly == true, "");
+
+            // 老版本的 sync.json 里没有这个字段 —— 不能因此把老设备当成只读。
+            // 做法是把新文件里的 readOnly 行删掉，其余原样保留（refresh 仍是密文）。
+            var legacyPath = Path.Combine(dir, "legacy.json");
+            new SyncStore(legacyPath).Save(new SyncCredentials(
+                "https://sync.example.com", "cid-1", "a", "refresh-3", "ABC12345", ReadOnly: true));
+            File.WriteAllLines(legacyPath,
+                File.ReadAllLines(legacyPath).Where(line => !line.Contains("\"readOnly\"")));
+            var legacy = new SyncStore(legacyPath).Load();
+            check("老文件没有 readOnly 字段时按可写处理（不误伤老设备）",
+                legacy?.ReadOnly == false && legacy.Refresh == "refresh-3",
+                $"readOnly={legacy?.ReadOnly} refresh={(legacy is null ? "null" : "ok")}");
 
             // 文件不存在 = 没配对，不是异常
             check("没有文件时返回 null", new SyncStore(Path.Combine(dir, "absent.json")).Load() is null, "");

@@ -83,11 +83,32 @@ export function asRole(v: unknown): Role {
 export const canManage = (role: Role): boolean => role === 'owner' || role === 'co_owner';
 
 /**
+ * 只读令牌的写入闸门。
+ *
+ * 待审设备拿的是只读票（claims.ro），能 /sync 拉、能 /ping，但任何改动都要拦。
+ * 用 403 + 独立错误码，客户端据此把界面切到只读并显示"等待班主任通过"，
+ * 而不是把它当成一次神秘失败去重试。
+ *
+ * 注意：**这道门不记 auth_throttle**。它不是猜密码，是"还没点通过"，
+ * 记了会让等待中的机器越试越被封。
+ */
+export function assertWritable(claims: Claims): void {
+  if (claims.ro) {
+    throw new HttpError(
+      403,
+      'read_only_device',
+      '这台设备还在等班主任通过，现在只能查看。通过之后会自动恢复记分，不用重新配对。',
+    );
+  }
+}
+
+/**
  * 管理类接口的闸门。403 而不是 404：调用方本来就持有这个班的令牌，
  * 班级存在与否早就知道了，藏也藏不住；这里要的是让界面能说清"身份不够"。
  */
 export async function requireManager(env: Env, request: Request): Promise<Claims> {
   const claims = await verifyToken(env, bearer(request));
+  assertWritable(claims);
   if (!canManage(claims.role)) {
     throw new HttpError(403, 'forbidden_role', '当前身份是班委，只能记分；改名单请用班主任或班长的密码');
   }

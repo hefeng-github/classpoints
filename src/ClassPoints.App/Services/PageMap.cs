@@ -15,7 +15,6 @@ public static class BoardPages
         AppNav.Entries => typeof(Board.BoardEntriesPage),
         AppNav.Students => typeof(Desk.DeskStudentsPage),
         AppNav.Exams => typeof(Desk.DeskExamsPage),
-        AppNav.Print => typeof(Desk.DeskPrintPage),
         AppNav.Periods => typeof(Desk.DeskPeriodsPage),
         _ => typeof(Desk.DeskSettingsPage),
     };
@@ -32,7 +31,6 @@ public static class DeskPages
         AppNav.Entries => typeof(Board.BoardEntriesPage),
         AppNav.Students => typeof(Desk.DeskStudentsPage),
         AppNav.Exams => typeof(Desk.DeskExamsPage),
-        AppNav.Print => typeof(Desk.DeskPrintPage),
         AppNav.Periods => typeof(Desk.DeskPeriodsPage),
         _ => typeof(Desk.DeskSettingsPage),
     };

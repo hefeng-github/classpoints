@@ -30,4 +30,7 @@ public interface IShellHost
 
     /// <summary>换人：弹密码框，输谁的密码就换成谁。</summary>
     Task<bool> SwitchIdentityAsync();
+
+    /// <summary>退出当前身份，回到「未认人」。下一步写操作会重新要密码/刷卡。</summary>
+    void ExitIdentity();
 }

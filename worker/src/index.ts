@@ -25,7 +25,8 @@
  *   PATCH /api/v1/admin/settings    切 join_mode
  * 它存在的原因见 routes/grants.ts 开头：口令会传开，机器要单独放行。
  *
- * 权限分两档（见 auth.ts 的 requireManager / canManage）：
+ * 权限分三档（见 auth.ts 的 assertWritable / requireManager / canManage）：
+ *   - 待审设备（只读票，claims.ro）：读（/sync /ping），别的全 403 read_only_device
  *   - 任意已配对身份：读（/sync /ping）、记分（/entries）、撤销（/entries/batch/:id/reverse）
  *   - 班主任与班长：其余全部写入（名单、规则、成员、周期、考试、折算方案）
  * 撤销之所以不下放给"仅管理"，是因为本地规则允许班委在 5 分钟内撤掉自己刚记的那批；
@@ -37,7 +38,7 @@
  */
 import type { Env } from './types';
 import { HttpError, fail, harden, json, preflight, readJson } from './util';
-import { requireAuth, requireManager } from './auth';
+import { assertWritable, requireAuth, requireManager } from './auth';
 import { ADMIN_HTML } from './admin';
 import { ping, adminSession, createClass, pair, refresh, signOut } from './routes/classes';
 import { postEntries, reverseBatch } from './routes/entries';
@@ -145,12 +146,15 @@ async function route(request: Request, env: Env): Promise<Response> {
       if (!second) {
         if (method !== 'POST') break;
         const claims = await requireAuth(env, request);
+        // 只读票（待审设备）能拉不能写：记分、撤销都要拦在入库之前
+        assertWritable(claims);
         await assertNotResetting(env, claims.cid);
         return postEntries(env, request);
       }
       // /entries/batch/:id/reverse
       if (second === 'batch' && third && fourth === 'reverse' && method === 'POST') {
         const claims = await requireAuth(env, request);
+        assertWritable(claims);
         await assertNotResetting(env, claims.cid);
         const body = await readJson<{ operatorId?: string; operatorName?: string }>(request);
         const operator = {

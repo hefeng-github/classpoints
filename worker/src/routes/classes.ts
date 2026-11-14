@@ -51,6 +51,9 @@ interface PairBody {
   deviceFingerprint?: string;
 }
 
+/** 待审设备的只读令牌有效期上限（秒）。半小时够撑到下一轮续期。 */
+const RO_ACCESS_TTL_SEC = 30 * 60;
+
 async function issueDevice(
   env: Env,
   classId: string,
@@ -59,11 +62,16 @@ async function issueDevice(
   memberId: string | null,
   label: string | null,
   fingerprint: string | null = null,
+  readOnly = false,
 ): Promise<{ deviceId: string; access: string; refresh: string; accessExpiresAt: number; refreshExpiresAt: number }> {
   const deviceId = uuidv7();
   const refresh = randomHex(32);
   const at = now();
   const refreshExpiresAt = at + refreshTtlSec(env) * 1000;
+  // 只读票给短一点的寿命（最长半小时）：它是"等通过"期间的临时通行证，
+  // 不该像正常令牌那样存 12 小时。客户端每轮续期都能重新判断状态，
+  // 通过的那一刻就换成全权票，不用用户手动重来。
+  const accessTtl = readOnly ? Math.min(accessTtlSec(env), RO_ACCESS_TTL_SEC) : accessTtlSec(env);
 
   await env.DB.batch([
     // role 和 member_id 要落库：refresh 时得原样换回去，否则班委的令牌刷一次就变回班主任
@@ -73,8 +81,9 @@ async function issueDevice(
     ).bind(deviceId, classId, kind, label, await sha256Hex(refresh), at, at, refreshExpiresAt, role, memberId, fingerprint),
   ]);
 
-  const access = await signToken(env, { sid: deviceId, cid: classId, kind, role, mid: memberId }, accessTtlSec(env));
-  return { deviceId, access, refresh, accessExpiresAt: at + accessTtlSec(env) * 1000, refreshExpiresAt };
+  const claims = { sid: deviceId, cid: classId, kind, role, mid: memberId, ...(readOnly ? { ro: true } : {}) };
+  const access = await signToken(env, claims, accessTtl);
+  return { deviceId, access, refresh, accessExpiresAt: at + accessTtl * 1000, refreshExpiresAt };
 }
 
 export async function createClass(env: Env, request: Request): Promise<Response> {
@@ -251,13 +260,11 @@ export async function pair(env: Env, request: Request): Promise<Response> {
     const shown = displayFingerprint(deviceFp);
     // 这里不再记失败次数：口令已经验过了，待审只是"还没点通过"，
     // 不是猜密码。记了会让学生在等待期间点两次就被封 15 分钟。
-    if (gate.kind === 'pending' || gate.kind === 'queue_full') {
+    if (gate.kind === 'queue_full') {
       throw new HttpError(
         403,
-        gate.kind === 'queue_full' ? 'review_queue_full' : 'device_pending',
-        gate.kind === 'queue_full'
-          ? '这个班的待审设备太多，请让班主任先在管理台清理一下。'
-          : `这台设备还没被批准。设备特征码 ${shown}，请让班主任打开班级管理台，在「待审核」里点通过，然后再试一次。`,
+        'review_queue_full',
+        '这个班的待审设备太多，请让班主任先在管理台清理一下。',
       );
     }
     if (gate.kind === 'blocked') {
@@ -266,6 +273,34 @@ export async function pair(env: Env, request: Request): Promise<Response> {
         'device_blocked',
         `这台设备被班主任拒绝过（特征码 ${shown}）。需要恢复的话，请班主任在管理台里把它改成通过。`,
       );
+    }
+    if (gate.kind === 'pending') {
+      // 待审不等于"不许进"。口令是对的，人也是这个班的人，只是机器还没被点头 ——
+      // 把他完全挡在门外，等于让老师对着对的口令干等，连本班数据都看不了。
+      // 给一张只读票：能拉、能看，写接口一律 403 read_only_device，
+      // 班主任点通过之后，下一轮 refresh 自动换成全权令牌。
+      await clear(env, 'pair', fp);
+      const tokens = await issueDevice(
+        env,
+        row.id,
+        body.kind ?? 'desk',
+        identity.role,
+        identity.memberId,
+        body.deviceLabel ?? null,
+        deviceFp,
+        true,
+      );
+      return json({
+        classId: row.id,
+        code,
+        role: identity.role,
+        memberId: identity.memberId,
+        readOnly: true,
+        devicePending: true,
+        fingerprint: shown,
+        message: `这台设备还没通过审核。设备特征码 ${shown}，请让班主任打开班级管理台，在「待审核」里点通过。通过后会自动恢复记分，不用重新配对。`,
+        ...tokens,
+      });
     }
   }
 
@@ -280,7 +315,7 @@ export async function pair(env: Env, request: Request): Promise<Response> {
     deviceFp,
   );
   // role 回给客户端：界面要据此决定配对完是"进了管理模式"还是"只能记分"
-  return json({ classId: row.id, code, role: identity.role, memberId: identity.memberId, ...tokens });
+  return json({ classId: row.id, code, role: identity.role, memberId: identity.memberId, readOnly: false, ...tokens });
 }
 
 /** 静默续期。refresh 一次一换（rotate），旧 token 立即作废。 */
@@ -319,6 +354,7 @@ export async function refresh(env: Env, request: Request): Promise<Response> {
   // 白名单是"现在"说了算，不看签发时的快照：网页上撤销一台机器之后，
   // 它手里那张 refresh 必须当场失效，而不是等 90 天慢慢过期。
   // 只在设备记着指纹时才检查 —— 升级前配对的老设备没有指纹，不能因此把人家踢下线。
+  let readOnly = false;
   if (device.fingerprint) {
     const cls = await env.DB.prepare('SELECT join_mode FROM classes WHERE id = ?')
       .bind(device.class_id)
@@ -329,7 +365,12 @@ export async function refresh(env: Env, request: Request): Promise<Response> {
       )
         .bind(device.class_id, device.fingerprint)
         .first<{ status: string }>();
-      if (grant?.status !== 'approved') {
+      if (grant?.status === 'pending') {
+        // 还在排队：不撤销，续一张只读票。下一条判据在这里 ——
+        // 班主任点通过之后，同样的 refresh 会走下面的全权分支，
+        // 客户端不需要重新配对，界面上"等待通过"的提示会自己消失。
+        readOnly = true;
+      } else if (grant?.status !== 'approved') {
         await env.DB.prepare('UPDATE devices SET revoked_at = ? WHERE id = ? AND class_id = ?')
           .bind(now(), device.id, device.class_id)
           .run();
@@ -378,12 +419,15 @@ export async function refresh(env: Env, request: Request): Promise<Response> {
     kind: device.kind,
     role,
     mid: memberId,
+    ...(readOnly ? { ro: true } : {}),
   };
+  const accessTtl = readOnly ? Math.min(accessTtlSec(env), RO_ACCESS_TTL_SEC) : accessTtlSec(env);
   return json({
-    access: await signToken(env, claims, accessTtlSec(env)),
+    access: await signToken(env, claims, accessTtl),
     refresh: next,
     role,
-    accessExpiresAt: at + accessTtlSec(env) * 1000,
+    readOnly,
+    accessExpiresAt: at + accessTtl * 1000,
     refreshExpiresAt: expiresAt,
   });
 }

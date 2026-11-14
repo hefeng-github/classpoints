@@ -54,6 +54,10 @@ internal static class Program
         ExcelTests.Run(Check);
         Section("事件计数");
         CounterTests.Run(Check);
+        Section("撤销");
+        UndoTests.Run(Check);
+        Section("名单软删除");
+        StudentListTests.Run(Check);
         Section("同步凭据");
         SyncStoreTests.Run(Check);
         Section("设备特征码");

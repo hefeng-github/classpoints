@@ -439,7 +439,7 @@ public sealed partial class OnboardingView : UserControl
 
         Body.Children.Add(new TextBlock
         {
-            Text = "配置包（.cpcfg）里带着班级名、座位、云端地址与名单，套用后本机能少填几项。没有就跳过。",
+            Text = "配置包（.cpcfg）里带着班级名、云端地址与名单，套用后本机能少填几项。没有就跳过。",
             Style = Styled("DeskBodyText"),
             TextWrapping = TextWrapping.Wrap,
         });
@@ -558,7 +558,7 @@ public sealed partial class OnboardingView : UserControl
                 }
 
                 summary.Text = "已套用：" + _configApplied + (result.Pulled is null ? "" : "；" + result.Pulled);
-                HintText.Text = "班级名、座位" + (bundle.Roster.Count > 0 ? "、名单" : "") +
+                HintText.Text = "班级名" + (bundle.Roster.Count > 0 ? "、名单" : "") +
                                 (_pinFromBundle ? "、管理密码" : "") + "都已就位。";
                 HintText.Foreground = Pal.Positive;
             }
@@ -651,11 +651,22 @@ public sealed partial class OnboardingView : UserControl
                 Services.Pump.Start();
 
                 var pull = await Services.Sync.RunOnceAsync();
-                status.Text = pull.Ok
-                    ? $"已连接，拉取 {pull.Pulled} 条记录。名单那一步可以跳过。"
-                    : $"已连接，但这次没拉到数据（{pull.Error}），稍后会自动重试。";
-                HintText.Text = "云端已接入这台机器。";
-                HintText.Foreground = Pal.Positive;
+                if (report.ReadOnly)
+                {
+                    // 待审设备：连上了，能看，写不了。别写成"已连接，拉取 N 条"让人以为完事了。
+                    status.Text = report.PendingMessage
+                        ?? "已连接到云端，但这台设备还在等班主任通过，暂时只能查看。";
+                    HintText.Text = "云端已接入，等班主任通过设备审核。";
+                    HintText.Foreground = Pal.Warn;
+                }
+                else
+                {
+                    status.Text = pull.Ok
+                        ? $"已连接，拉取 {pull.Pulled} 条记录。名单那一步可以跳过。"
+                        : $"已连接，但这次没拉到数据（{pull.Error}），稍后会自动重试。";
+                    HintText.Text = "云端已接入这台机器。";
+                    HintText.Foreground = Pal.Positive;
+                }
             }
             catch (Exception ex)
             {
@@ -747,7 +758,7 @@ public sealed partial class OnboardingView : UserControl
         Body.Children.Add(NamesInput);
         Body.Children.Add(new TextBlock
         {
-            Text = "带学号和座位的导入在「名单」页做，可直接读 Excel。",
+            Text = "带学号的导入在「名单」页做，可直接读 Excel。",
             Style = Styled("SmallText"),
         });
 
@@ -1143,7 +1154,7 @@ public sealed partial class OnboardingView : UserControl
         Body.Children.Add(Section("之后再做", new[]
         {
             "「设置 → 成员与权限」给班长与班委发卡或设密码。",
-            "「打印与导出」可打印一张恢复卡留档。",
+            "「设置 → 密码与恢复码」可把恢复码存成文本文件，另存一份留档。",
         }));
     }
 

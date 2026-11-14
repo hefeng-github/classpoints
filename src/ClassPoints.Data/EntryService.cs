@@ -212,7 +212,8 @@ public sealed class EntryService(Database db, AuditRepository audit)
                 Database.Exec(conn, tx, "DELETE FROM entries WHERE id = $id", ("$id", id));
             }
         }
-        audit.Add("undo_pending", target: batchId, detail: "未推送批次物理撤销");
+        // 审计和业务必须在同一个事务里：另开连接写会撞上本事务的写锁（Error 5）。
+        audit.Add(conn, tx, "undo_pending", target: batchId, detail: "未推送批次物理撤销");
         tx.Commit();
         return true;
     }

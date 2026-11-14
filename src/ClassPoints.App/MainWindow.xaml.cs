@@ -167,16 +167,14 @@ public sealed partial class MainWindow : Window
                     (AppNav.Entries, "board-5-entries"),
                     (AppNav.Students, "board-6-students"),
                     (AppNav.Exams, "board-7-exams"),
-                    (AppNav.Print, "board-8-print"),
-                    (AppNav.Periods, "board-9-periods"),
-                    (AppNav.Settings, "board-a-settings"),
+                    (AppNav.Periods, "board-8-periods"),
+                    (AppNav.Settings, "board-9-settings"),
                 ];
 
                 foreach (var (index, name) in pages)
                 {
                     board.Navigate(index);
-                    // 打印页的预览是 WebView2 现渲染的，多等一会儿
-                    await Task.Delay(index == AppNav.Print ? 5000 : 1400);
+                    await Task.Delay(1400);
                     if (await Snapshot.SaveAsync(Root, Path.Combine(dir, name + ".png")))
                         Services.Log("快照 " + name);
                 }
@@ -195,13 +193,12 @@ public sealed partial class MainWindow : Window
             else if (App.Desk is { } desk)
             {
                 string[] names = ["desk-1-score", "desk-2-counters", "desk-3-wall", "desk-4-lookup",
-                                  "desk-5-entries", "desk-6-students", "desk-7-exams", "desk-8-print",
-                                  "desk-9-periods", "desk-a-settings"];
+                                  "desk-5-entries", "desk-6-students", "desk-7-exams",
+                                  "desk-8-periods", "desk-9-settings"];
                 for (var i = 0; i < names.Length; i++)
                 {
                     desk.Navigate(i);
-                    // 打印页的预览是 WebView2 现渲染的，1.5 秒只够它起进程，抓到的会是"正在生成预览"。
-                    await Task.Delay(i == AppNav.Print ? 5000 : 1500);
+                    await Task.Delay(1500);
                     if (await Snapshot.SaveAsync(Root, Path.Combine(dir, names[i] + ".png")))
                         Services.Log("快照 " + names[i]);
                 }
@@ -288,6 +285,7 @@ public sealed partial class MainWindow : Window
     /// <summary>设置页换形态：整个外壳换掉，进程不重启。数据、会话、日志都还在。</summary>
     public void SwitchToMode(AppMode mode)
     {
+        CloseOpenDialogs();
         App.SetMode(mode);
         Services.Settings.OnboardingDone = true;
         ShowShell();
@@ -296,9 +294,37 @@ public sealed partial class MainWindow : Window
     /// <summary>重新跑一遍向导：形态清空，向导会从"这台电脑做什么"重新问。</summary>
     public void RunWizard()
     {
+        CloseOpenDialogs();
         _modeBeforeWizard = App.ModeKnown ? App.Mode : null;
         App.ForgetMode();
         ShowOnboarding(allowCancel: true);
+    }
+
+    /// <summary>
+    /// 换外壳前先把还开着的 ContentDialog 关掉。
+    ///
+    /// 对话框挂在窗口的弹出层上，不在页面树里 —— 换掉页面时它不会跟着消失，
+    /// 会留在新形态的界面上，而它的 XamlRoot 还指着已经拆掉的那棵树，
+    /// 点它的按钮不是没反应就是崩。
+    /// </summary>
+    private void CloseOpenDialogs()
+    {
+        if (Root is null) return;
+        foreach (var dialog in FindAll<ContentDialog>(Root))
+        {
+            try { dialog.Hide(); } catch (Exception) { }
+        }
+    }
+
+    private static IEnumerable<T> FindAll<T>(DependencyObject root) where T : DependencyObject
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T hit) yield return hit;
+            foreach (var found in FindAll<T>(child)) yield return found;
+        }
     }
 
     /// <summary>向导中途退出（重新配置时才有这条路）：形态恢复原样，外壳照旧。</summary>

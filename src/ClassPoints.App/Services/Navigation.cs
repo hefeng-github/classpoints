@@ -17,10 +17,9 @@ public static class AppNav
     public const int Entries = 4;
     public const int Students = 5;
     public const int Exams = 6;
-    public const int Print = 7;
-    public const int Periods = 8;
-    public const int Settings = 9;
-    public const int Count = 10;
+    public const int Periods = 7;
+    public const int Settings = 8;
+    public const int Count = 9;
 
     /// <summary>导航条上的文案。两端共用一份，避免"大屏叫明细、电脑叫记录"。</summary>
     public static readonly (int Index, string Title, string Glyph)[] Items =
@@ -32,7 +31,6 @@ public static class AppNav
         (Entries, "明细", "\uE8A5"),
         (Students, "名单", "\uE716"),
         (Exams, "考试与总评", "\uE9D9"),
-        (Print, "打印与导出", "\uE749"),
         (Periods, "周期", "\uE81C"),
         (Settings, "设置", "\uE713"),
     ];

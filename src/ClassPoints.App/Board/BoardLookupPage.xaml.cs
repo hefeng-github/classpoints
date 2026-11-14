@@ -99,7 +99,7 @@ public sealed partial class BoardLookupPage : Page
         if (_students.Count == 0) return;
 
         var viewportW = Scroll.ViewportWidth > 0 ? Scroll.ViewportWidth : ActualWidth - 24;
-        // 卡片给足 200 宽：查分是学生自己凑近看，名字和座位号挤在一起最容易看错人
+        // 卡片给足 200 宽：查分是学生自己凑近看，名字要够大才不至于看错人
         _columns = System.Math.Clamp((int)(viewportW / 200), 3, 10);
         _cellW = (viewportW - Gap * (_columns - 1)) / _columns;
         var rows = (int)System.Math.Ceiling(_students.Count / (double)_columns);
@@ -152,7 +152,6 @@ public sealed partial class BoardLookupPage : Page
         ResetTimeout();
 
         PersonName.Text = student.Name;
-        PersonSeat.Text = student.SeatText;
 
         var period = Services.CurrentPeriod;
         var points = _weekView ? WeekPoints(student.Id) : _totals.GetValueOrDefault(student.Id);

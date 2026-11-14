@@ -5,9 +5,9 @@
  * 然后：node test/grants.mjs
  *
  * 覆盖的是这条链路上的每一个判定点，而不是"能跑通"：
- * 待审不签令牌、批准后才签、撤销当场断续期、无指纹被挡、拒绝需显式恢复、
- * 切回 open 后老行为不变。任何一处写反，都会表现成"某台机器进不来"
- * 或者更糟 —— "谁都能进"。
+ * 待审只签只读令牌（能拉不能写）、批准后续期自动升级、撤销当场断续期、
+ * 无指纹被挡、拒绝需显式恢复、切回 open 后老行为不变。任何一处写反，
+ * 都会表现成"某台机器进不来"或者更糟 —— "谁都能进"。
  */
 import { randomUUID, randomBytes, pbkdf2Sync } from 'node:crypto';
 
@@ -99,14 +99,45 @@ check('审核模式下不带指纹 → 422', noFp.status === 422 && noFp.data?.e
 const pendingPair = await call('POST', '/pair', {
   body: { code, secret: PIN, kind: 'desk', deviceLabel: '讲台机', deviceFingerprint: hex(3) },
 });
-check('新设备第一次来 → 403 device_pending', pendingPair.status === 403 && pendingPair.data?.error === 'device_pending',
-  `status=${pendingPair.status} ${pendingPair.data?.error}`);
+check('新设备第一次来 → 200 但只读', pendingPair.status === 200 && pendingPair.data?.readOnly === true,
+  `status=${pendingPair.status} readOnly=${pendingPair.data?.readOnly}`);
+check('只读也签了令牌（能看）', !!pendingPair.data?.access && !!pendingPair.data?.refresh);
 check('待审响应里给出可抄的特征码', typeof pendingPair.data?.message === 'string' && pendingPair.data.message.includes('0000-0000'));
+const pendingAccess = pendingPair.data?.access;
+const pendingRefresh = pendingPair.data?.refresh;
+
+console.log('\n3.5) 待审设备：能拉，不能写');
+const pendingPull = await call('GET', '/sync?since=0&limit=50', { token: pendingAccess });
+check('待审令牌能拉数据', pendingPull.status === 200, `status=${pendingPull.status}`);
+check('/sync 明确回 readOnly=true', pendingPull.data?.readOnly === true, `readOnly=${pendingPull.data?.readOnly}`);
+check('拉到了名单（不是空壳）', Array.isArray(pendingPull.data?.members) && pendingPull.data.members.length >= 1,
+  `members=${pendingPull.data?.members?.length}`);
+
+const pendingWrite = await call('POST', '/entries', {
+  token: pendingAccess,
+  body: {
+    entries: [{
+      id: randomUUID(), studentId: 'nobody', ruleId: null, ruleName: '只读测试', delta: 1,
+      note: null, operatorId: null, operatorName: '测试', at: Date.now(), rev: 1,
+      createdAt: Date.now(), updatedAt: Date.now(), periodId: null, count: 1, reversedAt: null,
+      reversedBy: null, batchId: null,
+    }],
+  },
+});
+check('待审令牌记分 → 403 read_only_device', pendingWrite.status === 403 && pendingWrite.data?.error === 'read_only_device',
+  `status=${pendingWrite.status} ${pendingWrite.data?.error}`);
+
+const pendingManager = await call('POST', '/students', {
+  token: pendingAccess,
+  body: { action: 'upsert', student: { id: randomUUID(), name: '只读测试', seat: 1, rev: 1, createdAt: Date.now(), updatedAt: Date.now() } },
+});
+check('待审令牌改名单 → 403', pendingManager.status === 403 && pendingManager.data?.error === 'read_only_device',
+  `status=${pendingManager.status} ${pendingManager.data?.error}`);
 
 const again = await call('POST', '/pair', {
   body: { code, secret: PIN, kind: 'desk', deviceLabel: '讲台机', deviceFingerprint: hex(3) },
 });
-check('再试一次仍然是待审（不是 429）', again.status === 403 && again.data?.error === 'device_pending', `status=${again.status}`);
+check('再试一次仍然是待审（不是 429）', again.status === 200 && again.data?.readOnly === true, `status=${again.status}`);
 
 console.log('\n4) 管理台看得到、点得动');
 const list = await call('GET', '/admin/devices', { token: admin });
@@ -119,15 +150,37 @@ check('列表带设备名', mine?.label === '讲台机', String(mine?.label));
 const approved = await call('POST', `/admin/devices/${mine.id}/approve`, { token: admin });
 check('通过成功', approved.status === 200 && approved.data?.status === 'approved', `status=${approved.status}`);
 
+// 关键的一条：通过了不用重新配对，手里的只读 refresh 换出来就该是全权令牌。
+// 老代码这里会把设备撤销掉（status !== approved 一律 revoke），
+// 结果班主任点了通过，那台机器还是进不来，得让老师再输一遍口令。
+const upgraded = await call('POST', '/refresh', { body: { refresh: pendingRefresh } });
+check('通过后续期自动升级为全权令牌', upgraded.status === 200 && upgraded.data?.readOnly === false,
+  `status=${upgraded.status} readOnly=${upgraded.data?.readOnly}`);
+const upgradedWrite = await call('POST', '/entries', {
+  token: upgraded.data?.access,
+  body: {
+    entries: [{
+      id: randomUUID(), studentId: 'nobody', ruleId: null, ruleName: '升级测试', delta: 1,
+      note: null, operatorId: null, operatorName: '测试', at: Date.now(), rev: 1,
+      createdAt: Date.now(), updatedAt: Date.now(), periodId: null, count: 1, reversedAt: null,
+      reversedBy: null, batchId: null,
+    }],
+  },
+});
+check('升级后的令牌写接口不再是 read_only_device',
+  !(upgradedWrite.status === 403 && upgradedWrite.data?.error === 'read_only_device'),
+  `status=${upgradedWrite.status} ${upgradedWrite.data?.error}`);
+
 const okPair = await call('POST', '/pair', {
   body: { code, secret: PIN, kind: 'desk', deviceLabel: '讲台机', deviceFingerprint: hex(3) },
 });
-check('批准后同一台机器配对成功', okPair.status === 200 && !!okPair.data?.access, `status=${okPair.status}`);
+check('批准后同一台机器配对成功', okPair.status === 200 && okPair.data?.readOnly === false && !!okPair.data?.access,
+  `status=${okPair.status}`);
 const keptRefresh = okPair.data?.refresh;
 
 const otherPair = await call('POST', '/pair', { body: { code, secret: PIN, kind: 'desk', deviceFingerprint: hex(4) } });
-check('没批准的另一台机器仍然进不来', otherPair.status === 403 && otherPair.data?.error === 'device_pending',
-  `status=${otherPair.status}`);
+check('没批准的机器只能拿到只读令牌', otherPair.status === 200 && otherPair.data?.readOnly === true,
+  `status=${otherPair.status} readOnly=${otherPair.data?.readOnly}`);
 
 console.log('\n5) 撤销 = 当场断续期');
 const revoke = await call('POST', `/admin/devices/${mine.id}/revoke`, { token: admin });

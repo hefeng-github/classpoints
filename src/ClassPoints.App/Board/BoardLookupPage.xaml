@@ -42,8 +42,8 @@
 
             <Grid Grid.Row="0">
                 <StackPanel>
+                    <!-- 座位已隐藏（v1.3）：个人页只留姓名，不再显示"几排几座" -->
                     <TextBlock x:Name="PersonName" Style="{StaticResource H1Text}" />
-                    <TextBlock x:Name="PersonSeat" Style="{StaticResource SecondaryText}" Margin="0,2,0,0" />
                 </StackPanel>
                 <Button HorizontalAlignment="Right" VerticalAlignment="Top"
                         Style="{StaticResource TouchSecondaryButton}" Width="56" Height="56" MinWidth="56"

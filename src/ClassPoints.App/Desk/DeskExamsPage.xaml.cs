@@ -568,7 +568,7 @@ public sealed partial class DeskExamsPage : Page
                 {
                     Text = row.Kind switch
                     {
-                        ScoreMatchKind.Matched => row.Matched is null ? "匹配" : $"{row.Matched.Name} · {row.Matched.SeatText}",
+                        ScoreMatchKind.Matched => row.Matched is null ? "匹配" : row.Matched.Name,
                         ScoreMatchKind.Absent => "缺考，按口径计入",
                         ScoreMatchKind.Summary => "非学生行，已忽略",
                         ScoreMatchKind.Duplicate => "两人同名，请选择",

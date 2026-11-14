@@ -63,7 +63,7 @@ public sealed class ConfigService(AppServices services)
 
         var roster = bundle.Roster.Count == 0 ? "不带名单" : $"带 {bundle.Roster.Count} 人名单";
 
-        return $"{bundle.ClassName} · 座位 {bundle.SeatRows} 排 × {bundle.SeatCols} 座 · {roster}\n" +
+        return $"{bundle.ClassName} · {roster}\n" +
                $"{sync}\n{secret}";
     }
 
@@ -118,6 +118,13 @@ public sealed class ConfigService(AppServices services)
             var pulled = pull.Ok
                 ? $"拉取 {pull.Pulled} 条"
                 : $"拉取失败（{pull.Error}），稍后会自动重试";
+
+            // 待审设备：配置套上了、云端也连上了，但这台机器暂时写不了。
+            // 不能只说"已连接"，否则老师以为能记分了，点下去才发现全灰。
+            if (report.ReadOnly)
+                return new ConfigApplyResult(true,
+                    $"已连接 {sync.BaseUrl}，班级码 {sync.ClassCode}{extra}。",
+                    "这台设备还在等班主任通过，暂时只能查看；通过后会自动恢复记分，不用重新配对。");
 
             return new ConfigApplyResult(true, $"已连接 {sync.BaseUrl}，班级码 {sync.ClassCode}{extra}。", pulled);
         }
