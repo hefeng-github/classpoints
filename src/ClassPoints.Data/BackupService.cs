@@ -49,11 +49,42 @@ public sealed class BackupService(Database db)
             if (string.IsNullOrWhiteSpace(custom)) return Database.DefaultBackupDir;
 
             // 老库把默认值写成了绝对路径；认出它就不再当年是"用户自己选的"。
-            return string.Equals(custom.TrimEnd('\\'), Database.BackupRoot.TrimEnd('\\'),
-                StringComparison.OrdinalIgnoreCase)
+            return Same(custom, Database.BackupRoot) || Same(custom, Database.LegacyBackupRoot)
                 ? Database.DefaultBackupDir
                 : custom!;
         }
+    }
+
+    private static bool Same(string a, string b)
+    {
+        try
+        {
+            return DataPaths.SameDir(a, b);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 当前目录 + 历史上用过的几个目录。默认目录换过两次（先是 %LOCALAPPDATA%\backups，
+    /// 再是「文档」，现在跟着数据目录走），每换一次都会留下一批旧备份 —— 不列出来就等于丢了。
+    /// </summary>
+    private List<string> Roots()
+    {
+        var list = new List<string>();
+        foreach (var root in new[]
+                 {
+                     BackupRoot, Database.BackupRoot, Database.LegacyBackupRoot, Database.DocumentsBackupDir,
+                 })
+        {
+            if (string.IsNullOrWhiteSpace(root)) continue;
+            if (list.Any(x => Same(x, root))) continue;
+            list.Add(root);
+        }
+
+        return list;
     }
 
     /// <summary>
@@ -187,15 +218,15 @@ public sealed class BackupService(Database db)
     }
 
     /// <summary>
-    /// 列出备份。除了当前目录，也把旧位置（%LOCALAPPDATA%\ClassPoints\backups）里的列进来 ——
-    /// 默认目录换到「文档」之后，之前那些备份还躺在那儿，看不见就等于丢了。
+    /// 列出备份。除了当前目录，也把历史上用过的几个目录里的列进来 ——
+    /// 默认目录换过几次，之前那些备份还躺在那儿，看不见就等于丢了。
     /// </summary>
     public List<BackupFile> List(int take = 40)
     {
         var list = new List<BackupFile>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var root in new[] { BackupRoot, Database.BackupRoot })
+        foreach (var root in Roots())
         {
             if (!Directory.Exists(root)) continue;
 
@@ -224,25 +255,39 @@ public sealed class BackupService(Database db)
     }
 
     /// <summary>旧目录里还有多少份（界面上用它提示"这些还在原来的位置"）。</summary>
-    public int LegacyCount
-    {
-        get
+    public int LegacyCount => CountIn(LegacyRoots);
+
+    /// <summary>当前目录之外、真的还存着东西的那些旧备份目录。</summary>
+    public List<string> LegacyRoots =>
+        Roots().Skip(1).Where(root =>
         {
-            if (string.Equals(BackupRoot.TrimEnd('\\'), Database.BackupRoot.TrimEnd('\\'),
-                    StringComparison.OrdinalIgnoreCase))
-                return 0;
             try
             {
-                return Directory.Exists(Database.BackupRoot)
-                    ? Directory.GetDirectories(Database.BackupRoot).Length +
-                      Directory.GetFiles(Database.BackupRoot, "*.zip").Length
-                    : 0;
+                return Directory.Exists(root) &&
+                       (Directory.GetDirectories(root).Length > 0 || Directory.GetFiles(root, "*.zip").Length > 0);
             }
             catch (Exception)
             {
-                return 0;
+                return false;
+            }
+        }).ToList();
+
+    private static int CountIn(IEnumerable<string> roots)
+    {
+        var count = 0;
+        foreach (var root in roots)
+        {
+            try
+            {
+                count += Directory.GetDirectories(root).Length + Directory.GetFiles(root, "*.zip").Length;
+            }
+            catch (Exception)
+            {
+                // 目录不可读就少算一份，不值得为它把整个设置页打挂
             }
         }
+
+        return count;
     }
 
     /// <summary>恢复：先把当前库改名并排（不覆盖），再把候选库拷回来。装错了包还能退。</summary>
@@ -294,6 +339,80 @@ public sealed class BackupService(Database db)
         }
     }
 
+    // ---------------- 换数据目录 ----------------
+
+    /// <summary>
+    /// 把整个数据目录搬到别处（装到系统盘之后想搬到 D 盘，或者反过来）。
+    ///
+    /// 库走 <see cref="VacuumInto"/> 做一致性副本，不是 File.Copy —— 正在写的库带 WAL，
+    /// 直接拷出来的文件可能是"写了一半"的样子，换过去就是一份看不出坏了的坏库。
+    /// 校验通过才写指针；指针写不下去就当场失败，绝不留"看起来搬好了、重启又回原处"的局面。
+    /// 原目录一个文件都不删：搬完人自己确认，删不删由他决定。
+    /// </summary>
+    public RestoreCheck MoveDataRoot(string targetRoot)
+    {
+        if (string.IsNullOrWhiteSpace(targetRoot)) return new(false, "没有选择目录");
+
+        try
+        {
+            if (DataPaths.SameDir(targetRoot, Database.RootDir)) return new(false, "数据已经在这个目录里了");
+
+            var targetDb = System.IO.Path.Combine(targetRoot, DataPaths.DbName);
+            if (File.Exists(targetDb))
+                return new(false, "这个目录里已经有一份班级积分数据，换一个空目录");
+
+            Directory.CreateDirectory(targetRoot);
+            VacuumInto(targetDb);
+
+            // 同步凭据、免密会话、恢复码跟着走，否则新目录里要重新配对、重新认人
+            foreach (var name in new[] { "sync.json", "session.bin", "recovery.bin" })
+            {
+                var source = System.IO.Path.Combine(Database.RootDir, name);
+                if (File.Exists(source)) File.Copy(source, System.IO.Path.Combine(targetRoot, name), overwrite: true);
+            }
+
+            if (CheckDbFile(targetDb) is { } problem)
+            {
+                try { File.Delete(targetDb); } catch (Exception) { }
+                return new(false, "复制出来的库没通过检查：" + problem + "，已放弃，数据还在原处");
+            }
+
+            DataPaths.SavePointer(targetRoot);
+            if (DataPaths.ReadPointer() is not { } written || !DataPaths.SameDir(written, targetRoot))
+                return new(false, "目录已复制好，但记录位置失败（%LOCALAPPDATA% 可能被安全软件挡住），重启后会回原处");
+
+            return new(true, targetRoot);
+        }
+        catch (Exception ex)
+        {
+            return new(false, "搬移失败：" + ex.Message);
+        }
+    }
+
+    /// <summary>能不能当数据文件用。返回 null 表示没问题，否则是给人看的原因。</summary>
+    private static string? CheckDbFile(string path)
+    {
+        try
+        {
+            using var probe = new SqliteConnection($"Data Source={path};Mode=ReadOnly");
+            probe.Open();
+
+            using var cmd = probe.CreateCommand();
+            cmd.CommandText = "PRAGMA integrity_check";
+            var result = cmd.ExecuteScalar()?.ToString() ?? "";
+            if (!result.Equals("ok", StringComparison.OrdinalIgnoreCase)) return "完整性检查未通过：" + result;
+
+            cmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('students','entries','periods')";
+            if (Convert.ToInt32(cmd.ExecuteScalar()) < 3) return "文件里缺少必要的表";
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
     // ---------------- 整包迁移 ----------------
 
     /// <summary>classpoints-yyyyMMdd-HHmm.zip：manifest + db + settings + README。</summary>
@@ -304,7 +423,10 @@ public sealed class BackupService(Database db)
         var zipPath = System.IO.Path.Combine(dir, $"classpoints-{DateTime.Now:yyyyMMdd-HHmm}.zip");
         if (File.Exists(zipPath)) zipPath = zipPath.Replace(".zip", $"-{DateTime.Now:ss}.zip");
 
-        var tmpDb = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"cp-pack-{Guid.NewGuid():N}.db");
+        // 打包用的库副本放在数据目录下的 tmp 里，不用系统 %TEMP%：
+        // 那在 C 盘，而且清理工具可能正好删在压缩到一半的时候。
+        Directory.CreateDirectory(Database.TempDir);
+        var tmpDb = System.IO.Path.Combine(Database.TempDir, $"cp-pack-{Guid.NewGuid():N}.db");
         try
         {
             VacuumInto(tmpDb);
@@ -381,7 +503,7 @@ public sealed class BackupService(Database db)
     {
         if (!File.Exists(zipPath)) return new(false, "文件不存在");
 
-        var tmpDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"cp-import-{Guid.NewGuid():N}");
+        var tmpDir = System.IO.Path.Combine(Database.TempDir, $"cp-import-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tmpDir);
         try
         {

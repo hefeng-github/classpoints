@@ -83,6 +83,98 @@ public static class FileDialogs
     public static string? Save(string title, string suggestedName, FileFilter filter, string defaultExtension) =>
         Show(title, [filter], defaultExtension, suggestedName, save: true);
 
+    // ---------------- 选目录 ----------------
+
+    private const int BIF_RETURNONLYFSDIRS = 0x0001;
+    private const int BIF_EDITBOX = 0x0010;
+    private const int BIF_NEWDIALOGSTYLE = 0x0040;
+    private const int MaxPath = 260;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct BrowseInfo
+    {
+        public IntPtr Owner;
+        public IntPtr Root;
+        public IntPtr DisplayName;
+        public IntPtr Title;
+        public int Flags;
+        public IntPtr Callback;
+        public IntPtr LParam;
+        public int Image;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr SHBrowseForFolderW(ref BrowseInfo info);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool SHGetPathFromIDListW(IntPtr pidl, IntPtr path);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SHParseDisplayName(string name, IntPtr bindCtx, out IntPtr pidl, uint attributes,
+        out uint attributesOut);
+
+    [DllImport("ole32.dll")]
+    private static extern void CoTaskMemFree(IntPtr memory);
+
+    /// <summary>
+    /// 选一个目录（换数据位置、换备份位置用）。取消返回 null。
+    ///
+    /// 走 shell32 的老接口而不是 Windows.Storage.Pickers.FolderPicker，理由和上面一样：
+    /// 提权进程里那一套会抛 message 为空的 COMException。结构体同样全用 IntPtr，
+    /// 缓冲区自己分配、自己清零 —— 不清零第一次打开会带上随机字符当路径。
+    /// </summary>
+    public static string? PickFolder(string title, string? initialDir = null)
+    {
+        var titlePtr = Marshal.StringToHGlobalUni(title);
+        var namePtr = Marshal.AllocHGlobal(MaxPath * 2);
+        var pathPtr = Marshal.AllocHGlobal(MaxPath * 2);
+        var rootPtr = IntPtr.Zero;
+        var pidl = IntPtr.Zero;
+
+        try
+        {
+            for (var i = 0; i < MaxPath; i++)
+            {
+                Marshal.WriteInt16(namePtr, i * 2, 0);
+                Marshal.WriteInt16(pathPtr, i * 2, 0);
+            }
+
+            if (!string.IsNullOrWhiteSpace(initialDir) && Directory.Exists(initialDir))
+            {
+                try { SHParseDisplayName(initialDir, IntPtr.Zero, out rootPtr, 0, out _); }
+                catch (Exception) { rootPtr = IntPtr.Zero; }
+            }
+
+            var info = new BrowseInfo
+            {
+                Owner = App.Window is null ? IntPtr.Zero : WinRT.Interop.WindowNative.GetWindowHandle(App.Window),
+                Root = rootPtr,
+                DisplayName = namePtr,
+                Title = titlePtr,
+                Flags = BIF_RETURNONLYFSDIRS | BIF_EDITBOX | BIF_NEWDIALOGSTYLE,
+            };
+
+            pidl = SHBrowseForFolderW(ref info);
+            if (pidl == IntPtr.Zero) return null;
+            if (!SHGetPathFromIDListW(pidl, pathPtr)) return null;
+
+            var picked = Marshal.PtrToStringUni(pathPtr);
+            return string.IsNullOrWhiteSpace(picked) ? null : picked;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(pathPtr);
+            Marshal.FreeHGlobal(namePtr);
+            Marshal.FreeHGlobal(titlePtr);
+            if (pidl != IntPtr.Zero) CoTaskMemFree(pidl);
+            if (rootPtr != IntPtr.Zero) CoTaskMemFree(rootPtr);
+        }
+    }
+
     private static string? Show(string title, FileFilter[] filters, string? defExt,
         string suggestedName, bool save)
     {

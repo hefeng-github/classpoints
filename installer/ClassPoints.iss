@@ -4,9 +4,10 @@
 ;   * 装到 Program Files，机器级安装（PrivilegesRequired=admin）。
 ;     代价是每次升级要过一次 UAC，好处是"任何账号登录都能用"，
 ;     走廊那台查询机换了账号也不用重装。
-;   * 用户数据**不在安装目录**（%LOCALAPPDATA%\ClassPoints），
-;     所以覆盖升级、卸载重装都不会碰名单和分数。这一点由程序自己保证，
-;     安装程序这边刻意不写任何 {localappdata} 的删除规则。
+;   * 用户数据**不在安装目录被 [Files] 管着的那些文件里**：装在非系统盘时是
+;     「安装目录\data」，装在 C 盘时是「%LOCALAPPDATA%\ClassPoints」。
+;     两种情况都覆盖升级、卸载重装不碰名单和分数。这一点由程序自己保证，
+;     安装程序这边刻意不写任何删除 data 或 {localappdata} 的规则。
 ;   * 静默升级靠 /VERYSILENT + /CLOSEAPPLICATIONS：
 ;     程序自己拉起安装包后立即退出，安装程序用 Restart Manager 关掉残留进程再换文件。
 ;
@@ -100,16 +101,22 @@ Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: no
 
 [UninstallDelete]
 ; 只清自己在安装目录里产生的临时文件。用户数据（数据库、备份、同步凭据）
-; 全在 %LOCALAPPDATA%\ClassPoints，卸载一律不碰。
+; 要么在「安装目录\data」，要么在 %LOCALAPPDATA%\ClassPoints，卸载一律不碰 ——
+; data 目录不在这里登记，也就不会被卸载程序清掉。
 Type: files; Name: "{app}\启动.cmd"
 
 [Code]
-// 装之前先在界面上把"数据不会被删"这句话说清楚。
-// 老师在控制面板里点卸载时最怕的就是这一条，写在说明里比写在文档里有效。
+// 装之前先在界面上把"数据在哪、卸不掉"说清楚。
+// 老师在控制面板里点卸载时最怕的就是"名单会不会没了"，写在说明里比写在文档里有效。
+//
+// 数据位置随安装位置变（程序自己判断）：
+//   装在非系统盘 → 数据在「安装目录\data」，卸载也留着；
+//   装在 C 盘   → 数据在 %LOCALAPPDATA%\ClassPoints，卸载同样不碰。
 procedure InitializeWizard();
 begin
   WizardForm.WelcomeLabel2.Caption :=
     WizardForm.WelcomeLabel2.Caption + #13#10#13#10 +
-    '安装位置在 Program Files。班级名单、积分记录、备份都保存在当前用户的' +
-    ' AppData 目录里，升级或卸载都不会删除。';
+    '班级名单、积分记录、备份都在随程序的数据目录里（装在非系统盘时就在安装目录下的 data 文件夹），' +
+    '升级或卸载都不会删除。装在 C 盘时它们位于当前用户的 AppData 目录，' +
+    '也可以在「设置 → 本机数据」里一键搬到别的盘。';
 end;

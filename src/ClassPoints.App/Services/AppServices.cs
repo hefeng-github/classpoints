@@ -88,6 +88,14 @@ public sealed class AppServices
 
     public static AppServices Initialize(StartupOptions options)
     {
+        // 先定数据目录：判断 + （必要时）把旧库搬过去 + 记下选择。
+        // 用 --db 指了具体文件时以那个文件为准，不去认别的目录 —— 那是测试和
+        // "两台机器共用一份库"的场景，不该被自动搬家搅一下。
+        var location = options.DbPath is null
+            ? DataPaths.Prepare()
+            : new DataPaths.Choice(Database.RootDir, "--db 指定");
+        Database.UseRoot(location.Root);
+
         var db = new Database(options.DbPath);
         db.Initialize();
 
@@ -115,7 +123,8 @@ public sealed class AppServices
 
         Instance = services;
 
-        services.Log($"启动 db={db.DbPath} schema={Sql.SchemaVersion} mode={services.Settings.AppMode?.ToDb() ?? "(未选)"}");
+        services.Log($"启动 db={db.DbPath} 数据目录={Database.RootDir}（{location.Reason}）" +
+                     $" schema={Sql.SchemaVersion} mode={services.Settings.AppMode?.ToDb() ?? "(未选)"}");
         return services;
     }
 

@@ -4,34 +4,68 @@ using Microsoft.Data.Sqlite;
 namespace ClassPoints.Data;
 
 /// <summary>
-/// 本地库。路径自己拼 %LOCALAPPDATA% —— unpackaged 应用不能用 ApplicationData.Current（会抛 COMException）。
-/// 程序可能装在 Program Files，普通用户没有写权限，所以库绝不放程序目录。
+/// 本地库。路径由 <see cref="DataPaths"/> 挑 —— unpackaged 应用不能用 ApplicationData.Current
+/// （会抛 COMException），所以全部自己拼，规则集中在那一处。
 /// </summary>
 public sealed class Database
 {
-    public static string RootDir { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClassPoints");
+    /// <summary>
+    /// 数据根目录。默认按 <see cref="DataPaths"/> 的规则算一个（纯判断，不碰磁盘）；
+    /// 应用启动时 <see cref="UseRoot"/> 会把真正定下来的那个覆盖上来。
+    /// </summary>
+    private static string _root = DataPaths.Resolve(
+        AppContext.BaseDirectory, DataPaths.LocalAppData, null, DataPaths.SystemDrive).Root;
+
+    public static string RootDir => _root;
+
+    /// <summary>由启动流程设定（<see cref="DataPaths.Prepare"/> 的结果）。</summary>
+    public static void UseRoot(string root)
+    {
+        if (!string.IsNullOrWhiteSpace(root)) _root = Path.GetFullPath(root);
+    }
 
     public static string DefaultDbPath => Path.Combine(RootDir, "classpoints.db");
+
+    /// <summary>老位置里的备份目录。换了默认目录之后它只用于"把旧备份也列出来"。</summary>
     public static string BackupRoot => Path.Combine(RootDir, "backups");
 
-    /// <summary>
-    /// 备份的默认落地处：<c>文档\班级积分备份</c>。
-    /// 不放 %LOCALAPPDATA%：备份是给人拿的 —— 要能一眼找到、能直接拷进 U 盘或 OneDrive，
-    /// 而 AppData 是隐藏目录，老师找不到就等于没有备份。
-    /// </summary>
-    public static string DefaultBackupDir => Path.Combine(
+    /// <summary>上一版默认备份目录（文档\班级积分备份）。同样只用于找回旧备份。</summary>
+    public static string DocumentsBackupDir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "班级积分备份");
+
+    /// <summary>最早那版默认备份目录（%LOCALAPPDATA%\ClassPoints\backups）。数据跟着程序搬走以后，
+    /// 它和 <see cref="BackupRoot"/> 就不是一个地方了，旧备份照旧要能列出来、能恢复。</summary>
+    public static string LegacyBackupRoot =>
+        Path.Combine(DataPaths.LocalRoot(DataPaths.LocalAppData), "backups");
+
+    /// <summary>
+    /// 备份默认落在哪。跟着数据目录走 —— 数据在非系统盘时，备份也在那儿，
+    /// 一次整目录拷贝就能把"库 + 备份"全带走，也不用再占 C 盘。
+    /// 只有数据还在 C 盘（装进了 Program Files）时才用「文档」，因为 AppData 是隐藏目录，
+    /// 老师找不到就等于没有备份。
+    /// </summary>
+    public static string DefaultBackupDir => DataPaths.IsOnSystemDrive(RootDir)
+        ? DocumentsBackupDir
+        : Path.Combine(RootDir, "backups");
 
     public static string SessionPath => Path.Combine(RootDir, "session.bin");
     public static string RecoveryPath => Path.Combine(RootDir, "recovery.bin");
     public static string LogDir => Path.Combine(RootDir, "logs");
 
+    /// <summary>临时落地处（打包用的库副本、解压出来的导入包）。不放系统 %TEMP%：
+    /// 那在 C 盘，还会被清理工具顺手删掉，正好删在导入到一半的时候。</summary>
+    public static string TempDir => Path.Combine(RootDir, "tmp");
+
     private readonly string _connectionString;
 
     public Database(string? dbPath = null)
     {
-        DbPath = dbPath ?? DefaultDbPath;
+        DbPath = dbPath is null ? DefaultDbPath : Path.GetFullPath(dbPath);
+
+        // 用 --db 指到别处时，日志、同步凭据、更新包也跟着那个库走 ——
+        // 否则一个目录里是数据、另一个目录里是它的日志，"这台机器用的到底是哪份"就说不清了。
+        if (dbPath is not null && Path.GetDirectoryName(DbPath) is { Length: > 0 } dir) _root = dir;
+
         Directory.CreateDirectory(Path.GetDirectoryName(DbPath)!);
         Directory.CreateDirectory(LogDir);
 
@@ -104,8 +138,10 @@ public sealed class Database
 
         // v4：备份默认目录从 %LOCALAPPDATA%\ClassPoints\backups 挪到「文档\班级积分备份」。
         // 老库里这一项被写成了绝对路径，不清掉就会一直沿用 C 盘那个隐藏目录。
+        // 数据目录本身搬过家（装到非系统盘）时，BackupRoot 已经不是那个老路径了，
+        // 所以两个都要认 —— 否则备份会继续往旧位置写。
         if (GetSetting(conn, "backup_dir") is { Length: > 0 } dir &&
-            string.Equals(dir.TrimEnd('\\'), BackupRoot.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+            (SamePath(dir, BackupRoot) || SamePath(dir, LegacyBackupRoot)))
             SetSetting(conn, null, "backup_dir", "");
 
         // v4：加分项可以只属于某个成员（「我的快捷项」）。NULL = 全班共用，
@@ -113,6 +149,22 @@ public sealed class Database
         if (EnsureColumn(conn, "rules", "owner_id", "TEXT"))
             SetSetting(conn, null, "schema_note", "v4: 加分项可归属个人");
         Exec(conn, "CREATE INDEX IF NOT EXISTS idx_rules_owner ON rules(owner_id)");
+    }
+
+    /// <summary>两个路径是不是同一个地方。比较前统一成绝对路径、去掉末尾分隔符。</summary>
+    private static bool SamePath(string a, string b)
+    {
+        try
+        {
+            return string.Equals(
+                Path.GetFullPath(a).TrimEnd(Path.DirectorySeparatorChar),
+                Path.GetFullPath(b).TrimEnd(Path.DirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     /// <summary>

@@ -60,6 +60,8 @@ internal static class Program
         StudentListTests.Run(Check);
         Section("同步凭据");
         SyncStoreTests.Run(Check);
+        Section("数据目录");
+        DataPathTests.Run(Check);
         Section("设备特征码");
         FingerprintTests.Run(Check);
         Section("版本与更新");

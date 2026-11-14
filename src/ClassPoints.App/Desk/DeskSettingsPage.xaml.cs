@@ -1168,7 +1168,14 @@ public sealed partial class DeskSettingsPage : Page
     {
         var body = Section("备份与恢复", "每天首次启动自动备份，保留 30 天。");
 
-        var dirBox = new TextBox { Text = Services.Backups.BackupRoot, Width = 460, Height = 32 };
+        // 路径可能很长（数据在安装目录下时尤其长），所以给整行宽度，按钮另起一行；
+        // 挤在一行时后半截会被截掉，正好截掉盘符之后最要紧的那段。
+        var dirBox = new TextBox
+        {
+            Text = Services.Backups.BackupRoot,
+            Height = 32,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
         var dirActions = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -1215,10 +1222,9 @@ public sealed partial class DeskSettingsPage : Page
             }
         }));
 
-        var dirLine = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        dirLine.Children.Add(dirBox);
-        dirLine.Children.Add(dirActions);
-        body.Children.Add(Labelled("备份目录", dirLine));
+        body.Children.Add(new TextBlock { Text = "备份目录", Style = Styled("DeskColumnHeader") });
+        body.Children.Add(dirBox);
+        body.Children.Add(dirActions);
 
         body.Children.Add(ValueRow("上次备份", Services.Backups.LastBackupText, StalenessText()));
 
@@ -1273,9 +1279,10 @@ public sealed partial class DeskSettingsPage : Page
             body.Children.Add(row);
         }
 
-        // 换成「文档」之后，老备份还在 %LOCALAPPDATA%，别让人以为它们没了
-        if (Services.Backups.LegacyCount is > 0 and var legacy)
-            body.Children.Add(Note($"另有 {legacy} 份在旧目录 {Database.BackupRoot}，上面同样可恢复。"));
+        // 换过默认目录、搬过数据目录，老备份都还在原来的地方，别让人以为它们没了
+        if (Services.Backups is { LegacyCount: > 0 } backups)
+            body.Children.Add(Note(
+                $"另有 {backups.LegacyCount} 份在旧目录 {string.Join("、", backups.LegacyRoots)}，上面同样可恢复。"));
     }
 
     private string StalenessText()
@@ -1307,6 +1314,12 @@ public sealed partial class DeskSettingsPage : Page
 
         body.Children.Add(ValueRow("数据库", Services.Db.DbPath));
 
+        // 位置放在这里而不是「备份与恢复」里：它决定的是库、日志、同步凭据、默认备份
+        // 这一整串东西，不只是备份。
+        body.Children.Add(ValueRow("数据目录", Database.RootDir,
+            "库、日志、同步凭据、更新包都在这里。装在 C 盘时搬到别的盘能省系统盘空间，" +
+            "换机时整个目录拷走也最省事。"));
+
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         row.Children.Add(Small("打开数据目录", () =>
         {
@@ -1323,6 +1336,7 @@ public sealed partial class DeskSettingsPage : Page
                 Shell?.Toast("打不开：" + ex.Message, 4);
             }
         }));
+        row.Children.Add(Async("更改位置…", MoveDataDir));
         body.Children.Add(row);
 
         body.Children.Add(new TextBlock
@@ -1347,6 +1361,60 @@ public sealed partial class DeskSettingsPage : Page
         };
         reset.Children.Add(Small("本机重置…", ResetLocal));
         body.Children.Add(reset);
+    }
+
+    /// <summary>
+    /// 换数据目录。搬完必须重启：库文件换了地方，内存里的会话、周期、形态都还连着旧的那份。
+    /// 这里只做"复制 + 记下位置"，不删原目录里的任何东西 —— 搬错了还能退回去。
+    /// </summary>
+    private async Task MoveDataDir()
+    {
+        if (Shell is not { } shell) return;
+
+        // 用 --db 启动时库的位置由参数说了算，搬完重启还会被参数指回原处 ——
+        // 与其让人搬半天没效果，不如当场说清楚。
+        if (!string.IsNullOrWhiteSpace(App.Options.DbPath))
+        {
+            shell.Toast("这台机器是用 --db 指定库启动的，位置由那个参数决定；去掉参数后才能在这里搬", 8);
+            return;
+        }
+
+        if (!await shell.AskPinAsync("更改数据位置", "需要管理密码", requireManager: true)) return;
+
+        var picked = FileDialogs.PickFolder("选择新的数据目录（建议放在非系统盘）", DataDir);
+        if (picked is null) return;
+
+        // 选到盘符根目录就补一层子目录：把库、logs、backups 直接摊在 D:\ 上，
+        // 过两个月谁都不敢动那个盘。
+        var root = Path.GetPathRoot(picked) ?? "";
+        var target = string.Equals(picked.TrimEnd('\\'), root.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)
+            ? Path.Combine(picked, "ClassPoints")
+            : picked;
+
+        if (DataPaths.SameDir(target, Database.RootDir))
+        {
+            shell.Toast("数据已经在这个目录里了", 4);
+            return;
+        }
+
+        var ok = await shell.ConfirmAsync("把数据搬到这个目录？",
+            $"新位置：{target}\n\n" +
+            "会复制数据库（一致性副本，不是简单拷贝）、同步凭据和恢复码，然后自动重启。" +
+            "原来的目录一个文件都不删，确认新位置没问题后可以自己清理。",
+            "搬过去并重启", "取消");
+        if (!ok) return;
+
+        // 复制几百 KB 到几十 MB，放后台线程，别把界面卡住
+        var result = await Task.Run(() => Services.Backups.MoveDataRoot(target));
+        if (!result.Ok)
+        {
+            shell.Toast(result.Message, 8);
+            return;
+        }
+
+        Services.Audit.Add("data.move", null, null, result.Message);
+        shell.Toast("数据已搬到 " + result.Message + "，正在重启…", 8);
+        App.Window?.RestartApp();
     }
 
     private async void ResetLocal()
