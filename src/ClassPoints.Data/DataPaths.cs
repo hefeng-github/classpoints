@@ -95,8 +95,9 @@ public static class DataPaths
     public static string AdoptFile(string localApp) => Path.Combine(LocalRoot(localApp), "adopted.txt");
 
     /// <summary>
-    /// 判断该用哪个目录。纯函数式的：除了 <see cref="File.Exists"/> 不碰磁盘，
-    /// 也不会建目录，测试可以直接调它（见 DataPathTests）。
+    /// 判断该用哪个目录。**不建数据目录、不复制文件** —— 唯一会落地的东西是
+    /// <see cref="CanCreate"/> 探可写性时那个立刻删掉的临时文件。所以测试可以直接调它。
+    /// 真正搬家是 <see cref="Prepare"/> 的事。
     /// </summary>
     public static Choice Resolve(string exeDir, string localApp, string? pointer, string systemDrive,
         Func<string, bool>? hasDb = null, Func<string, bool>? canCreate = null, string? adopted = null)
