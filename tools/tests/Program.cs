@@ -421,6 +421,33 @@ internal static class Program
         Check("SAMConfig 的 LCS/DCS 自洽",
             (byte)(boot[17] + boot[18]) == 0 && (byte)(boot[19] + boot[20] + boot[21] + boot[22]) == 0);
 
+        // ---- 引导帧的应答只有 1 个字节，握手必须认它 ----
+        // 真机原样：ACK + 00 00 FF 02 FE D5 15 16 00（D5 15 = SAMConfiguration 应答）
+        //
+        // 上一版握手写的是 payload.Length >= 2，于是这帧明明解析成功了却被判失败，
+        // 转头去发 GetFirmwareVersion，模块不理，最后跑到错误波特率档上收一堆乱码，
+        // 界面报「收到 38 个字节但都不是有效帧」。读卡器是好的，锅在我们自己的长度判断上。
+        var bootStream = new List<byte> { 0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00 };
+        bootStream.AddRange(new byte[]
+        {
+            0x00, 0x00, 0xFF, 0x02, 0xFE, 0xD5, 0x15, 0x16, 0x00,
+        });
+        var bootFramed = Pn532Serial.ContainsFullFrame(bootStream, out var bootPayload);
+        Check("SAMConfig 应答能被解析出来", bootFramed, bootFramed ? "ok" : "解析失败");
+        Check("应答体只有 1 字节（0x15）", bootFramed && bootPayload.Length == 1 && bootPayload[0] == 0x15,
+            bootFramed ? BitConverter.ToString(bootPayload) : "-");
+
+        // 原始字节预览：界面那一行要能看出是 PN532 帧还是纯乱码
+        Check("原始字节每 2 位一个大写十六进制",
+            Pn532Serial.HexPreview(new byte[] { 0x00, 0xFF, 0x0C }) == "00 FF 0C",
+            Pn532Serial.HexPreview(new byte[] { 0x00, 0xFF, 0x0C }));
+        Check("空数据不显示任何字", Pn532Serial.HexPreview(Array.Empty<byte>()) == "");
+        var longBytes = Enumerable.Range(0, 60).Select(i => (byte)i).ToArray();
+        var preview = Pn532Serial.HexPreview(longBytes);
+        Check("超过 48 字节要截断并注明总数",
+            preview.Contains("共 60 字节") && preview.Split(' ').Length < 60,
+            preview[^20..]);
+
         // ---- 寻卡应答解析（用真机抓到的那一帧，别再让 off-by-one 回来） ----
         // 真机原样：ACK + 00 00 FF 0C F4 D5 4B 01 01 00 04 08 04 59 5D 6A 4C 62 00
         var pollStream = new List<byte> { 0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00 };

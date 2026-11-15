@@ -64,7 +64,8 @@ public sealed record ReaderStatus(
     long LastCardAt,
     int CardsRead,
     bool PortOpen = false,
-    int Baud = 0)
+    int Baud = 0,
+    string Raw = "")
 {
     public bool IsRunning => State == ReaderState.Running;
 
@@ -116,6 +117,15 @@ public sealed class Pn532Serial : IDisposable
     private bool _portOpen;
     private int _baud;
 
+    /// <summary>
+    /// 最近一次握手时从串口收到的原始字节（前 48 个，十六进制）。
+    ///
+    /// 留着它是为了"读卡器不配合"这一类问题：界面上只写"收到 38 个字节"没有用，
+    /// 那 38 个字节长什么样才决定是波特率跑了、还是帧头差一位、还是它根本在回别的协议。
+    /// 以前这种情况下唯一的办法是让老师开 PowerShell 写探针脚本，代价太高。
+    /// </summary>
+    private string _lastRaw = "";
+
     /// <summary>读到一张卡（已去重）。回调在后台线程，界面要自己 DispatcherQueue 切回来。</summary>
     public event Action<CardRead>? CardDetected;
 
@@ -126,7 +136,8 @@ public sealed class Pn532Serial : IDisposable
         get
         {
             lock (_gate)
-                return new ReaderStatus(_state, _portName, _statusMessage, _lastCardAt, _cardsRead, _portOpen, _baud);
+                return new ReaderStatus(_state, _portName, _statusMessage, _lastCardAt, _cardsRead,
+                    _portOpen, _baud, _lastRaw);
         }
     }
 
@@ -616,16 +627,18 @@ public sealed class Pn532Serial : IDisposable
     public static string Diagnose(int bytesSeen)
     {
         if (bytesSeen == 0)
-            return "串口通了，但读卡器一个字节都没回：检查模块上的拨码是不是 UART(HSU) 档、" +
-                   "TX/RX 有没有交叉（转接板的 TX 接模块 RX）、是否共地";
-        return $"收到 {bytesSeen} 个字节但都不是有效帧：波特率大概率对不上，" +
-               "或这个串口被别的程序占着";
+            return "串口打开了，但一个字节都没回：先确认读卡器类型选对（PN532 模块 / 自动上报型），" +
+                   "再看串口是不是被别的程序占着；PN532 模块还要确认拨码在 UART(HSU) 档、TX/RX 交叉接";
+        return $"收到 {bytesSeen} 个字节但都不是有效帧：波特率对不上、接触不良，" +
+               "或这块板子根本不走 PN532 协议（原始字节见下方）";
     }
 
     /// <summary>握手：GetFirmwareVersion。有回应才算真的通了，光打开串口不算。</summary>
     private async Task<(bool Ok, int Baud, int Bytes)> HandshakeAsync(CancellationToken token)
     {
         var seen = 0;
+        var bestRaw = "";
+        var bestBytes = 0;
         var lastBaud = _port is null ? DefaultBaud : (_preferredBaud > 0 ? _preferredBaud : DefaultBaud);
 
         foreach (var baud in BaudCandidates(_preferredBaud))
@@ -664,19 +677,39 @@ public sealed class Pn532Serial : IDisposable
                 // 写不出去就当这一档没戏，下一档再试
             }
 
-            var bootReply = await ReadFrameAsync(900, token);
-            if (bootReply is { Length: >= 2 }) return (true, baud, bootReply.Length);
+            var (bootReply, bootBytes, bootRaw) = await ReadFrameAsync(900, token);
+            seen += bootBytes;
+            if (bootBytes > bestBytes)
+            {
+                bestBytes = bootBytes;
+                bestRaw = $"{baud} · {bootRaw}";
+            }
+
+            // 只要收到**任何一帧合法数据**就算通了。
+            //
+            // 这里曾经写的是 Length >= 2，而 SAMConfiguration 的应答只有 1 个字节
+            // （`D5 15` 去掉 TFI 就剩 `15`）—— 明明握手成功，却被自己判成失败，
+            // 于是又去发两条 0x02，模块不理，最后跑到 9600/38400 那些错误档上
+            // 收一堆乱码，界面报「收到 38 个字节但都不是有效帧」。
+            // 真机上表现为"读卡器明明是好的，程序说波特率不对"。
+            if (bootReply is not null)
+            {
+                lock (_gate) _lastRaw = $"{baud} · {bootRaw}";
+                return (true, baud, seen);
+            }
 
             // 有些板子只认 GetFirmwareVersion：再补两枪，两套都试过才算这一档失败
             for (var attempt = 0; attempt < 2; attempt++)
             {
                 var (resp, bytes) = await TransceiveAsync(new byte[] { 0x02 }, token);
                 seen += bytes;
-                if (resp is { Length: >= 6 } && resp[0] == 0x03) return (true, baud, seen);
+                if (resp is { Length: >= 1 } && resp[0] == 0x03) return (true, baud, seen);
                 await Task.Delay(120, token);
             }
         }
 
+        // 全档失败也要留住证据：这几个字节才是判断下一步的唯一依据
+        lock (_gate) _lastRaw = bestRaw;
         return (false, lastBaud, seen);
     }
 
@@ -686,10 +719,10 @@ public sealed class Pn532Serial : IDisposable
     /// 需要它是因为开机握手那一包是"唤醒+命令"一起写的，
     /// 不能再走 <see cref="TransceiveAsync"/>（它自己还要再写一次命令）。
     /// </summary>
-    private async Task<byte[]?> ReadFrameAsync(int waitMs, CancellationToken token)
+    private async Task<(byte[]? Payload, int Bytes, string Raw)> ReadFrameAsync(int waitMs, CancellationToken token)
     {
         var port = _port;
-        if (port is null || !port.IsOpen) return null;
+        if (port is null || !port.IsOpen) return (null, 0, "");
 
         var buffer = new List<byte>(64);
         var deadline = DateTime.UtcNow.AddMilliseconds(waitMs);
@@ -703,7 +736,8 @@ public sealed class Pn532Serial : IDisposable
                 if (one >= 0 && buffer.Count < 4096)
                 {
                     buffer.Add((byte)one);
-                    if (ContainsFullFrame(buffer, out var payload)) return payload;
+                    if (ContainsFullFrame(buffer, out var payload))
+                        return (payload, buffer.Count, HexPreview(buffer));
                 }
             }
             catch (TimeoutException)
@@ -712,11 +746,26 @@ public sealed class Pn532Serial : IDisposable
             }
             catch (InvalidOperationException)
             {
-                return null;    // 端口被关掉了（换端口/换波特率）
+                return (null, buffer.Count, HexPreview(buffer));    // 端口被关掉了（换端口/换波特率）
             }
             await Task.Yield();
         }
-        return null;
+        return (null, buffer.Count, HexPreview(buffer));
+    }
+
+    /// <summary>收到的原始字节，最多留 48 个 —— 界面上那一行够看出是不是 PN532 帧了。</summary>
+    public static string HexPreview(IReadOnlyList<byte> bytes, int max = 48)
+    {
+        if (bytes.Count == 0) return "";
+        var n = System.Math.Min(max, bytes.Count);
+        var sb = new StringBuilder(n * 3);
+        for (var i = 0; i < n; i++)
+        {
+            if (i > 0) sb.Append(' ');
+            sb.Append(bytes[i].ToString("X2"));
+        }
+        if (bytes.Count > n) sb.Append(" …（共 ").Append(bytes.Count).Append(" 字节）");
+        return sb.ToString();
     }
 
     private async Task WakeAsync(CancellationToken token)

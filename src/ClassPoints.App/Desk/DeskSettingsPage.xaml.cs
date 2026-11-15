@@ -384,6 +384,7 @@ public sealed partial class DeskSettingsPage : Page
 
     private Grid? _lampGrid;
     private TextBlock? _readerStatusText;
+    private TextBlock? _readerRawText;
     private ComboBox? _portCombo;
     private DispatcherTimer? _lampTimer;
 
@@ -404,6 +405,18 @@ public sealed partial class DeskSettingsPage : Page
         {
             Style = Styled("DeskSecondaryText"),
             TextWrapping = TextWrapping.Wrap,
+        };
+
+        // 原始字节。只在握手没成功过时才出现 ——
+        // 老师报"读卡器连不上"时，这一行能直接说明是波特率跑了、帧头差一位、还是根本没数据，
+        // 比"收到 38 个字节"有用得多，也不用再让对方开命令行写探针。
+        _readerRawText = new TextBlock
+        {
+            Style = Styled("DeskSecondaryText"),
+            TextWrapping = TextWrapping.Wrap,
+            FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Consolas"),
+            FontSize = 12,
+            Visibility = Visibility.Collapsed,
         };
 
         _portCombo = new ComboBox { MinWidth = 260, Height = 34 };
@@ -494,6 +507,7 @@ public sealed partial class DeskSettingsPage : Page
         body.Children.Add(Labelled("端口", portLine));
         body.Children.Add(_lampGrid);
         body.Children.Add(_readerStatusText);
+        body.Children.Add(_readerRawText);
         body.Children.Add(Note("设备（串口已打开）· 帧（通信正常）· 卡（读到过卡），三个都亮才可用。"));
 
         Services.Reader.StatusChanged -= OnReaderStatus;
@@ -616,6 +630,14 @@ public sealed partial class DeskSettingsPage : Page
             ReaderState.NoDevice => Pal.Warn,
             _ => Pal.Secondary,
         };
+
+        // 通了就不再显示这行乱码 —— 它只在"没通、需要人判断"的时候有价值
+        if (_readerRawText is not null)
+        {
+            var show = status.Raw.Length > 0 && status.State != ReaderState.Running;
+            _readerRawText.Text = show ? "最近收到：" + status.Raw : "";
+            _readerRawText.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        }
     }
 
     // ---------------- 密码与恢复码 ----------------
