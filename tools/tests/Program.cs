@@ -408,6 +408,19 @@ internal static class Program
         Check("零字节提示查拨码和 TX/RX", Pn532Serial.Diagnose(0).Contains("拨码"));
         Check("有字节提示波特率", Pn532Serial.Diagnose(7).Contains("波特率"));
 
+        // 开机那一包必须和官方软件逐字节一致 —— 它决定模块认不认这台主机。
+        // 官方 pcr532.exe 里的常量：55 55 + 14×00 + FF 03 FD D4 14 01 17 00
+        var boot = Pn532Serial.BootSequence();
+        Check("开机包长度 24", boot.Length == 24, boot.Length.ToString());
+        Check("开机包 = 官方字节序列", boot.SequenceEqual(new byte[]
+            {
+                0x55, 0x55, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0xFF, 0x03, 0xFD, 0xD4, 0x14, 0x01, 0x17, 0x00,
+            }), BitConverter.ToString(boot));
+        Check("唤醒填充在 2..15", boot.Skip(2).Take(14).All(b => b == 0));
+        Check("SAMConfig 的 LCS/DCS 自洽",
+            (byte)(boot[17] + boot[18]) == 0 && (byte)(boot[19] + boot[20] + boot[21] + boot[22]) == 0);
+
         // ---- 自动上报型读卡器：从一行文本里捞卡号 ----
         // 各家输出格式都不一样，规则是"取这一行里最像卡号的那一段"。
         Check("十进制 10 位卡号", Pn532Serial.ParseAutoUid("1234567890\r\n") == "1234567890",

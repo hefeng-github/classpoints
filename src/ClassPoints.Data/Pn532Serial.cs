@@ -534,6 +534,32 @@ public sealed class Pn532Serial : IDisposable
     }
 
     /// <summary>
+    /// 开机握手：唤醒序列 + SAMConfiguration，**必须一次写出去**。
+    ///
+    /// 这 24 个字节是从官方 pcr532.exe 里读出来的（它连上后发的第一包就是这一串）。
+    /// 和"先发唤醒、等一会儿、再发命令"的区别很关键：分成两次写、中间空 120ms，
+    /// 这类国产模块经常把后面的命令整条忽略 —— 表现就是"串口通了，一个字节都不回"。
+    ///
+    /// 最后的 16、17 是两个 0x00，正好同时充当下面那一帧的帧头，
+    /// 所以整串是 `55 55` + 14×`00` + `FF 03 FD D4 14 01 17 00`，一共 24 字节。
+    /// </summary>
+    public static byte[] BootSequence()
+    {
+        var seq = new byte[24];
+        seq[0] = 0x55;
+        seq[1] = 0x55;
+        // 2..15 全 0：唤醒填充，末尾两个兼作帧头
+        seq[16] = 0xFF;   // 起始码
+        seq[17] = 0x03;   // LEN = TFI + CMD + 1 字节参数
+        seq[18] = 0xFD;   // LCS = ~LEN + 1
+        seq[19] = 0xD4;   // 主机 → PN532
+        seq[20] = 0x14;   // SAMConfiguration
+        seq[21] = 0x01;   // 正常模式
+        seq[22] = 0x17;   // DCS
+        return seq;
+    }
+
+    /// <summary>
     /// 握手的波特率候选。第一个是上次成功过的（拔插/重启后直接用），否则从 115200 开始。
     ///
     /// 为什么要试多个：PN532 出厂是 115200，但被 Arduino 例程改过的模块常停在 9600，
@@ -604,8 +630,26 @@ public sealed class Pn532Serial : IDisposable
             }
 
             _baud = baud;
-            await WakeAsync(token);
 
+            // 第一包照官方软件的做法发：唤醒 + SAMConfiguration 一次性写出去。
+            //
+            // 以前这里是"先发 16 字节唤醒、等 120ms、再发 GetFirmwareVersion"。
+            // 对这块板子（PCR532 一类的国产 PN532 兼容板）那样做是无效的：
+            // 官方软件从不发 0x02，连上就发 SAMConfig，而且和唤醒连在同一笔写里。
+            try
+            {
+                var boot = BootSequence();
+                _port?.Write(boot, 0, boot.Length);
+            }
+            catch (Exception)
+            {
+                // 写不出去就当这一档没戏，下一档再试
+            }
+
+            var bootReply = await ReadFrameAsync(900, token);
+            if (bootReply is { Length: >= 2 }) return (true, baud, bootReply.Length);
+
+            // 有些板子只认 GetFirmwareVersion：再补两枪，两套都试过才算这一档失败
             for (var attempt = 0; attempt < 2; attempt++)
             {
                 var (resp, bytes) = await TransceiveAsync(new byte[] { 0x02 }, token);
@@ -616,6 +660,45 @@ public sealed class Pn532Serial : IDisposable
         }
 
         return (false, lastBaud, seen);
+    }
+
+    /// <summary>
+    /// 只读、不写：等一帧完整回应。
+    ///
+    /// 需要它是因为开机握手那一包是"唤醒+命令"一起写的，
+    /// 不能再走 <see cref="TransceiveAsync"/>（它自己还要再写一次命令）。
+    /// </summary>
+    private async Task<byte[]?> ReadFrameAsync(int waitMs, CancellationToken token)
+    {
+        var port = _port;
+        if (port is null || !port.IsOpen) return null;
+
+        var buffer = new List<byte>(64);
+        var deadline = DateTime.UtcNow.AddMilliseconds(waitMs);
+
+        while (DateTime.UtcNow < deadline)
+        {
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                var one = port.ReadByte();
+                if (one >= 0 && buffer.Count < 4096)
+                {
+                    buffer.Add((byte)one);
+                    if (ContainsFullFrame(buffer, out var payload)) return payload;
+                }
+            }
+            catch (TimeoutException)
+            {
+                // 这段没数据，继续等到 deadline
+            }
+            catch (InvalidOperationException)
+            {
+                return null;    // 端口被关掉了（换端口/换波特率）
+            }
+            await Task.Yield();
+        }
+        return null;
     }
 
     private async Task WakeAsync(CancellationToken token)
