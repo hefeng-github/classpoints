@@ -133,6 +133,14 @@ public sealed class Pn532Serial : IDisposable
     /// <summary>去重窗口：同一张卡 1.5 秒内只认一次。</summary>
     public int DebounceMs { get; set; } = 1500;
 
+    /// <summary>卡片离开后要静默这么久，才允许同一个 UID 再报一次（防止偶发漏读导致重复计分）。</summary>
+    private const int AbsentGraceMs = 700;
+
+    /// <summary>当前"贴着"感应区的卡。放卡不动时寻卡每轮都命中，靠它保证只报一次。</summary>
+    private readonly HashSet<string> _present = new(StringComparer.OrdinalIgnoreCase);
+
+    private long _lastPresenceAt;
+
 
     public int PollIntervalMs { get; set; } = 150;
 
@@ -266,7 +274,17 @@ public sealed class Pn532Serial : IDisposable
                 }
 
                 var uid = await PollOnceAsync(token);
-                if (uid is not null) Emit(new CardRead(uid, DateTime.Now));
+                if (uid is null)
+                {
+                    MarkAbsentIfGone();
+                }
+                else if (MarkPresent(uid))
+                {
+                    // 只有"这张卡刚出现"才报一次。
+                    // 卡片一直贴在感应区时，寻卡帧每 150ms 就会命中一次 ——
+                    // 直接 Emit 等于每 1.5 秒给同一个学生加一次分。
+                    Emit(new CardRead(uid, DateTime.Now));
+                }
 
                 await Task.Delay(PollIntervalMs, token);
             }
@@ -720,18 +738,33 @@ public sealed class Pn532Serial : IDisposable
     private async Task<string?> PollOnceAsync(CancellationToken token)
     {
         var (resp, _) = await TransceiveAsync(new byte[] { 0x4A, 0x01, 0x00 }, token);
-        if (resp is null || resp.Length < 3) return null;
+        return resp is null ? null : ParseUidFromInListResponse(resp);
+    }
 
-        // 0x4B <NrTargets> <Tg> <SENS_RES 2> <SEL_RES> <IDLength> <ID...>
-        if (resp[0] != 0x4B || resp[1] < 1) return null;
-        var idx = 5;
-        if (resp.Length <= idx) return null;
-        var idLen = resp[idx];
-        idx++;
-        if (idLen <= 0 || resp.Length < idx + idLen) return null;
+    /// <summary>
+    /// 从 InListPassiveTarget 的应答里取 UID。
+    ///
+    /// 应答去掉 TFI 之后是这样（真机抓到的）：
+    /// `4B | 01 | 01 | 00 04 | 08 | 04 | 59 5D 6A 4C`
+    ///  命令  NbTg  Tg  ATQA   SAK  Len       UID
+    ///
+    /// **Len 在第 6 位**。以前写成第 5 位，取到的是 SAK(0x08)，于是要 8 个字节的 UID
+    /// 却只有 4 个 —— 每次都被判成"没卡"。表现就是"读卡器连上了，刷卡一点反应都没有"，
+    /// 而这种错只有拿真机跑才看得见，纯读代码很容易顺着注释点错。
+    /// </summary>
+    public static string ParseUidFromInListResponse(byte[] resp)
+    {
+        // 最少要有 命令+NbTg+Tg+ATQA2+SAK+Len+1字节UID
+        if (resp.Length < 8) return "";
+        if (resp[0] != 0x4B || resp[1] < 1) return "";
+
+        const int lenIndex = 6;
+        var idLen = resp[lenIndex];
+        if (idLen <= 0 || idLen > 10) return "";                    // 106kbps 最多 10 字节（双/三倍 UID）
+        if (resp.Length < lenIndex + 1 + idLen) return "";
 
         var sb = new StringBuilder(idLen * 2);
-        for (var i = 0; i < idLen; i++) sb.Append(resp[idx + i].ToString("X2"));
+        for (var i = 0; i < idLen; i++) sb.Append(resp[lenIndex + 1 + i].ToString("X2"));
         return sb.ToString();
     }
 
@@ -820,6 +853,27 @@ public sealed class Pn532Serial : IDisposable
             return true;
         }
         return false;
+    }
+
+    /// <summary>卡片还在感应区里：返回 false 表示这张卡刚才就在，不用再报一次。</summary>
+    private bool MarkPresent(string uid)
+    {
+        lock (_gate)
+        {
+            _lastPresenceAt = Clock.NowMs();
+            return _present.Add(uid);
+        }
+    }
+
+    /// <summary>这一轮没扫到卡。要连着一会儿都没有才算真拿走，避免一次漏读就重复计分。</summary>
+    private void MarkAbsentIfGone()
+    {
+        lock (_gate)
+        {
+            if (_present.Count == 0) return;
+            if (Clock.NowMs() - _lastPresenceAt < AbsentGraceMs) return;
+            _present.Clear();
+        }
     }
 
     private void Emit(CardRead read)

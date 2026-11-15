@@ -421,7 +421,36 @@ internal static class Program
         Check("SAMConfig 的 LCS/DCS 自洽",
             (byte)(boot[17] + boot[18]) == 0 && (byte)(boot[19] + boot[20] + boot[21] + boot[22]) == 0);
 
-        // ---- 自动上报型读卡器：从一行文本里捞卡号 ----
+        // ---- 寻卡应答解析（用真机抓到的那一帧，别再让 off-by-one 回来） ----
+        // 真机原样：ACK + 00 00 FF 0C F4 D5 4B 01 01 00 04 08 04 59 5D 6A 4C 62 00
+        var pollStream = new List<byte> { 0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00 };
+        pollStream.AddRange(new byte[]
+        {
+            0x00, 0x00, 0xFF, 0x0C, 0xF4, 0xD5, 0x4B, 0x01, 0x01,
+            0x00, 0x04, 0x08, 0x04, 0x59, 0x5D, 0x6A, 0x4C, 0x62, 0x00,
+        });
+        var framed = Pn532Serial.ContainsFullFrame(pollStream, out var pollPayload);
+        Check("跳过 ACK 拿到寻卡应答帧", framed && pollPayload.Length == 11,
+            framed ? pollPayload.Length.ToString() : "未解析出帧");
+        Check("UID = 595D6A4C（长度字节在第 6 位）",
+            Pn532Serial.ParseUidFromInListResponse(pollPayload) == "595D6A4C",
+            Pn532Serial.ParseUidFromInListResponse(pollPayload));
+
+        // 7 字节 UID 的卡也要能读出来
+        var seven = new byte[]
+        {
+            0x4B, 0x01, 0x01, 0x00, 0x04, 0x08, 0x07,
+            0x04, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+        };
+        Check("7 字节 UID", Pn532Serial.ParseUidFromInListResponse(seven) == "04112233445566",
+            Pn532Serial.ParseUidFromInListResponse(seven));
+
+        // 没有卡：NbTg = 0，不能崩，也不能编出一个卡号
+        Check("没卡时返回空", Pn532Serial.ParseUidFromInListResponse(new byte[] { 0x4B, 0x00 }) == "");
+        Check("长度字段越界时返回空",
+            Pn532Serial.ParseUidFromInListResponse(new byte[] { 0x4B, 0x01, 0x01, 0x00, 0x04, 0x08, 0x0A, 0x01 }) == "");
+
+
         // 各家输出格式都不一样，规则是"取这一行里最像卡号的那一段"。
         Check("十进制 10 位卡号", Pn532Serial.ParseAutoUid("1234567890\r\n") == "1234567890",
             Pn532Serial.ParseAutoUid("1234567890\r\n"));
