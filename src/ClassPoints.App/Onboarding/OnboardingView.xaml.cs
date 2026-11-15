@@ -1,3 +1,4 @@
+using ClassPoints.App.Controls;
 using ClassPoints.App.Services;
 using ClassPoints.App.Theme;
 using ClassPoints.Core;
@@ -302,7 +303,12 @@ public sealed partial class OnboardingView : UserControl
             case StepKind.SelfCheck:
             case StepKind.Config:
             case StepKind.Rules:
+                return true;
+
             case StepKind.Names:
+                // 以前这里直接 return true，输入框从头到尾没人读 ——
+                // 老师粘了一整列姓名，自检页却显示"还没有名单"。离开这一步时先收进来。
+                CollectNames();
                 return true;
 
             case StepKind.Mode:
@@ -731,6 +737,18 @@ public sealed partial class OnboardingView : UserControl
 
     private TextBox? NamesInput { get; set; }
 
+    /// <summary>把输入框里的文本收成姓名列表。切行、去空行、去重都在这里统一做。</summary>
+    private void CollectNames()
+    {
+        if (NamesInput is null) return;
+
+        _names = TextLines.Split(NamesInput.Text)
+            .Select(NameNormalizer.Clean)
+            .Where(n => n.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
     private void BuildNamesStep()
     {
         var existing = Services.Students.ListActive().Count;
@@ -827,9 +845,9 @@ public sealed partial class OnboardingView : UserControl
         var grid = new Grid { ColumnSpacing = 10, Padding = new Thickness(0, 4, 0, 0) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(44) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(132) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(132) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(112) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
         string[] headers = ["图标", "项目名称", "分值（负数为扣分）", "封顶方式", "上限", "操作"];
@@ -853,9 +871,9 @@ public sealed partial class OnboardingView : UserControl
         var grid = new Grid { ColumnSpacing = 10, Padding = new Thickness(0, 6, 0, 6) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(44) });   // 图标
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // 名称
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(132) }); // 分值
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(132) }); // 封顶方式
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(112) }); // 上限值
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) }); // 分值
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) }); // 封顶方式
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) }); // 上限值
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });     // 删除
 
         var iconButton = new Button
@@ -898,20 +916,18 @@ public sealed partial class OnboardingView : UserControl
         Grid.SetColumn(nameBox, 1);
         grid.Children.Add(nameBox);
 
-        var delta = new NumberBox
+        // NumberBox 要等焦点离开才写 Value，而向导这一屏没有"保存"按钮 ——
+        // 填完分值直接点"下一步"，草稿里还是旧值。换成 NumberInput。
+        var delta = new NumberInput
         {
             Value = draft.Delta,
             Minimum = -500,
             Maximum = 500,
-            SmallChange = 5,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
-            Height = 40,
+            Step = 5,
+            BoxWidth = 76,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        delta.ValueChanged += (_, e) =>
-        {
-            if (!double.IsNaN(e.NewValue)) draft.Delta = (int)e.NewValue;
-        };
+        delta.ValueChanged += v => draft.Delta = (int)v;
         Grid.SetColumn(delta, 2);
         grid.Children.Add(delta);
 
@@ -933,21 +949,17 @@ public sealed partial class OnboardingView : UserControl
         Grid.SetColumn(capCombo, 3);
         grid.Children.Add(capCombo);
 
-        var capValue = new NumberBox
+        var capValue = new NumberInput
         {
             Value = draft.CapValue ?? System.Math.Max(10, System.Math.Abs(draft.Delta)),
             Minimum = 1,
             Maximum = 10000,
-            SmallChange = 10,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
-            Height = 40,
+            Step = 10,
+            BoxWidth = 76,
             VerticalAlignment = VerticalAlignment.Center,
             IsEnabled = draft.CapScope != CapScope.None,
         };
-        capValue.ValueChanged += (_, e) =>
-        {
-            if (!double.IsNaN(e.NewValue)) draft.CapValue = (int)e.NewValue;
-        };
+        capValue.ValueChanged += v => draft.CapValue = (int)v;
         capCombo.SelectionChanged += (_, _) =>
         {
             draft.CapScope = capCombo.SelectedIndex switch
@@ -1002,7 +1014,7 @@ public sealed partial class OnboardingView : UserControl
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        return await dialog.ShowAsync() == ContentDialogResult.Primary ? picked : null;
+        return await Dialogs.ShowAsync(dialog) == ContentDialogResult.Primary ? picked : null;
     }
 
     // ---------------- 5. 密码与恢复码 ----------------

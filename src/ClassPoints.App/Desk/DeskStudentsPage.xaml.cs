@@ -183,6 +183,24 @@ public sealed partial class DeskStudentsPage : Page
 
     private async Task<bool> EditStudentAsync(Student s, bool isNew)
     {
+        // 连点两下「新增学生」不该弹两个框，也不该把第二个请求压成"等前一个关掉"。
+        // 真正的崩溃在对话框层已经兜住了（Dialogs 排队 + 重试），这一层是顺手治好手感。
+        if (_editing) return false;
+        _editing = true;
+        try
+        {
+            return await EditStudentCoreAsync(s, isNew);
+        }
+        finally
+        {
+            _editing = false;
+        }
+    }
+
+    private bool _editing;
+
+    private async Task<bool> EditStudentCoreAsync(Student s, bool isNew)
+    {
         var nameBox = new TextBox { Header = "姓名", Text = s.Name, Width = 320 };
         var noBox = new TextBox { Header = "学号（可空）", Text = s.StudentNo ?? "", Width = 320 };
 
@@ -203,7 +221,7 @@ public sealed partial class DeskStudentsPage : Page
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return false;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return false;
 
         var name = NameNormalizer.Clean(nameBox.Text);
         if (name.Length == 0)
@@ -269,9 +287,9 @@ public sealed partial class DeskStudentsPage : Page
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
 
-        var lines = box.Text.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var lines = TextLines.Split(box.Text);
         if (lines.Length == 0)
         {
             Shell?.Toast("没有可导入的姓名");
@@ -364,7 +382,7 @@ public sealed partial class DeskStudentsPage : Page
                 DefaultButton = ContentDialogButton.Primary,
             };
 
-            if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+            if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
             if (nameCombo.SelectedItem is not ColumnOption nameCol) return;
 
             var added = 0;
@@ -447,13 +465,13 @@ public sealed partial class DeskStudentsPage : Page
 
         Render();
 
-        await new ContentDialog
+        await Dialogs.ShowAsync(new ContentDialog
         {
             XamlRoot = XamlRoot,
             Title = s.Name + " · 积分记录",
             Content = new ScrollViewer { Content = body, MaxHeight = 460 },
             CloseButtonText = "关闭",
-        }.ShowAsync();
+        });
 
         Reload();
     }
@@ -628,7 +646,7 @@ public sealed partial class DeskStudentsPage : Page
             Content = new ScrollViewer { Content = panel, MaxHeight = 460 },
             CloseButtonText = "关闭",
         };
-        await dialog.ShowAsync();
+        await Dialogs.ShowAsync(dialog);
         Reload();
     }
 }

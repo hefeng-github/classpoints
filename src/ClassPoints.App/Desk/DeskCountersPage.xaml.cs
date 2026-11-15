@@ -242,6 +242,9 @@ public sealed partial class DeskCountersPage : Page
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
         };
         ToolTipService.SetToolTip(number, "点数字直接改成指定次数");
+        // 自绘内容的按钮在 UIA 里没有名字，读屏只会念"按钮"（v1.2 的老问题，这一页剩它）
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(
+            number, $"{student.Name} {counter.Label} 当前 {value} 次，点一下改成指定值");
         number.Click += async (_, _) => await EditCountAsync(student, counter);
         panel.Children.Add(number);
 
@@ -270,6 +273,7 @@ public sealed partial class DeskCountersPage : Page
             },
         };
         ToolTipService.SetToolTip(button, tip);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, tip);
         button.Click += (_, _) => onClick();
         return button;
     }
@@ -297,13 +301,13 @@ public sealed partial class DeskCountersPage : Page
         var period = Services.CurrentPeriod;
         var current = Services.Counters.Total(period.Id, student.Id, counter.Id);
 
-        var box = new NumberBox
+        var box = new NumberInput
         {
             Value = current,
             Minimum = 0,
             Maximum = 999,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
-            Width = 180,
+            BoxWidth = 100,
+            HorizontalAlignment = HorizontalAlignment.Left,
         };
 
         var dialog = new ContentDialog
@@ -329,8 +333,8 @@ public sealed partial class DeskCountersPage : Page
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
-        if (double.IsNaN(box.Value)) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
+        box.Commit();
 
         Services.Counters.SetCount(counter.Id, student.Id, period.Id, (int)box.Value, Services.DeskOperator);
         Refresh();
@@ -438,7 +442,7 @@ public sealed partial class DeskCountersPage : Page
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
 
         var label = NameNormalizer.Clean(name.Text);
         if (label.Length == 0)
@@ -503,7 +507,7 @@ public sealed partial class DeskCountersPage : Page
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
 
         foreach (var (counter, box, stop) in edits)
         {

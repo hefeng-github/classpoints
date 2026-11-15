@@ -82,6 +82,10 @@ public partial class App : Application
             {
                 // 日志本身出错就放弃，不能让异常处理再抛一次
             }
+
+            // 不吞异常的结果就是"点一下，程序没了" —— v1.3 报告里的 P0 正是这一类。
+            // 数据都在本地库里，进程继续跑比什么都强；提示只给一句，说多了老师也记不住。
+            e.Handled = NotifyCrash(e.Exception);
         };
 
         // 下面三条是"静默退出"的取证网。
@@ -131,6 +135,36 @@ public partial class App : Application
     }
 
     private static int _firstChanceBudget;
+
+    private static int _crashCount;
+    private static DateTime _crashWindowStart = DateTime.MinValue;
+
+    /// <summary>
+    /// 未处理异常的处理策略：记日志、提示一句、让进程活着。返回 false 表示"放过它"。
+    ///
+    /// 为什么不一概吞掉：如果是渲染循环里每帧都抛的那种，Handled 之后提示会刷屏，
+    /// 进程也走不利索 —— 一分钟内第三次就让它正常崩，至少还能留下 WER 记录。
+    /// </summary>
+    private static bool NotifyCrash(Exception exception)
+    {
+        var now = DateTime.Now;
+        if ((now - _crashWindowStart).TotalSeconds > 60)
+        {
+            _crashWindowStart = now;
+            _crashCount = 0;
+        }
+        if (++_crashCount > 2) return false;
+
+        try
+        {
+            Host?.Toast("刚才这一步没成功，已经记进日志。数据都在本机，可以接着用。", 6);
+        }
+        catch (Exception)
+        {
+            // 连提示都弹不出来，那就只留日志
+        }
+        return true;
+    }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {

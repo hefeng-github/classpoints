@@ -46,6 +46,15 @@ public sealed class BoardSession(MemberRepository members)
 
     public event Action? Changed;
 
+    /// <summary>
+    /// 让外壳重画一次状态条。
+    ///
+    /// 同步泵改的是 PendingCount / SyncEnabled / IsOnline 这几个属性，
+    /// 它们没有各自的变更通知 —— 以前改完界面上什么都不动，
+    /// 于是侧栏可以一直挂着"本机存储"，而云端其实早连上了。
+    /// </summary>
+    public void Refresh() => Changed?.Invoke();
+
     private bool _readOnly;
 
     /// <summary>

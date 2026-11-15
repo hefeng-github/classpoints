@@ -99,6 +99,10 @@ internal static class SyncTests
 
         var pulledPeriod = b.Periods.Active();
         check("周期拉过来了", pulledPeriod is not null);
+        // 新配对设备本地自带一个「第 1 周期」，它不能把云端真正的当前周期顶掉 ——
+        // 顶掉之后这台机器会停在一个空周期上，历史流水一条都看不见。
+        check("配对设备没有顶掉云端的当前周期", pulledPeriod?.Id == periodA.Id,
+            $"{pulledPeriod?.Id} vs {periodA.Id}");
         // D1 是全库共享的（一个部署一个班），多次跑测试会累积别的班的数据，
         // 所以只数本次造出来的那几个人
         var ids = students.Select(x => x.Id).ToHashSet();

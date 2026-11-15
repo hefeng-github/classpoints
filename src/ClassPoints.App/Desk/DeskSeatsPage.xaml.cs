@@ -1,4 +1,5 @@
 using System.Text;
+using ClassPoints.App.Controls;
 using ClassPoints.App.Services;
 using ClassPoints.Core;
 using ClassPoints.Data;
@@ -544,7 +545,7 @@ public sealed partial class DeskSeatsPage : Page
             XamlRoot = XamlRoot,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
 
         rules.SetZone(id, (SeatZone)System.Math.Max(0, zone.SelectedIndex));
         if (relation.SelectedIndex == 0)
@@ -693,7 +694,7 @@ public sealed partial class DeskSeatsPage : Page
             DefaultButton = ContentDialogButton.Primary,
             XamlRoot = XamlRoot,
         };
-        await dialog.ShowAsync();
+        await Dialogs.ShowAsync(dialog);
     }
 
     private string Describe(SeatIssue issue)
@@ -714,34 +715,31 @@ public sealed partial class DeskSeatsPage : Page
 
     private async void OnEditLayout(object sender, RoutedEventArgs e)
     {
-        var rows = new NumberBox
+        var rows = new NumberInput
         {
             Header = "排数（2–10）",
             Minimum = SeatLayout.MinRows,
             Maximum = SeatLayout.MaxRows,
             Value = _layout.Rows,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
-            Width = 150,
+            BoxWidth = 56,
             HorizontalAlignment = HorizontalAlignment.Left,
         };
-        var groups = new NumberBox
+        var groups = new NumberInput
         {
             Header = "组数（1–6）",
             Minimum = SeatLayout.MinGroups,
             Maximum = SeatLayout.MaxGroups,
             Value = _layout.Groups,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
-            Width = 150,
+            BoxWidth = 56,
             HorizontalAlignment = HorizontalAlignment.Left,
         };
-        var perGroup = new NumberBox
+        var perGroup = new NumberInput
         {
             Header = "每组座位数（1–12）",
             Minimum = SeatLayout.MinPerGroup,
             Maximum = SeatLayout.MaxPerGroup,
             Value = _layout.PerGroup,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
-            Width = 190,
+            BoxWidth = 56,
             HorizontalAlignment = HorizontalAlignment.Left,
         };
         var preview = new TextBlock
@@ -752,15 +750,18 @@ public sealed partial class DeskSeatsPage : Page
 
         void UpdatePreview()
         {
-            var next = SeatLayout.Create(Read(rows, _layout.Rows), Read(groups, _layout.Groups), Read(perGroup, _layout.PerGroup));
+            rows.Commit();
+            groups.Commit();
+            perGroup.Commit();
+            var next = SeatLayout.Create((int)rows.Value, (int)groups.Value, (int)perGroup.Value);
             preview.Text = $"一共 {next.Capacity} 个座位（{next.Rows} 排 × {next.Columns} 列），" +
                            (next.Groups > 1 ? $"{next.Aisles} 条组间走廊。" : "不分组，没有走廊。") +
                            "换布局时按「第几排第几列」保位，不是按旧座位号。";
         }
 
-        rows.ValueChanged += (_, _) => UpdatePreview();
-        groups.ValueChanged += (_, _) => UpdatePreview();
-        perGroup.ValueChanged += (_, _) => UpdatePreview();
+        rows.ValueChanged += _ => UpdatePreview();
+        groups.ValueChanged += _ => UpdatePreview();
+        perGroup.ValueChanged += _ => UpdatePreview();
         UpdatePreview();
 
         var panel = new StackPanel { Spacing = 10 };
@@ -787,10 +788,9 @@ public sealed partial class DeskSeatsPage : Page
             XamlRoot = XamlRoot,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
 
-        var target = SeatLayout.Create(
-            Read(rows, _layout.Rows), Read(groups, _layout.Groups), Read(perGroup, _layout.PerGroup));
+        var target = SeatLayout.Create((int)rows.Value, (int)groups.Value, (int)perGroup.Value);
 
         if (target == _layout) return;
 
@@ -820,9 +820,6 @@ public sealed partial class DeskSeatsPage : Page
             ? $"布局已改：{lost} 人新布局放不下，回到未排座"
             : "布局已改，座位按排/列保住了", 4);
     }
-
-    private static int Read(NumberBox box, int fallback) =>
-        double.IsNaN(box.Value) ? fallback : (int)System.Math.Round(box.Value);
 
     // ================= 挑人 =================
 
@@ -864,7 +861,7 @@ public sealed partial class DeskSeatsPage : Page
         };
         list.SelectionChanged += (_, _) => dialog.IsPrimaryButtonEnabled = list.SelectedIndex >= 0;
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
         if (list.SelectedIndex < 0) return;
 
         PushUndo();
@@ -977,7 +974,7 @@ public sealed partial class DeskSeatsPage : Page
             DefaultButton = ContentDialogButton.Close,
             XamlRoot = XamlRoot,
         };
-        await dialog.ShowAsync();
+        await Dialogs.ShowAsync(dialog);
     }
 
     private void SaveSnapshot(string name, bool quiet)
@@ -1064,24 +1061,22 @@ public sealed partial class DeskSeatsPage : Page
             }
         }
 
-        var startRow = new NumberBox
+        var startRow = new NumberInput
         {
             Header = "第 1 排第 1 座所在的行",
             Minimum = 1,
             Maximum = System.Math.Max(1, grid.RowCount),
             Value = guessRow + 1,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
-            Width = 180,
+            BoxWidth = 56,
             HorizontalAlignment = HorizontalAlignment.Left,
         };
-        var startCol = new NumberBox
+        var startCol = new NumberInput
         {
             Header = "所在列（A = 1）",
             Minimum = 1,
             Maximum = System.Math.Max(1, grid.ColumnCount),
             Value = guessCol + 1,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
-            Width = 180,
+            BoxWidth = 56,
             HorizontalAlignment = HorizontalAlignment.Left,
         };
         var preview = new TextBlock
@@ -1092,8 +1087,10 @@ public sealed partial class DeskSeatsPage : Page
 
         void UpdatePreview()
         {
-            var r = Read(startRow, 1);
-            var c = Read(startCol, 1);
+            startRow.Commit();
+            startCol.Commit();
+            var r = (int)startRow.Value;
+            var c = (int)startCol.Value;
             var enough = r - 1 + _layout.Rows <= grid.RowCount && c - 1 + _layout.Columns <= grid.ColumnCount;
             preview.Text = $"{grid.Name}：{grid.RowCount} 行 × {grid.ColumnCount} 列；" +
                            $"按当前起点会读到第 {r}–{System.Math.Min(grid.RowCount, r - 1 + _layout.Rows)} 行、" +
@@ -1102,8 +1099,8 @@ public sealed partial class DeskSeatsPage : Page
                            (enough ? "" : " 表格比教室小，超出的座位会空着。");
         }
 
-        startRow.ValueChanged += (_, _) => UpdatePreview();
-        startCol.ValueChanged += (_, _) => UpdatePreview();
+        startRow.ValueChanged += _ => UpdatePreview();
+        startCol.ValueChanged += _ => UpdatePreview();
         UpdatePreview();
 
         var panel = new StackPanel { Spacing = 10, MinWidth = 420 };
@@ -1130,10 +1127,12 @@ public sealed partial class DeskSeatsPage : Page
             XamlRoot = XamlRoot,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
 
-        var row0 = Read(startRow, 1) - 1;
-        var col0 = Read(startCol, 1) - 1;
+        startRow.Commit();
+        startCol.Commit();
+        var row0 = (int)startRow.Value - 1;
+        var col0 = (int)startCol.Value - 1;
 
         var map = new Dictionary<int, string>();
         var used = new HashSet<string>(StringComparer.Ordinal);
@@ -1186,7 +1185,7 @@ public sealed partial class DeskSeatsPage : Page
                 DefaultButton = ContentDialogButton.Primary,
                 XamlRoot = XamlRoot,
             };
-            await warn.ShowAsync();
+            await Dialogs.ShowAsync(warn);
         }
         else
         {

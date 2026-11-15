@@ -1,3 +1,4 @@
+using ClassPoints.App.Controls;
 using ClassPoints.App.Services;
 using ClassPoints.Core;
 using ClassPoints.Data;
@@ -160,7 +161,7 @@ public sealed partial class DeskSettingsPage : Page
                 CloseButtonText = "取消",
                 DefaultButton = ContentDialogButton.Close,
             };
-            if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+            if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
             App.Window?.RunWizard();
         }));
         body.Children.Add(footer);
@@ -745,7 +746,7 @@ public sealed partial class DeskSettingsPage : Page
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
 
         var name = NameNormalizer.Clean(nameBox.Text);
         if (name.Length == 0)
@@ -844,7 +845,7 @@ public sealed partial class DeskSettingsPage : Page
         ContentDialogResult result;
         try
         {
-            result = await dialog.ShowAsync();
+            result = await Dialogs.ShowAsync(dialog);
         }
         finally
         {
@@ -904,13 +905,13 @@ public sealed partial class DeskSettingsPage : Page
             panel.Children.Add(row);
         }
 
-        await new ContentDialog
+        await Dialogs.ShowAsync(new ContentDialog
         {
             XamlRoot = XamlRoot,
             Title = $"{m.DisplayName} 的卡",
             Content = panel,
             CloseButtonText = "关闭",
-        }.ShowAsync();
+        });
 
         Reload();
     }
@@ -928,7 +929,7 @@ public sealed partial class DeskSettingsPage : Page
             DefaultButton = ContentDialogButton.Close,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
         Services.Members.Revoke(m.Id);
         Services.Audit.Add("member.revoke", null, m.Id, m.DisplayName);
         Reload();
@@ -1003,21 +1004,21 @@ public sealed partial class DeskSettingsPage : Page
             if (!rule.IsArchived)
             {
                 // 分值就地改：以前是「−5 / +5」两枚按钮，改一次 5 分要连点，还得数点了几下。
-                var delta = new NumberBox
+                // 就地改分值。NumberInput 每改一次就给一个"已定下来"的值，
+                // 不像 NumberBox 那样要等焦点离开才肯写 —— 改完直接去点别的区块不会丢。
+                var delta = new NumberInput
                 {
                     Value = rule.Delta,
                     Minimum = -500,
                     Maximum = 500,
-                    SmallChange = 5,
-                    SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
-                    Width = 132,
+                    Step = 5,
+                    BoxWidth = 76,
                     VerticalAlignment = VerticalAlignment.Center,
                 };
                 var captured = rule;
-                delta.ValueChanged += (_, e) =>
+                delta.ValueChanged += next0 =>
                 {
-                    if (double.IsNaN(e.NewValue)) return;
-                    var next = (int)e.NewValue;
+                    var next = (int)next0;
                     if (next == captured.Delta) return;
                     captured.Delta = next;
                     Services.Rules.Save(captured);
@@ -1067,14 +1068,14 @@ public sealed partial class DeskSettingsPage : Page
         var rule = existing ?? new Rule { Label = "", Delta = delta, Icon = IconCatalog.Default, Sort = 100 };
 
         var labelBox = new TextBox { Header = "名称", Text = rule.Label, Width = 320 };
-        var deltaBox = new NumberBox
+        var deltaBox = new NumberInput
         {
             Header = "默认分（负数表示扣分）",
             Value = rule.Delta,
             Minimum = -500,
             Maximum = 500,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
-            Width = 200,
+            Step = 5,
+            BoxWidth = 120,
         };
 
         var icon = rule.Glyph;
@@ -1086,14 +1087,14 @@ public sealed partial class DeskSettingsPage : Page
         capCombo.Items.Add("每周期最多");
         capCombo.SelectedIndex = rule.HasCap ? (rule.CapScope == CapScope.Single ? 1 : 2) : 0;
 
-        var capBox = new NumberBox
+        var capBox = new NumberInput
         {
             Header = "上限值",
             Value = rule.CapValue ?? 50,
             Minimum = 1,
             Maximum = 10000,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
-            Width = 200,
+            Step = 5,
+            BoxWidth = 120,
             IsEnabled = rule.HasCap,
         };
         capCombo.SelectionChanged += (_, _) => capBox.IsEnabled = capCombo.SelectedIndex > 0;
@@ -1123,7 +1124,7 @@ public sealed partial class DeskSettingsPage : Page
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
 
         var label = NameNormalizer.Clean(labelBox.Text);
         if (label.Length == 0)
@@ -1133,12 +1134,11 @@ public sealed partial class DeskSettingsPage : Page
         }
 
         rule.Label = label;
-        rule.Delta = double.IsNaN(deltaBox.Value) ? 10 : (int)deltaBox.Value;
+        deltaBox.Commit();
+        capBox.Commit();
+        rule.Delta = (int)deltaBox.Value;
         rule.Icon = IconCatalog.Normalize(icon);
-        // 上限值留空时 NumberBox 给的是 NaN，直接取整会变成 0 —— 那等于「一分都不许给」。
-        rule.CapValue = capCombo.SelectedIndex == 0
-            ? null
-            : double.IsNaN(capBox.Value) ? 50 : (int)capBox.Value;
+        rule.CapValue = capCombo.SelectedIndex == 0 ? null : (int)capBox.Value;
         rule.CapScope = capCombo.SelectedIndex == 0 ? CapScope.None
             : capCombo.SelectedIndex == 1 ? CapScope.Single : CapScope.Period;
 
@@ -1516,7 +1516,7 @@ public sealed partial class DeskSettingsPage : Page
             DefaultButton = ContentDialogButton.Close,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
 
         var check = pack
             ? Services.Backups.ImportPack(file.Path)
@@ -1567,7 +1567,7 @@ public sealed partial class DeskSettingsPage : Page
                 DefaultButton = ContentDialogButton.Close,
             };
 
-            if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+            if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
 
             var check = Services.Backups.ImportPack(path);
             Services.Audit.Add("pack.import", null, Path.GetFileName(path), check.Message);
@@ -1644,7 +1644,7 @@ public sealed partial class DeskSettingsPage : Page
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
 
         var pin = pairingPin.Password.Trim();
         var admin = adminPin.Password.Trim();
@@ -1741,7 +1741,7 @@ public sealed partial class DeskSettingsPage : Page
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
         passphrase = passBox.Password;
 
         try
@@ -1767,12 +1767,20 @@ public sealed partial class DeskSettingsPage : Page
 
     // ---------------- 同步 ----------------
 
+    /// <summary>
+    /// 重新配对时替老师填好的地址和班级码。
+    ///
+    /// 存在字段里是因为 SignOut 之后凭据就没了，而这一页要重建一次才能变成
+    /// "还没配对"的样子 —— 重建之后从哪里拿回那两串？只能先记下来。
+    /// </summary>
+    private string _repairUrl = "";
+    private string _repairCode = "";
+
     private void BuildSyncSection()
     {
         var sync = Services.Sync;
         var configured = sync.IsConfigured;
         var creds = sync.IsConfigured ? new SyncStore().Load() : null;
-
         var body = Section("同步",
             configured
                 ? $"已连接 {creds?.BaseUrl}。断网照常用，写操作在后台补推。"
@@ -1791,6 +1799,16 @@ public sealed partial class DeskSettingsPage : Page
             // 「待推送 136 条」只会让人以为有东西卡住了。
             body.Children.Add(ValueRow("待推送", Services.Outbox.Count() + " 条"));
 
+            // 凭据失效是"只能人来救"的那一类：云端把设备踢了、重置过班级、
+            // 或者这台机器重装过。以前只写一句"请重新配对"，可界面上没有那个入口，
+            // 老师得自己摸到"解除配对"再走一遍表单 —— 所以这里直接把按钮摆出来。
+            if (Services.Pump.NeedsPairing)
+            {
+                body.Children.Add(ValueRow("凭据", "云端已经不再认这台电脑",
+                    "本机的名单、流水和积压记录都还在。重新配对不会动它们，" +
+                    "配好之后积压的记录会自动补推。"));
+            }
+
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
             buttons.Children.Add(Async("立即同步", async () =>
             {
@@ -1800,12 +1818,29 @@ public sealed partial class DeskSettingsPage : Page
                     : $"同步失败：{report.Error}", 5);
                 Reload();
             }));
-            buttons.Children.Add(Small("解除配对…", () =>
+
+            if (Services.Pump.NeedsPairing)
             {
-                sync.SignOut();
-                Shell?.Toast("凭据已清除，可以重新配对", 5);
-                Reload();
-            }));
+                buttons.Children.Add(PrimaryButton("重新配对…", () =>
+                {
+                    // 地址和班级码先记下来：SignOut 之后就读不到了，而让老师手抄
+                    // 一串 https://… 是最容易输错的一步。
+                    _repairUrl = creds?.BaseUrl ?? "";
+                    _repairCode = creds?.ClassCode ?? "";
+                    sync.SignOut();
+                    Shell?.Toast("地址和班级码已经填好，补一次班主任密码就能重新配对", 8);
+                    Reload();
+                }));
+            }
+            else
+            {
+                buttons.Children.Add(Small("解除配对…", () =>
+                {
+                    sync.SignOut();
+                    Shell?.Toast("凭据已清除，可以重新配对", 5);
+                    Reload();
+                }));
+            }
             body.Children.Add(buttons);
             return;
         }
@@ -1816,13 +1851,14 @@ public sealed partial class DeskSettingsPage : Page
             PlaceholderText = "https://classpoints-api.你的账号.workers.dev",
             Height = 34,
             VerticalContentAlignment = VerticalAlignment.Center,
-            Text = "http://127.0.0.1:8787",
+            Text = _repairUrl.Length > 0 ? _repairUrl : "http://127.0.0.1:8787",
         };
         var codeBox = new TextBox
         {
             PlaceholderText = "8 位班级码",
             Height = 34,
             VerticalContentAlignment = VerticalAlignment.Center,
+            Text = _repairCode,
         };
         var pinBox = new PasswordBox
         {
@@ -2092,7 +2128,7 @@ public sealed partial class DeskSettingsPage : Page
             XamlRoot = XamlRoot,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary)
         {
             status.Text = $"已下载 {manifest.Version}，随时可以再点上面那个按钮";
             return;
@@ -2234,9 +2270,37 @@ public sealed partial class DeskSettingsPage : Page
         Margin = new Thickness(0, 4, 0, 4),
     };
 
-    private Button Small(string text, Action action, double width = 0)
+    /// <summary>
+    /// "现在就要做这件事"的那个按钮：主色、比 Small 大一号。
+    /// 同步凭据失效时用它 —— 那一步不做，积压的记录永远上不去云。
+    /// </summary>
+    private Button PrimaryButton(string text, Action action)
     {
         var button = new Button
+        {
+            Content = text,
+            Style = Styled("DeskPrimaryButton"),
+            Height = 30,
+            MinWidth = 88,
+            FontSize = 13,
+        };
+        button.Click += (_, _) =>
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception ex)
+            {
+                Services.LogError("settings-primary", ex);
+                Shell?.Toast("操作失败：" + ex.Message, 5);
+            }
+        };
+        return button;
+    }
+
+    private Button Small(string text, Action action, double width = 0)
+    {        var button = new Button
         {
             Content = text,
             Style = Styled("DeskButton"),

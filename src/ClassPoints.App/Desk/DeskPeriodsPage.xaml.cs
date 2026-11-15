@@ -192,13 +192,13 @@ public sealed partial class DeskPeriodsPage : Page
             panel.Children.Add(line);
         }
 
-        await new ContentDialog
+        await Dialogs.ShowAsync(new ContentDialog
         {
             XamlRoot = XamlRoot,
             Title = period.TitleText + " · 排行榜",
             Content = new ScrollViewer { Content = panel, MaxHeight = 480 },
             CloseButtonText = "关闭",
-        }.ShowAsync();
+        });
     }
 
     private async Task ExportAsync(Period period)
@@ -254,7 +254,7 @@ public sealed partial class DeskPeriodsPage : Page
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
         if (string.IsNullOrWhiteSpace(box.Text)) return;
         Services.Periods.Rename(period.Id, box.Text.Trim());
         Reload();
@@ -289,7 +289,7 @@ public sealed partial class DeskPeriodsPage : Page
             DefaultButton = ContentDialogButton.Close,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
         if (string.IsNullOrWhiteSpace(nameBox.Text)) return;
 
         Rollover(nameBox.Text.Trim());

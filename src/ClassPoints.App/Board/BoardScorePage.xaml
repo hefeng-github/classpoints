@@ -108,6 +108,10 @@
                     <TextBlock Text="确认入账" Style="{StaticResource H2Text}" />
                     <TextBlock x:Name="ConfirmText" Style="{StaticResource BodyText}" TextWrapping="Wrap" />
 
+                    <!-- 这一条不是啰嗦：确认条以前 8 秒自己关掉，老师回来看到空白
+                         会以为已经记上了。现在它不会自己走，得告诉人怎么退出。 -->
+                    <TextBlock Text="点空白处取消，不会自动关闭" Style="{StaticResource SmallText}" />
+
                     <StackPanel Orientation="Horizontal" Spacing="12" HorizontalAlignment="Right">
                         <Button x:Name="ConfirmCancelButton" Content="取消" Style="{StaticResource BtnLg}"
                                 MinWidth="140" Click="OnBarCancelClick" />

@@ -311,6 +311,15 @@ public sealed class Database
 
         // 第一个周期。名字是「第 1 周期」—— 周期是唯一的时间单位，不再有学期。
         var termKey = TermKeyFor(DateTime.Now);
+        var firstPeriod = new Period
+        {
+            Id = "p_" + termKey,
+            Name = PeriodNames.Format(1),
+            TermKey = termKey,
+            StartAt = Clock.FromLocal(DateTime.Now.Date),
+            Status = PeriodStatus.Active,
+            CreatedAt = now,
+        };
         using (var cmd = conn.CreateCommand())
         {
             cmd.Transaction = tx;
@@ -318,13 +327,20 @@ public sealed class Database
                 INSERT OR IGNORE INTO periods (id, name, term_key, start_at, status, created_at)
                 VALUES ($id, $name, $term, $start, 'active', $now)
                 """;
-            cmd.Parameters.AddWithValue("$id", "p_" + termKey);
-            cmd.Parameters.AddWithValue("$name", PeriodNames.Format(1));
-            cmd.Parameters.AddWithValue("$term", termKey);
-            cmd.Parameters.AddWithValue("$start", Clock.FromLocal(DateTime.Now.Date));
+            cmd.Parameters.AddWithValue("$id", firstPeriod.Id);
+            cmd.Parameters.AddWithValue("$name", firstPeriod.Name);
+            cmd.Parameters.AddWithValue("$term", firstPeriod.TermKey);
+            cmd.Parameters.AddWithValue("$start", firstPeriod.StartAt);
             cmd.Parameters.AddWithValue("$now", now);
             cmd.ExecuteNonQuery();
         }
+
+        // 首周期**不在这里**入队。
+        //
+        // 队列只该装"要发出去的东西"，而这台机器此刻可能压根没配对：
+        // 留一条永远发不出去的记录，未配对设备的「待推送」就永远是 1 条。
+        // 真正需要补推的时机只有两个，都在同步层做（见 SyncService.QueuePeriods）：
+        // 建班/配对成功之后，以及老库升级的那一次迁移。
 
         using (var cmd = conn.CreateCommand())
         {

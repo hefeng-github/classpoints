@@ -1,3 +1,4 @@
+using System.Net.Http;
 using System.Text.Json.Nodes;
 using ClassPoints.Core;
 using Microsoft.Data.Sqlite;
@@ -21,6 +22,17 @@ public sealed record SyncReport(
 
     /// <summary>配对时服务端给的「待审」话术，里面带着特征码，界面直接显示。</summary>
     public string? PendingMessage { get; init; }
+
+    /// <summary>
+    /// 云端不认这台机器的凭据了（refresh 401）。
+    ///
+    /// 和"网络断了"必须分开：断网会自己好，这个不会 —— 只有重新配对能救。
+    /// 以前两种情况都只显示一句"同步失败"，老师看不出区别，也就不会去重配。
+    /// </summary>
+    public bool NeedsPairing { get; init; }
+
+    /// <summary>这一轮是"连不上"（断网、超时），还是"连上了但服务端不满意"。两者话术不同。</summary>
+    public bool Offline { get; init; }
 
     public static SyncReport Skipped(string reason) => new(false, reason, 0, 0, 0, 0, DateTime.Now);
 }
@@ -129,6 +141,58 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
 
     public void SignOut() => _store.Clear();
 
+    /// <summary>
+    /// 有待推送的流水时，先把它们引用的周期排进队列。
+    ///
+    /// 云端的 entries.period_id 有外键。周期没推上去的时候整批撞外键：
+    /// 服务端 500、客户端一轮轮退避重试，界面上只显示「待推送 8 条」——
+    /// 老师只会以为网络不好，而实际上是"这台机器的第 1 周期从没被推过"。
+    ///
+    /// 判断依据是队列本身，不需要额外记"哪些周期推过了"：
+    /// 有流水要推 ⇒ 队列里必须有它的周期。已经在队列里的不重复加（幂等 key），
+    /// 所以每批最多多推一条 upsert，云端按 id 覆盖，无副作用。
+    /// </summary>
+    private void QueuePeriodsForPendingEntries()
+    {
+        List<string> periodIds = [];
+        try
+        {
+            using var conn = db.Open();
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = "SELECT payload FROM outbox WHERE kind IN ('entry','reverse') LIMIT 200";
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    if (JsonNode.Parse(reader.GetString(0)) is not JsonObject node) continue;
+                    var entry = node["entry"] as JsonObject ?? node;
+                    if (entry["periodId"]?.GetValue<string>() is { Length: > 0 } id) periodIds.Add(id);
+                }
+            }
+
+            foreach (var id in periodIds.Distinct().ToList())
+            {
+                var period = ReadPeriod(conn, id);
+                if (period is null) continue;
+                SyncOutbox.EnqueueIfAbsent(conn, null, $"periods:{id}", "period",
+                    new { action = "upsert", period });
+            }
+        }
+        catch (Exception)
+        {
+            // 补周期失败不该挡住这一轮推送：entries 那边会拿到明确的 422 再显示给老师
+        }
+    }
+
+    private static Period? ReadPeriod(SqliteConnection conn, string id)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT * FROM periods WHERE id = $id";
+        cmd.Parameters.AddWithValue("$id", id);
+        using var reader = cmd.ExecuteReader();
+        return reader.Read() ? Mappers.Period(reader) : null;
+    }
+
     // ---------------- 一轮同步 ----------------
 
     /// <summary>
@@ -159,6 +223,9 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
             }
             else
             {
+                // 先把流水引用的周期排上队：云端 entries 有外键，周期不在那儿整批都推不上去
+                QueuePeriodsForPendingEntries();
+
                 var due = outbox.Due(200);
                 if (due.Count > 0)
                 {
@@ -168,7 +235,7 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
                     {
                         var refreshed = await TryRefreshAsync(credentials, ct);
                         if (refreshed is null)
-                            return new SyncReport(false, "同步凭据失效，请重新配对", 0, outbox.Count(), 0, LastSeq, DateTime.Now);
+                            return new SyncReport(false, "这台电脑的同步凭据已经失效（云端不再认它）", 0, outbox.Count(), 0, LastSeq, DateTime.Now) { NeedsPairing = true };
 
                         _client.SetAccess(refreshed.Access);
                         credentials = refreshed;
@@ -203,7 +270,7 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
                     // 而下一轮同样没有推送 —— 等到班主任点通过也恢复不了。
                     var refreshed = await TryRefreshAsync(credentials, ct);
                     if (refreshed is null)
-                        return new SyncReport(false, "同步凭据失效，请重新配对", pushed, outbox.Count(), pulled, next, DateTime.Now);
+                        return new SyncReport(false, "这台电脑的同步凭据已经失效（云端不再认它）", pushed, outbox.Count(), pulled, next, DateTime.Now) { NeedsPairing = true };
 
                     credentials = refreshed;
                     _client.SetAccess(refreshed.Access);
@@ -232,8 +299,13 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         }
         catch (Exception ex)
         {
-            // 断网、超时、服务端 5xx：都不算错误，下一轮再来
-            return new SyncReport(false, ex.Message, 0, outbox.Count(), 0, LastSeq, DateTime.Now);
+            // 断网、超时、服务端 5xx：都不算错误，下一轮再来。
+            // 但要分开记："连不上"和"连上了但被拒"在界面上是两种话术 ——
+            // 一个是等一会儿，一个是必须去改点什么。
+            return new SyncReport(false, ex.Message, 0, outbox.Count(), 0, LastSeq, DateTime.Now)
+            {
+                Offline = ex is HttpRequestException or TaskCanceledException or OperationCanceledException,
+            };
         }
         finally
         {

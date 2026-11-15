@@ -1,3 +1,4 @@
+using ClassPoints.App.Controls;
 using ClassPoints.App.Services;
 using ClassPoints.Core;
 using ClassPoints.Data;
@@ -160,13 +161,15 @@ public sealed partial class DeskExamsPage : Page
 
     private async Task EditFullScoreAsync(Exam exam)
     {
-        var box = new NumberBox
+        var box = new NumberInput
         {
             Header = "满分",
             Value = exam.FullScore,
             Minimum = 1,
             Maximum = 100000,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
+            Step = 10,
+            BoxWidth = 100,
+            HorizontalAlignment = HorizontalAlignment.Left,
         };
 
         var dialog = new ContentDialog
@@ -192,7 +195,8 @@ public sealed partial class DeskExamsPage : Page
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
+        box.Commit();
         Services.Exams.UpdateFullScore(exam.Id, box.Value);
         Reload();
     }
@@ -210,7 +214,7 @@ public sealed partial class DeskExamsPage : Page
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
         if (string.IsNullOrWhiteSpace(box.Text)) return;
         Services.Exams.Rename(exam.Id, box.Text.Trim());
         Reload();
@@ -229,7 +233,7 @@ public sealed partial class DeskExamsPage : Page
             DefaultButton = ContentDialogButton.Close,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
         Services.Exams.Delete(exam.Id);
         Services.Audit.Add("exam.delete", null, exam.Id, exam.Name);
         Reload();
@@ -277,7 +281,8 @@ public sealed partial class DeskExamsPage : Page
             var row = new Grid { ColumnSpacing = 12 };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(200) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(76) });
+            // 数字输入框由「− 框 +」三件组成，宽度不能再按单个输入框算
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             row.Children.Add(new TextBlock
             {
@@ -288,13 +293,14 @@ public sealed partial class DeskExamsPage : Page
             });
 
             var slider = new Slider { Minimum = 0, Maximum = 100, StepFrequency = 5, Value = value * 100 };
-            var number = new NumberBox
+            var number = new NumberInput
             {
                 Value = value * 100,
                 Minimum = 0,
                 Maximum = 100,
-                SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
-                SmallChange = 5,
+                Step = 5,
+                BoxWidth = 48,
+                VerticalAlignment = VerticalAlignment.Center,
             };
 
             var examId = exam.Id;
@@ -308,7 +314,7 @@ public sealed partial class DeskExamsPage : Page
             }
 
             slider.ValueChanged += (_, e) => { if (!_loading) Push(e.NewValue); };
-            number.ValueChanged += (_, e) => { if (!_loading && !double.IsNaN(e.NewValue)) Push(e.NewValue); };
+            number.ValueChanged += percent => { if (!_loading) Push(percent); };
 
             Grid.SetColumn(slider, 1);
             row.Children.Add(slider);
@@ -374,11 +380,33 @@ public sealed partial class DeskExamsPage : Page
     private void OnAutoBalance(object sender, RoutedEventArgs e)
     {
         if (_exams.Count == 0) return;
-        _weights = SchemeMath.AutoBalance(_weights);
+
+        // 必须按「考试表」补键。刚导入、从没设过权重时 _weights 是空字典，
+        // AutoBalance 拿到空字典配出来的还是空 —— 于是 toast 说"已配平到 100%"，
+        // 界面上权重仍是 0、合计仍是红字。v1.3 报告里的 P2-1 就是这个。
+        var source = _exams.ToDictionary(x => x.Id, x => _weights.TryGetValue(x.Id, out var w) ? w : 0);
+        _weights = SchemeMath.AutoBalance(source);
         Services.Exams.SetWeights(_scheme.Id, _weights);
         RenderWeights();
         DebouncedRecompute();
-        Shell?.Toast("权重已按原比例配平到 100%", 2);
+        Shell?.Toast($"权重已配平，合计 {WeightSum * 100:0.#}%", 2);
+    }
+
+    /// <summary>
+    /// 从没设过权重时按场次均分。
+    ///
+    /// 默认全 0 的话，导入完第一场考试，总评就只剩平时分，合计那行还是红的 0% ——
+    /// 老师的理解是"算错了"，而不是"这里要我自己填"。导入之后就把这一步做掉。
+    /// </summary>
+    private bool EnsureWeightsInitialized()
+    {
+        if (_exams.Count == 0) return false;
+        if (Services.Exams.Weights(_scheme.Id).Count > 0) return false;
+
+        var even = 1.0 / _exams.Count;
+        Services.Exams.SetWeights(_scheme.Id, _exams.ToDictionary(x => x.Id, _ => even));
+        _weights = Services.Exams.Weights(_scheme.Id);
+        return true;
     }
 
     private void DebouncedRecompute()
@@ -523,14 +551,28 @@ public sealed partial class DeskExamsPage : Page
     private async Task ShowImportDialogAsync(string fileName, string path, SheetGrid grid, ScoreParseResult parsed)
     {
         var nameBox = new TextBox { Header = "考试名称", Text = GuessExamName(fileName), Width = 240 };
-        var fullBox = new NumberBox
+
+        // 满分默认值按"这张表里最大那个分"去猜常见的档位：95 → 100、150 → 150、750 → 750。
+        // 以前写死 750，导一份百分制成绩进来，全班都显示成"13% 得分率"，
+        // 还得手工改一次满分才看得懂。而直接取最大值向上取整也不行：
+        // 班里最高 88 分的百分制卷子会变成"满分 88"，看起来更莫名其妙。
+        var peak = parsed.Rows
+            .Where(r => r.Kind is not (ScoreMatchKind.Summary or ScoreMatchKind.Duplicate))
+            .Select(r => ScoreSheetParser.TryParseScore(r.ScoreText, out var v) ? v : double.NaN)
+            .Where(v => !double.IsNaN(v) && v > 0)
+            .DefaultIfEmpty(double.NaN)
+            .Max();
+
+        var fullBox = new NumberInput
         {
             Header = "满分",
-            Value = 750,
+            Value = GuessFullScore(peak),
             Minimum = 1,
             Maximum = 100000,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
-            Width = 160,
+            Step = 10,
+            BoxWidth = 100,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 4, 0, 0),
         };
         var dateBox = new TextBox
         {
@@ -656,7 +698,7 @@ public sealed partial class DeskExamsPage : Page
             dialog.DefaultButton = ContentDialogButton.Close;
         }
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
 
         var examName = nameBox.Text.Trim();
         if (examName.Length == 0)
@@ -676,20 +718,41 @@ public sealed partial class DeskExamsPage : Page
             return;
         }
 
+        fullBox.Commit();
         var result = Services.Exams.ImportScores(Services.CurrentPeriod.Id, examName,
-            double.IsNaN(fullBox.Value) ? 750 : fullBox.Value,
+            fullBox.Value <= 0 ? 100 : fullBox.Value,
             dateBox.Text.Trim(), rowsToWrite, Path.GetFileName(path));
 
         Services.Audit.Add("exam.import", null, result.ExamId,
             $"{examName}：写入 {result.Written}，缺考 {result.Absent}");
 
         Reload();
+
+        // 第一次导入结束后把权重均分掉：默认全 0 的话，总评只剩平时分，
+        // 「合计 0%」还标成红字，看着像算错了。
+        if (EnsureWeightsInitialized())
+        {
+            RenderWeights();
+            Recompute(resetBaseline: false);
+        }
+
         Shell?.Toast($"已导入 {examName}：{result.Written} 人" +
                      (result.Absent > 0 ? $"，缺考 {result.Absent} 人" : ""), 5);
     }
 
-    private static string GuessExamName(string fileName)
+    /// <summary>
+    /// 按最大分猜常见满分档。猜错也不要紧：改满分只影响"考试百分制"那一列，
+    /// 而且导入页里就能改 —— 但默认值必须像个人写的，不能是 750 或者 88。
+    /// </summary>
+    private static double GuessFullScore(double peak)
     {
+        if (double.IsNaN(peak) || peak <= 0) return 100;
+        foreach (var common in new double[] { 100, 120, 150, 200, 300, 750 })
+            if (peak <= common) return common;
+        return System.Math.Ceiling(peak / 50) * 50;
+    }
+
+    private static string GuessExamName(string fileName)    {
         var name = Path.GetFileNameWithoutExtension(fileName);
         foreach (var suffix in new[] { "成绩", "成绩单", "分数" })
             name = name.Replace(suffix, "");
@@ -719,13 +782,13 @@ public sealed partial class DeskExamsPage : Page
                 Style = Styled("DeskSecondaryText"),
             });
 
-        _ = new ContentDialog
+        _ = Dialogs.ShowAsync(new ContentDialog
         {
             XamlRoot = XamlRoot,
             Title = "导出前检查",
             Content = panel,
             CloseButtonText = "知道了",
-        }.ShowAsync();
+        });
     }
 
     private List<string> CollectIssues()

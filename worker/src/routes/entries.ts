@@ -46,8 +46,47 @@ const INSERT = `INSERT OR IGNORE INTO entries
    occurred_at, created_at, reverses_entry_id)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-function bindEntry(env: Env, classId: string, e: EntryDto): D1PreparedStatement {
-  const id = requireString(e.id, 'id', 40);
+/**
+ * entries 的 period_id / student_id 都带外键。缺一条，D1 就把整批打成 500，
+ * 客户端只会当成"网络抖了"一轮轮退避 —— 数据没丢，但永远推不上来。
+ * 这里先查一遍，缺什么就回一个能看懂的 422，客户端照原话显示给老师。
+ */
+async function requireKnownRefs(env: Env, classId: string, list: EntryDto[]): Promise<void> {
+  const periods = [...new Set(list.map((e) => e.periodId).filter((v): v is string => !!v))];
+  const students = [...new Set(list.map((e) => e.studentId).filter((v): v is string => !!v))];
+
+  if (periods.length > 0) {
+    const rows = await env.DB.prepare(
+      `SELECT id FROM periods WHERE class_id = ? AND id IN (${periods.map(() => '?').join(',')})`,
+    ).bind(classId, ...periods).all<{ id: string }>();
+    const have = new Set((rows.results ?? []).map((r) => r.id));
+    const missing = periods.filter((id) => !have.has(id));
+    if (missing.length > 0) {
+      throw new HttpError(
+        422,
+        'unknown_period',
+        `云端还没有这个周期（${missing[0]}），等周期同步上去后这批流水会自动补推`,
+      );
+    }
+  }
+
+  if (students.length > 0) {
+    const rows = await env.DB.prepare(
+      `SELECT id FROM students WHERE class_id = ? AND id IN (${students.map(() => '?').join(',')})`,
+    ).bind(classId, ...students).all<{ id: string }>();
+    const have = new Set((rows.results ?? []).map((r) => r.id));
+    const missing = students.filter((id) => !have.has(id));
+    if (missing.length > 0) {
+      throw new HttpError(
+        422,
+        'unknown_student',
+        `云端还没有这个学生（${missing[0]}），等名单同步上去后这批流水会自动补推`,
+      );
+    }
+  }
+}
+
+function bindEntry(env: Env, classId: string, e: EntryDto): D1PreparedStatement {  const id = requireString(e.id, 'id', 40);
   const delta = intOrNull(e.delta);
   if (delta === null) throw new HttpError(422, 'invalid_delta', 'delta 必须是整数');
   if (Math.abs(delta) > 50 && !e.overCap) {
@@ -86,6 +125,14 @@ export async function postEntries(env: Env, request: Request): Promise<Response>
   const list = Array.isArray(body) ? body : body.entries ?? [];
   if (list.length === 0) throw new HttpError(422, 'empty_batch', '至少要一条记录');
   if (list.length > 50) throw new HttpError(422, 'batch_too_large', '一批最多 50 条，请分批提交');
+
+  // 先确认外键指的东西都在。
+  //
+  // 以前不查：period 不存在时 D1 的外键约束直接把整批打成 500，
+  // 客户端把它当"网络抖了"一轮轮退避重试 —— 数据没丢，但永远推不上来，
+  // 界面上只有一句「待推送 N 条」。现在回一个能看懂的 422，
+  // 客户端就能把原因显示出来（周期没同步上去）。
+  await requireKnownRefs(env, claims.cid, list);
 
   const at = now();
   const stmts: D1PreparedStatement[] = [];

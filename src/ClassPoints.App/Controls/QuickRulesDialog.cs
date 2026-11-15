@@ -58,7 +58,7 @@ public sealed class QuickRulesDialog
     public async Task<bool> ShowAsync()
     {
         ShowList();
-        await _dialog.ShowAsync();
+        await Dialogs.ShowAsync(_dialog);
         return Changed;
     }
 
@@ -186,14 +186,16 @@ public sealed class QuickRulesDialog
         var rule = existing ?? new Rule { Label = "", Delta = delta, Icon = IconCatalog.Default, OwnerId = _memberId };
 
         var labelBox = new TextBox { Header = "名称", Text = rule.Label, MaxWidth = 320, HorizontalAlignment = HorizontalAlignment.Left };
-        var deltaBox = new NumberBox
+        // 用 NumberInput 而不是 NumberBox：后者要等焦点离开才写 Value，
+        // 点"保存"那一刻读到的是旧值 —— 显示 50、存进去 10。
+        var deltaBox = new NumberInput
         {
             Header = "分值（负数表示扣分）",
             Value = rule.Delta,
             Minimum = -500,
             Maximum = 500,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
-            Width = 200,
+            Step = 5,
+            BoxWidth = 120,
             HorizontalAlignment = HorizontalAlignment.Left,
         };
 
@@ -206,14 +208,14 @@ public sealed class QuickRulesDialog
         capCombo.Items.Add("每周期最多");
         capCombo.SelectedIndex = rule.HasCap ? (rule.CapScope == CapScope.Single ? 1 : 2) : 0;
 
-        var capBox = new NumberBox
+        var capBox = new NumberInput
         {
             Header = "上限值",
             Value = rule.CapValue ?? 50,
             Minimum = 1,
             Maximum = 10000,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
-            Width = 200,
+            Step = 5,
+            BoxWidth = 120,
             IsEnabled = rule.HasCap,
             HorizontalAlignment = HorizontalAlignment.Left,
         };
@@ -243,12 +245,12 @@ public sealed class QuickRulesDialog
             }
 
             rule.Label = label;
-            rule.Delta = double.IsNaN(deltaBox.Value) ? delta : (int)deltaBox.Value;
+            deltaBox.Commit();
+            rule.Delta = (int)deltaBox.Value;
             rule.Icon = IconCatalog.Normalize(icon);
             rule.OwnerId = _memberId;
-            rule.CapValue = capCombo.SelectedIndex == 0
-                ? null
-                : double.IsNaN(capBox.Value) ? 50 : (int)capBox.Value;
+            capBox.Commit();
+            rule.CapValue = capCombo.SelectedIndex == 0 ? null : (int)capBox.Value;
             rule.CapScope = capCombo.SelectedIndex == 0 ? CapScope.None
                 : capCombo.SelectedIndex == 1 ? CapScope.Single : CapScope.Period;
 

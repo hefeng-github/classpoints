@@ -187,7 +187,13 @@ public sealed partial class DeskShell : UserControl, IShellHost
     {
         _index = index;
         var page = DeskPages.Map(index);
-        if (DeskFrame.CurrentSourcePageType != page) DeskFrame.Navigate(page);
+        if (DeskFrame.CurrentSourcePageType != page)
+        {
+            var ok = DeskFrame.Navigate(page);
+            // 导航失败时 Frame 会安静地停在原页面（侧栏已经跳过去了，右边还是旧的）。
+            // 这种"看起来点了没反应"最难查，所以留一行日志。
+            Services.Log($"导航 {index} → {page.Name} ok={ok} 现={DeskFrame.CurrentSourcePageType?.Name ?? "null"}");
+        }
         SelectWithoutNotify(index);
         Refresh();
     }
@@ -224,7 +230,9 @@ public sealed partial class DeskShell : UserControl, IShellHost
     {
         ClassNameText.Text = Services.ClassName;
         PeriodText.Text = Services.PeriodName;
-        ModeText.Text = App.Mode.ToDisplay() + (Services.Sync.IsReadOnly ? " · 待审核只读" : " · 本机存储");
+        // 这里以前写死「本机存储」：明明已经连上云端，侧栏还是一句话否定它。
+        // 状态归会话层一处管（记忆卡、角标、大屏顶栏都读它），别再在这里猜。
+        ModeText.Text = App.Mode.ToDisplay() + " · " + Session.SyncText;
 
         var last = Services.Settings.LastBackupAt;
         BackupText.Text = last <= 0
@@ -477,6 +485,6 @@ public sealed partial class DeskShell : UserControl, IShellHost
             DefaultButton = ContentDialogButton.Close,
             XamlRoot = XamlRoot,
         };
-        return await dialog.ShowAsync() == ContentDialogResult.Primary;
+        return await Dialogs.ShowAsync(dialog) == ContentDialogResult.Primary;
     }
 }

@@ -101,9 +101,12 @@ public sealed partial class BoardScorePage : Page
         _barTimer.Tick += (_, _) =>
         {
             _barTimer.Stop();
-            // 确认条超时按"取消"处理：超时确认的代价是给 12 个人各加 100 分
-            if (_barMode == BarMode.Confirm) HideBar();
-            else if (_barMode == BarMode.Undo) HideBar();
+            // 只有撤销条会自己消失：它只是"还能反悔一会儿"的提示，超时等于收回去，没有代价。
+            //
+            // 确认条绝不能自动关。v1.3 报告里那条 P2-4 就是它：老师在教室后面被叫住，
+            // 回来一看确认条没了，第一反应是"刚才应该记上了吧" —— 这是最贵的一种误解，
+            // 因为当场没人会去核对，等到家长会才发现少了 80 分。
+            if (_barMode == BarMode.Undo) HideBar();
         };
 
         CardGrid.PointerPressed += OnPointerPressed;
@@ -259,9 +262,11 @@ public sealed partial class BoardScorePage : Page
             XamlRoot = XamlRoot,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
 
-        var lines = box.Text.Split('\n');
+        // TextBox 里的换行是 \r，从 Excel 粘贴是 \r\n —— 用 TextLines 统一切，
+        // 以前这里只按 \n 切，8 行姓名会粘成 1 个超长名字的学生。
+        var lines = TextLines.Split(box.Text);
         var added = Services.Students.ImportNames(lines);
         Toast(added > 0 ? $"已加入 {added} 名学生" : "没读到姓名");
         ReloadData(keepSelection: false);
@@ -474,6 +479,8 @@ public sealed partial class BoardScorePage : Page
 
         button.Content = panel;
         button.Click += OnOtherClick;
+        // 自绘按钮在 UIA 里没有可读的名字，读屏软件只会念"按钮"
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, "其他：手动输入名称与分值");
         return button;
     }
 
@@ -487,13 +494,15 @@ public sealed partial class BoardScorePage : Page
         if (!EnsureWritable()) return;
 
         var nameBox = new TextBox { Header = "项目名称", PlaceholderText = "例如：帮老师搬作业" };
-        var deltaBox = new NumberBox
+        // 不用 NumberBox：它要等焦点离开才把文本写进 Value，而这里点完"下一步"
+        // 就直接读值 —— 自动化 setValue 会落在镜像元素上，读数还是 10（v1.3 报告 P3-1）。
+        var deltaBox = new NumberInput
         {
             Header = "分值（负数表示扣分）",
             Value = 10,
             Minimum = -500,
             Maximum = 500,
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline,
+            Step = 5,
         };
 
         var panel = new StackPanel { Spacing = 10, Width = 360 };
@@ -524,7 +533,7 @@ public sealed partial class BoardScorePage : Page
         int delta;
         while (true)
         {
-            if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+            if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
 
             label = NameNormalizer.Clean(nameBox.Text);
             if (label.Length == 0)
@@ -533,7 +542,8 @@ public sealed partial class BoardScorePage : Page
                 continue;
             }
 
-            delta = double.IsNaN(deltaBox.Value) ? 10 : (int)deltaBox.Value;
+            deltaBox.Commit();
+            delta = (int)deltaBox.Value;
             if (delta == 0)
             {
                 deltaBox.Header = "分值（不能为 0）";
@@ -710,8 +720,9 @@ public sealed partial class BoardScorePage : Page
 
         ConfirmHost.Visibility = Visibility.Visible;
 
-        _barTimer.Interval = TimeSpan.FromSeconds(8);
-        _barTimer.Start();
+        // 这里刻意不启动 _barTimer：确认条一直等到人按"确定"或点空白处取消。
+        // 之前 8 秒超时按取消处理，看上去很谨慎（怕误记账），实际换来的是
+        // "人离开一会儿，回来以为已经记上了"——静默失败比误记难查得多。
     }
 
     private void ShowUndoBar(string batchId, string text)
@@ -1317,8 +1328,7 @@ public sealed partial class BoardScorePage : Page
     {
         // 同步状态和班级名都归外壳顶部的常驻状态条管（那里还挂着日期和时钟），
         // 这页只写"现在是谁在记分" —— 三处各写一遍，教室里看到的就是同一段话重复三次。
-        Session.PendingCount = Services.Outbox.Count();
-        Session.SyncEnabled = false;   // 云端未接线时如实显示「本机存储」，不假装在同步
+        // SyncEnabled 交给 SyncPump 按"这台机器有没有配对"统一写，别在这里猜。
 
         // 左上角只给一条手感提示：班级名、周期、身份都在外壳顶栏上，重复三遍反而更难扫。
         WhoText.Text = "点一下选中，按住拖一片是框选";

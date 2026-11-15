@@ -42,7 +42,7 @@ public sealed partial class MainWindow : Window
         if (_startupDialog is not null)
         {
             _startupDialog.XamlRoot = Root.XamlRoot;
-            await _startupDialog.ShowAsync();
+            await Dialogs.ShowAsync(_startupDialog);
             Application.Current.Exit();
             return;
         }
@@ -201,15 +201,26 @@ public sealed partial class MainWindow : Window
             }
             else if (App.Desk is { } desk)
             {
-                string[] names = ["desk-1-score", "desk-2-counters", "desk-3-wall", "desk-4-lookup",
-                                  "desk-5-entries", "desk-6-students", "desk-7-exams",
-                                  "desk-8-periods", "desk-9-settings"];
-                for (var i = 0; i < names.Length; i++)
+                // 显式写序号（和大屏那边一致）：按数组位置猜序号，座位功能一开关就会整排错位，
+                // 于是"desk-9-settings.png"里拍的是周期页，看图的还以为设置页崩了。
+                (int Index, string Name)[] pages =
+                [
+                    (AppNav.Score, "desk-1-score"),
+                    (AppNav.Counters, "desk-2-counters"),
+                    (AppNav.Wall, "desk-3-wall"),
+                    (AppNav.Lookup, "desk-4-lookup"),
+                    (AppNav.Entries, "desk-5-entries"),
+                    (AppNav.Students, "desk-6-students"),
+                    (AppNav.Exams, "desk-7-exams"),
+                    (AppNav.Periods, "desk-8-periods"),
+                    (AppNav.Settings, "desk-9-settings"),
+                ];
+                foreach (var (index, name) in pages)
                 {
-                    desk.Navigate(i);
+                    desk.Navigate(index);
                     await Task.Delay(1500);
-                    if (await Snapshot.SaveAsync(Root, Path.Combine(dir, names[i] + ".png")))
-                        Services.Log("快照 " + names[i]);
+                    if (await Snapshot.SaveAsync(Root, Path.Combine(dir, name + ".png")))
+                        Services.Log("快照 " + name);
                 }
 
                 // 座位是可选功能：开着才截，关着的时候连页面都不该出现。

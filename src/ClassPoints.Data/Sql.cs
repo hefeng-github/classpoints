@@ -407,6 +407,16 @@ public static class Sql
         VALUES ($id, $kind, $payload, 0, $next, $now)
         """;
 
+    /// <summary>
+    /// 队列里已经有同一个 key 就留着不动。补推周期用它：那一条可能是 rollover，
+    /// 带着"归档了谁"的信息，被一条普通的 upsert 顶掉就少了一半。
+    /// </summary>
+    public const string EnqueueOutboxIfAbsent = """
+        INSERT INTO outbox (id, kind, payload, attempts, next_at, created_at)
+        VALUES ($id, $kind, $payload, 0, $next, $now)
+        ON CONFLICT(id) DO NOTHING
+        """;
+
     public const string DueOutbox = """
         SELECT * FROM outbox WHERE next_at <= $now ORDER BY created_at LIMIT $limit
         """;

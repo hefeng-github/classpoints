@@ -21,6 +21,9 @@ public sealed class SyncPump(AppServices services)
     public int LastPushed { get; private set; }
     public int LastPulled { get; private set; }
 
+    /// <summary>云端不认这台机器的凭据了。界面据此给"重新配对"的入口 —— 这条路只能人来走。</summary>
+    public bool NeedsPairing { get; private set; }
+
     /// <summary>每轮结束后触发，界面用来刷新角标。</summary>
     public event Action? Changed;
 
@@ -34,6 +37,9 @@ public sealed class SyncPump(AppServices services)
             // 只读优先：老师最先要知道的不是"同步了几条"，而是"为什么记不了分"
             if (services.Sync.IsReadOnly) return "待审核 · 只读";
             if (_busy) return "同步中…";
+
+            // 凭据失效排在错误前面：它不是"等一会儿自己会好"的那类
+            if (NeedsPairing) return "凭据失效，需要重新配对";
             if (!string.IsNullOrEmpty(LastError)) return "上次失败：" + LastError;
             return services.Sync.LastSyncText;
         }
@@ -43,6 +49,11 @@ public sealed class SyncPump(AppServices services)
     {
         if (_running) return;
         _running = true;
+
+        // 先把"有没有接云端"这件事同步出去：第一轮网络还没跑完，
+        // 侧栏就已经能显示正确的状态，不用先错一次再改。
+        services.Session.SyncEnabled = services.Sync.IsConfigured;
+
         _timer.Tick += OnTick;
         _timer.Start();
         _ = RunAsync();
@@ -70,8 +81,15 @@ public sealed class SyncPump(AppServices services)
             var report = await services.Sync.RunOnceAsync();
             LastAttempt = DateTime.Now;
             LastError = report.Ok ? "" : report.Error ?? "";
+            NeedsPairing = report.NeedsPairing;
             LastPushed += report.Pushed;
             LastPulled += report.Pulled;
+
+            // 状态条上的"本机存储 / 已同步 / 离线"不能各页面各猜一套：
+            // 以前三处各存一份判断，结果设置页说"已连接"、侧栏说"本机存储"。
+            services.Session.SyncEnabled = services.Sync.IsConfigured;
+            services.Session.IsOnline = !report.Offline;
+
             return report;
         }
         catch (Exception ex)
@@ -92,8 +110,22 @@ public sealed class SyncPump(AppServices services)
         // 待同步条数也在这里顺手对一次：以前只有记分台会更新它，
         // 只读设备停在别的页面时角标永远是 0，看起来像"什么都没攒"。
         services.Session.PendingCount = services.Outbox.Count();
+        // 有没有接云端也是同一件事：SyncEnabled 以前只在记分台被硬写成 false，
+        // 于是"已连接云端"和"本机存储"可以同时出现在同一台机器上。
+        services.Session.SyncEnabled = services.Sync.IsConfigured;
         var queue = DispatcherQueue.GetForCurrentThread();
-        if (queue is null) Changed?.Invoke();
-        else queue.TryEnqueue(() => Changed?.Invoke());
+        if (queue is null)
+        {
+            services.Session.Refresh();
+            Changed?.Invoke();
+        }
+        else
+        {
+            queue.TryEnqueue(() =>
+            {
+                services.Session.Refresh();
+                Changed?.Invoke();
+            });
+        }
     }
 }

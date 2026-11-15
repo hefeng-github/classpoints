@@ -28,6 +28,20 @@ public sealed class SyncOutbox(Database db)
             ("$id", id), ("$kind", kind), ("$payload", json), ("$next", now), ("$now", now));
     }
 
+    /// <summary>
+    /// 补推用：队列里已经有这一条就不动它。
+    ///
+    /// 「补」和「改」是两件事 —— 补推周期时如果无条件覆盖，会把还没推出去的 rollover
+    /// （带着 archivedId 和 endAt）换成一条光秃秃的 upsert，云端就不知道旧周期已归档。
+    /// </summary>
+    public static void EnqueueIfAbsent(SqliteConnection conn, SqliteTransaction? tx, string id, string kind, object payload)
+    {
+        var now = Clock.NowMs();
+        var json = JsonSerializer.Serialize(payload, Json);
+        Database.Exec(conn, tx, Sql.EnqueueOutboxIfAbsent,
+            ("$id", id), ("$kind", kind), ("$payload", json), ("$next", now), ("$now", now));
+    }
+
     public int Count()
     {
         using var conn = db.Open();

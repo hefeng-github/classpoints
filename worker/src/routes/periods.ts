@@ -39,8 +39,23 @@ export async function upsertPeriod(env: Env, request: Request): Promise<Response
   const body = await readJson<{ action?: string; period?: PeriodDto } & PeriodDto>(request);
   const dto = body.period ?? body;
   const id = requireString(dto.id, 'id', 40);
-  const status = dto.status === 'archived' ? 'archived' : 'active';
   const at = now();
+
+  // 谁能把某个周期变成"当前周期"？
+  //
+  // 只有两种情况：这个班还没有当前周期（刚建班、刚重置），
+  // 或者客户端明确说自己做了一次 rollover。
+  //
+  // 别的设备补推自己的周期时，一律存成 archived。
+  // 不加这条会出大事：新配对的设备本地都自带一个「第 1 周期」，
+  // 它一推上去就把云端真正的当前周期归档了 ——
+  // 另一台机器再拉取，拉到的"当前周期"是那个空周期，历史流水一条都看不见。
+  const existing = await env.DB.prepare(
+    "SELECT id FROM periods WHERE class_id = ? AND status = 'active'",
+  ).bind(claims.cid).first<{ id: string }>();
+
+  const takeOver = body.action === 'rollover' || !existing || existing.id === id;
+  const status = dto.status === 'archived' ? 'archived' : takeOver ? 'active' : 'archived';
 
   const stmts: D1PreparedStatement[] = [];
   // uq_period_active 是唯一索引：一个班同时只能有一个 active

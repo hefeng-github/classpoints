@@ -46,6 +46,8 @@ internal static class Program
         ScoreSheetTests();
         Section("CSV");
         CsvTests();
+        Section("粘贴文本切行");
+        TextLinesTests();
         Section("产品规则（周期 / 班级码 / 角色 / 配置包）");
         DomainTests.Run(Check);
         Section("预配置包");
@@ -357,6 +359,25 @@ internal static class Program
         });
         var stranger = ScoreSheetParser.Parse(strangerGrid, students);
         Check("名单外的人不会被悄悄塞进来", stranger.Rows.All(r => r.Kind != ScoreMatchKind.Matched));
+    }
+
+    // ---------------- 粘贴文本切行 ----------------
+
+    private static void TextLinesTests()
+    {
+        // WinUI 的 TextBox 里换行是 \r：只按 \n 切会把整段当成一行
+        var cr = TextLines.Split("王小明\r李思远\r张伟");
+        Check("TextBox 的 \\r 换行能切开", cr.Length == 3, cr.Length.ToString());
+
+        var crlf = TextLines.Split("王小明\r\n李思远\r\n张伟\r\n");
+        Check("Excel 粘来的 \\r\\n 能切开", crlf.Length == 3 && crlf[0] == "王小明");
+
+        var mixed = TextLines.Split("\r\n\r\n王小明\n\n李思远\r张伟\n");
+        Check("空行被丢掉、混用换行也对", mixed.Length == 3, string.Join("/", mixed));
+
+        Check("全空白没有行", TextLines.Split("  \r\n \r\n").Length == 0);
+        Check("null 不炸", TextLines.Split(null).Length == 0);
+        Check("行首尾空白被修掉", TextLines.Split("  王小明  \r 李思远 ")[0] == "王小明");
     }
 
     // ---------------- CSV ----------------

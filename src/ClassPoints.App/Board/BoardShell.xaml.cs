@@ -577,7 +577,7 @@ public sealed partial class BoardShell : UserControl, IShellHost
             DefaultButton = ContentDialogButton.Close,
             XamlRoot = XamlRoot,
         };
-        var result = await dialog.ShowAsync();
+        var result = await Dialogs.ShowAsync(dialog);
         return result == ContentDialogResult.Primary;
     }
 
