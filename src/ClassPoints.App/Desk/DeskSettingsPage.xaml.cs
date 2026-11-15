@@ -393,7 +393,7 @@ public sealed partial class DeskSettingsPage : Page
     /// </summary>
     private void BuildReaderSection()
     {
-        var body = Section("读卡器", "PN532 串口读卡器。没有硬件可用模拟刷卡验证链接。");
+        var body = Section("读卡器", "串口读卡器。PN532 模块和「刷卡自己吐卡号」的一体式读卡器都支持，类型选错就一句不回。");
 
         _lampGrid = new Grid { ColumnSpacing = 18, Margin = new Thickness(0, 4, 0, 0) };
         for (var i = 0; i < 3; i++)
@@ -436,7 +436,7 @@ public sealed partial class DeskSettingsPage : Page
             Services.Reader.Stop();
 
             // 选"未连接"就只是停下，不再去探一遍 COM1
-            if (!string.IsNullOrEmpty(port)) Services.Reader.Start(port, Services.Settings.ReaderBaud);
+            if (!string.IsNullOrEmpty(port)) Services.Reader.Start(port, Services.Settings.ReaderBaud, Services.Settings.ReaderProtocol);
             RefreshLamps();
         };
 
@@ -451,7 +451,7 @@ public sealed partial class DeskSettingsPage : Page
             }
 
             Services.Reader.Stop();
-            Services.Reader.Start(port, Services.Settings.ReaderBaud);
+            Services.Reader.Start(port, Services.Settings.ReaderBaud, Services.Settings.ReaderProtocol);
             RefreshLamps();
         }));
         actions.Children.Add(Small("模拟刷一张卡", () =>
@@ -461,14 +461,40 @@ public sealed partial class DeskSettingsPage : Page
         }));
         actions.Children.Add(Small("连不上怎么办", () => ShowReaderHelp()));
 
+        // 读卡器类型：市面上两种设备外观几乎一样、协议完全不同，选错的表现
+        // 跟"读卡器坏了"一模一样（串口通了、一个字节都不回），所以这一项必须能手动切。
+        var kindCombo = new ComboBox { MinWidth = 300, Height = 34 };
+        kindCombo.Items.Add(new ComboBoxItem
+        {
+            Content = "PN532 模块（要发命令才有回应）",
+            Tag = ReaderProtocol.Pn532,
+        });
+        kindCombo.Items.Add(new ComboBoxItem
+        {
+            Content = "自动上报型（刷卡时自己吐卡号）",
+            Tag = ReaderProtocol.AutoUid,
+        });
+        kindCombo.SelectedIndex = Services.Settings.ReaderProtocol == ReaderProtocol.AutoUid ? 1 : 0;
+        kindCombo.SelectionChanged += (_, _) =>
+        {
+            if (kindCombo.SelectedItem is not ComboBoxItem item || item.Tag is not ReaderProtocol protocol) return;
+
+            Services.Settings.ReaderProtocol = protocol;
+            var port = Services.Settings.ReaderPort;
+            Services.Reader.Stop();
+            if (!string.IsNullOrEmpty(port)) Services.Reader.Start(port, Services.Settings.ReaderBaud, protocol);
+            RefreshLamps();
+        };
+
         var portLine = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         portLine.Children.Add(_portCombo);
         portLine.Children.Add(actions);
 
+        body.Children.Add(Labelled("读卡器类型", kindCombo));
         body.Children.Add(Labelled("端口", portLine));
         body.Children.Add(_lampGrid);
         body.Children.Add(_readerStatusText);
-        body.Children.Add(Note("设备（串口已打开）· 帧（握手通过）· 卡（读到过卡），三个都亮才可用。"));
+        body.Children.Add(Note("设备（串口已打开）· 帧（通信正常）· 卡（读到过卡），三个都亮才可用。"));
 
         Services.Reader.StatusChanged -= OnReaderStatus;
         Services.Reader.StatusChanged += OnReaderStatus;

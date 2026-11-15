@@ -40,6 +40,23 @@ public enum ReaderState
     Error,
 }
 
+/// <summary>
+/// 读卡器怎么说话。两种设备在淘宝上是两个品类，外观却几乎一样，接错了就是"串口通了、一句不回"。
+/// </summary>
+public enum ReaderProtocol
+{
+    /// <summary>PN532 模块：主机发命令，它回二进制帧。需要握手。</summary>
+    Pn532,
+
+    /// <summary>
+    /// 自动上报型（CH340 一体式读卡器最常见）：**不接受命令**，刷卡时自己把卡号
+    /// 当文本吐出来（多为 10 位十进制、9600 波特，也有 8 位十六进制）。
+    ///
+    /// 这一类设备用 PN532 的帧去问，永远不会有回应 —— 不是坏了，是根本不是同一套协议。
+    /// </summary>
+    AutoUid,
+}
+
 public sealed record ReaderStatus(
     ReaderState State,
     string Port,
@@ -167,14 +184,26 @@ public sealed class Pn532Serial : IDisposable
     }
 
     [SupportedOSPlatform("windows")]
-    public void Start(string? portName = null, int preferredBaud = 0)
+    public void Start(string? portName = null, int preferredBaud = 0, ReaderProtocol protocol = ReaderProtocol.Pn532)
     {
         Stop();
         _preferredBaud = preferredBaud;
+        _protocol = protocol;
+        _lockedBaud = protocol == ReaderProtocol.AutoUid ? preferredBaud : 0;
         _cts = new CancellationTokenSource();
         var token = _cts.Token;
-        _loop = Task.Run(() => RunLoopAsync(portName, token), token);
+
+        // 自动上报型不需要握手，走另一条循环：那条循环的唯一任务是"听"，
+        // 而 PN532 那条是"问—答"。混在一起写会让两边都难读。
+        _loop = Task.Run(() => protocol == ReaderProtocol.AutoUid
+            ? RunAutoLoopAsync(portName, token)
+            : RunLoopAsync(portName, token), token);
     }
+
+    private ReaderProtocol _protocol = ReaderProtocol.Pn532;
+
+    /// <summary>自动上报型一旦收到过卡号，就把波特率钉死，不再轮换 —— 轮换等于每 8 秒聋一次。</summary>
+    private int _lockedBaud;
 
     /// <summary>上次握手成功的波特率；0 = 还没成功过，从 115200 开始试。</summary>
     private int _preferredBaud;
@@ -256,10 +285,223 @@ public sealed class Pn532Serial : IDisposable
         }
     }
 
+    /// <summary>
+    /// 自动上报型的读卡循环：**只听，不问**。
+    ///
+    /// 这类读卡器（一块板子上 CH340 + MCU + 射频前端，USB-C 直插）刷卡时把卡号当文本吐出来，
+    /// 平时完全静默。所以"通没通"的唯一依据是**有没有收到过字节**，不能像 PN532 那样靠握手：
+    /// 握手命令对它只是一串无意义乱码，永远没有回应。
+    ///
+    /// 波特率不知道就轮着试（每档 8 秒），一旦认出卡号就钉死。
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private async Task RunAutoLoopAsync(string? preferredPort, CancellationToken token)
+    {
+        var failures = 0;
+        var bauds = BaudCandidates(_lockedBaud);
+        var baudIndex = 0;
+        var silentSince = DateTime.UtcNow;
+        var startedAt = DateTime.UtcNow;
+        var bytesEver = false;
+
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                if (_port is null || !_port.IsOpen)
+                {
+                    var port = preferredPort ?? GuessPort();
+                    if (port is null)
+                    {
+                        SetStatus(ReaderState.NoDevice, "没找到串口设备，插上读卡器后会自动重试", "");
+                        await Task.Delay(2500, token);
+                        continue;
+                    }
+
+                    _baud = _lockedBaud > 0 ? _lockedBaud : bauds[baudIndex % bauds.Count];
+                    SetStatus(ReaderState.Opening, $"正在打开 {port}（{_baud}）", port);
+                    OpenPort(port);
+                    _portOpen = true;
+                    silentSince = DateTime.UtcNow;
+                    SetStatus(ReaderState.Running, $"读卡中（自动上报 · {_baud}）", port);
+                }
+
+                var line = await ReadTextAsync(token);
+                if (line is { Length: > 0 })
+                {
+                    bytesEver = true;
+                    silentSince = DateTime.UtcNow;
+                    var uid = ParseAutoUid(line);
+                    if (uid.Length > 0)
+                    {
+                        _lockedBaud = _baud;       // 收到卡号 ⇒ 这一档就是对的，别再轮换
+                        _preferredBaud = _baud;
+                        Emit(new CardRead(uid, DateTime.Now));
+                    }
+                    else
+                    {
+                        // 收到字节但认不出卡号：如实说出来。老师至少能知道"这根线是通的"，
+                        // 而不是对着"一个字节都没回"去查接线。
+                        SetStatus(ReaderState.Running,
+                            $"收到字节但没认出卡号：{Shorten(line, 24)}", _portName);
+                    }
+                    failures = 0;
+                }
+                else if (_lockedBaud == 0 && (DateTime.UtcNow - silentSince).TotalSeconds > 8)
+                {
+                    // 一整档都没听到任何东西：换下一个波特率再听。
+                    // 这里故意不报错 —— 自动上报型在没人刷卡时本来就安静，报错只会把人吓去查线。
+                    baudIndex++;
+                    ClosePort();
+                    silentSince = DateTime.UtcNow;
+                }
+                else if (!bytesEver && (DateTime.UtcNow - startedAt).TotalSeconds > 40)
+                {
+                    // 几档波特率都轮过一遍、40 秒一个字节都没有。
+                    // 必须说出来：否则界面一直写"读卡中"，看着像在正常工作，其实什么也没收到。
+                    SetStatus(ReaderState.Running,
+                        "还没收到任何字节：先确认「读卡器类型」选对了，再换一个 USB 口/换根线试试", _portName);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                failures++;
+                SetStatus(ReaderState.Error, "读卡异常：" + ex.Message, _portName);
+                ClosePort();
+                try { await Task.Delay(System.Math.Min(8000, 1500 * failures), token); }
+                catch (OperationCanceledException) { break; }
+            }
+        }
+    }
+
+    /// <summary>读一段文本：到 CR/LF，或两个字节之间静默 250ms 为止。一个字节都没有时返回 null。</summary>
+    private async Task<string?> ReadTextAsync(CancellationToken token)
+    {
+        var port = _port;
+        if (port is null || !port.IsOpen) return null;
+
+        var sb = new StringBuilder(32);
+        var deadline = DateTime.UtcNow.AddMilliseconds(400);
+
+        while (DateTime.UtcNow < deadline)
+        {
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                var one = port.ReadByte();
+                if (one < 0) continue;
+
+                var ch = (char)one;
+                if (ch is '\r' or '\n')
+                {
+                    if (sb.Length > 0) return sb.ToString();
+                    continue;
+                }
+
+                if (ch >= 32 && ch < 127) sb.Append(ch);
+
+                // 有字节进来就往后延：一帧常被拆成几段到达
+                deadline = DateTime.UtcNow.AddMilliseconds(250);
+            }
+            catch (TimeoutException)
+            {
+                // 这一段没数据，继续等到 deadline
+            }
+            catch (InvalidOperationException)
+            {
+                return null;    // 端口刚被关掉（换端口/换波特率）
+            }
+            await Task.Yield();
+        }
+
+        return sb.Length > 0 ? sb.ToString() : null;
+    }
+
+    private static readonly char[] AutoSeparators =
+        [' ', '\t', ',', ';', ':', '-', '_', '.', '/', '\\', '|', '#', '=', '\r', '\n'];
+
+    /// <summary>
+    /// 从一行文本里捞卡号。
+    ///
+    /// 自动上报型读卡器的输出五花八门，见过这些写法：
+    /// `1234567890` / `04A1B2C3` / `04 A1 B2 C3` / `UID: 04A1B2C3D4E5F6` / `CardID=1234567890\r\n`。
+    /// 与其猜某一家厂商的格式，不如定一条规则：**取这一行里最长的、像卡号的那一段**。
+    /// 长度 8–20 之间，纯十六进制字符（十进制数字天然是十六进制字符的子集，所以两种都能收）。
+    /// 这样换一种读卡器也不用改代码。
+    /// </summary>
+    public static string ParseAutoUid(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return "";
+
+        var found = new List<string>();
+        var pairs = new StringBuilder();
+
+        void FlushPairs()
+        {
+            if (pairs.Length is >= 8 and <= 20) found.Add(pairs.ToString());
+            pairs.Clear();
+        }
+
+        foreach (var raw in text.Split(AutoSeparators, StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (IsHexToken(raw))
+            {
+                // `04 A1 B2 C3` 这种按字节分开写的，把相邻的两位组拼回去
+                if (raw.Length <= 2) { pairs.Append(raw); continue; }
+
+                FlushPairs();
+                if (raw.Length is >= 8 and <= 20) found.Add(raw);
+                continue;
+            }
+
+            FlushPairs();
+
+            // 兜底：前缀字母粘在卡号上（`UID04A1B2C3`）—— 取最长的十六进制后缀
+            var suffix = HexSuffix(raw);
+            if (suffix.Length >= 8) found.Add(suffix);
+        }
+        FlushPairs();
+
+        if (found.Count == 0) return "";
+        var best = found.OrderByDescending(s => s.Length).First();
+        return Crypto.NormalizeUid(best);
+    }
+
+    private static bool IsHexToken(string token)
+    {
+        if (token.Length == 0) return false;
+        foreach (var ch in token) if (!char.IsAsciiHexDigit(ch)) return false;
+        return true;
+    }
+
+    private static string HexSuffix(string token)
+    {
+        var start = token.Length;
+        while (start > 0 && char.IsAsciiHexDigit(token[start - 1])) start--;
+        var suffix = token[start..];
+
+        // 粘在前缀里的最后一个字母也可能是十六进制字符（`UID` 的 D），
+        // 长度是奇数就把头一个削掉，卡号不会是奇数个十六进制字符。
+        if (suffix.Length % 2 == 1) suffix = suffix[1..];
+        return suffix;
+    }
+
+    private static string Shorten(string text, int max) =>
+        text.Length <= max ? text : text[..max] + "…";
+
     private void OpenPort(string portName)
     {
-        var port = new SerialPort(portName, _preferredBaud > 0 ? _preferredBaud : DefaultBaud,
-            Parity.None, 8, StopBits.One)
+        // 自动上报型由循环自己决定这轮用哪档波特率（_baud 已经设好）；
+        // PN532 走"记住上次成功的"逻辑。
+        var baud = _protocol == ReaderProtocol.AutoUid && _baud > 0
+            ? _baud
+            : _preferredBaud > 0 ? _preferredBaud : DefaultBaud;
+
+        var port = new SerialPort(portName, baud, Parity.None, 8, StopBits.One)
         {
             ReadTimeout = 400,
             WriteTimeout = 400,

@@ -52,7 +52,7 @@ public sealed partial class DeskShell : UserControl, IShellHost
         {
             try
             {
-                Services.Reader.Start(Services.Settings.ReaderPort, Services.Settings.ReaderBaud);
+                Services.Reader.Start(Services.Settings.ReaderPort, Services.Settings.ReaderBaud, Services.Settings.ReaderProtocol);
             }
             catch (Exception ex)
             {

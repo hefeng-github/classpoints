@@ -87,7 +87,7 @@ public sealed partial class BoardShell : UserControl, IShellHost
             Services.Reader.Start(string.IsNullOrWhiteSpace(Services.Settings.ReaderPort)
                     ? null
                     : Services.Settings.ReaderPort,
-                Services.Settings.ReaderBaud);
+                Services.Settings.ReaderBaud, Services.Settings.ReaderProtocol);
         }
         catch (Exception ex)
         {

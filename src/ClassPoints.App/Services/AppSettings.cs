@@ -226,6 +226,21 @@ public sealed class AppSettings(Database db)
         set => db.SetSetting("reader_baud", value.ToString());
     }
 
+    /// <summary>
+    /// 读卡器类型。两种设备外观几乎一样、协议完全不同：
+    /// PN532 需要主机发命令（默认），自动上报型只会在刷卡时自己吐卡号。
+    /// 选错的表现是"串口通了但一个字节都没回"，跟坏了一模一样 —— 所以这一项要能手动切。
+    /// </summary>
+    public ReaderProtocol ReaderProtocol
+    {
+        get => db.GetSetting("reader_protocol") switch
+        {
+            "auto" => ReaderProtocol.AutoUid,
+            _ => ReaderProtocol.Pn532,
+        };
+        set => db.SetSetting("reader_protocol", value == ReaderProtocol.AutoUid ? "auto" : "pn532");
+    }
+
     public string RecoveryCodeHash
     {
         get => db.GetSetting("recovery_hash") ?? "";

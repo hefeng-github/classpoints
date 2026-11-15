@@ -407,6 +407,28 @@ internal static class Program
         // 诊断：一个字节都没收到 vs 收到垃圾字节，指向的下一步完全不同
         Check("零字节提示查拨码和 TX/RX", Pn532Serial.Diagnose(0).Contains("拨码"));
         Check("有字节提示波特率", Pn532Serial.Diagnose(7).Contains("波特率"));
+
+        // ---- 自动上报型读卡器：从一行文本里捞卡号 ----
+        // 各家输出格式都不一样，规则是"取这一行里最像卡号的那一段"。
+        Check("十进制 10 位卡号", Pn532Serial.ParseAutoUid("1234567890\r\n") == "1234567890",
+            Pn532Serial.ParseAutoUid("1234567890\r\n"));
+        Check("十六进制 8 位卡号", Pn532Serial.ParseAutoUid("04A1B2C3") == "04A1B2C3",
+            Pn532Serial.ParseAutoUid("04A1B2C3"));
+        Check("按字节分开的卡号能拼回去",
+            Pn532Serial.ParseAutoUid("04 A1 B2 C3 D4 E5 F6") == "04A1B2C3D4E5F6",
+            Pn532Serial.ParseAutoUid("04 A1 B2 C3 D4 E5 F6"));
+        Check("带 UID: 前缀", Pn532Serial.ParseAutoUid("UID: 04A1B2C3D4E5F6\r\n") == "04A1B2C3D4E5F6",
+            Pn532Serial.ParseAutoUid("UID: 04A1B2C3D4E5F6\r\n"));
+        Check("前缀粘在卡号上（UID04A1…）",
+            Pn532Serial.ParseAutoUid("UID04A1B2C3D4E5F6") == "04A1B2C3D4E5F6",
+            Pn532Serial.ParseAutoUid("UID04A1B2C3D4E5F6"));
+        Check("CardID= 前缀", Pn532Serial.ParseAutoUid("CardID=0012345678\r\n") == "0012345678",
+            Pn532Serial.ParseAutoUid("CardID=0012345678\r\n"));
+        Check("没有卡号就返回空", Pn532Serial.ParseAutoUid("OK\r\n") == "",
+            Pn532Serial.ParseAutoUid("OK\r\n"));
+        Check("太短的不当卡号", Pn532Serial.ParseAutoUid("abc") == "",
+            Pn532Serial.ParseAutoUid("abc"));
+        Check("空行返回空", Pn532Serial.ParseAutoUid("  \r\n") == "");
     }
 
     // ---------------- 粘贴文本切行 ----------------
