@@ -399,7 +399,12 @@ public sealed partial class DeskSettingsPage : Page
         for (var i = 0; i < 3; i++)
             _lampGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        _readerStatusText = new TextBlock { Style = Styled("DeskSecondaryText") };
+        // 握手失败时的说明会说出具体该查哪一根线，一行放不下 —— 必须允许折行
+        _readerStatusText = new TextBlock
+        {
+            Style = Styled("DeskSecondaryText"),
+            TextWrapping = TextWrapping.Wrap,
+        };
 
         _portCombo = new ComboBox { MinWidth = 260, Height = 34 };
 
@@ -431,7 +436,7 @@ public sealed partial class DeskSettingsPage : Page
             Services.Reader.Stop();
 
             // 选"未连接"就只是停下，不再去探一遍 COM1
-            if (!string.IsNullOrEmpty(port)) Services.Reader.Start(port);
+            if (!string.IsNullOrEmpty(port)) Services.Reader.Start(port, Services.Settings.ReaderBaud);
             RefreshLamps();
         };
 
@@ -446,7 +451,7 @@ public sealed partial class DeskSettingsPage : Page
             }
 
             Services.Reader.Stop();
-            Services.Reader.Start(port);
+            Services.Reader.Start(port, Services.Settings.ReaderBaud);
             RefreshLamps();
         }));
         actions.Children.Add(Small("模拟刷一张卡", () =>
@@ -454,6 +459,7 @@ public sealed partial class DeskSettingsPage : Page
             Services.Reader.SimulateSwipe("04A1B2C3D4E5F6");
             Shell?.Toast("已模拟一次刷卡（没有硬件时用来验链路）", 5);
         }));
+        actions.Children.Add(Small("连不上怎么办", () => ShowReaderHelp()));
 
         var portLine = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         portLine.Children.Add(_portCombo);
@@ -476,6 +482,56 @@ public sealed partial class DeskSettingsPage : Page
     }
 
     private void OnLampTick(object? sender, object e) => RefreshLamps();
+
+    /// <summary>
+    /// 连不上时的检查清单。
+    ///
+    /// 写在对话框里而不是堆在设置页：真正需要看它的人一天只有一次，
+    /// 而把它铺在页面上，每天都要看的人（其实没事的）会多读六行。
+    /// </summary>
+    private void ShowReaderHelp()
+    {
+        var lines = new[]
+        {
+            ("模块上的拨码/跳线", "要拨到 UART（有的板子印 HSU）。停在 I2C / SPI 档时，串口一个字节都收不到。"),
+            ("TX / RX 要交叉", "转接板的 TX 接模块的 RX，RX 接模块的 TX。接成 TX-TX 是最常见的一种错。"),
+            ("GND 必须共地", "转接板和模块之间只接两根数据线、不接地，偶尔能通，但很快就不稳定了。"),
+            ("供电电压", "PN532 模块是 3.3V。5V 会烧；有些板子标了 VCC 但内部没做降压。"),
+            ("波特率不用管", "程序会自己从 115200 一路试到 9600，模块被 Arduino 例程改过速率也能连上。"),
+            ("串口别被占用", "Arduino IDE 的串口监视器、厂商工具、另一个本程序实例都会把 COM 口锁住。"),
+            ("换一根 USB 线", "有些线只有电源没有数据 —— 设备管理器里能看到串口，但它连的是别的口。"),
+        };
+
+        var panel = new StackPanel { Spacing = 10, Width = 520 };
+        foreach (var (title, detail) in lines)
+        {
+            var item = new StackPanel { Spacing = 2 };
+            item.Children.Add(new TextBlock { Text = title, Style = Styled("DeskBodyText") });
+            item.Children.Add(new TextBlock
+            {
+                Text = detail,
+                Style = Styled("DeskSecondaryText"),
+                TextWrapping = TextWrapping.Wrap,
+            });
+            panel.Children.Add(item);
+        }
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = "三个灯的含义：设备 = 串口打开了；帧 = 模块回了话（握手成功）；卡 = 读到过卡。",
+            Style = Styled("DeskSecondaryText"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 6, 0, 0),
+        });
+
+        _ = Dialogs.ShowAsync(new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "读卡器连不上时按顺序看",
+            Content = new ScrollViewer { Content = panel, MaxHeight = 520 },
+            CloseButtonText = "知道了",
+        });
+    }
 
     private void OnReaderStatus(ReaderStatus status) => DispatcherQueue.TryEnqueue(RefreshLamps);
 

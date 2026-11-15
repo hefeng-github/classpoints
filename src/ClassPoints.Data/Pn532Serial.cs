@@ -13,7 +13,22 @@ public sealed record CardRead(string Uid, DateTime At)
 
 public sealed record CardPortInfo(string PortName, string Description, bool LikelyPn532)
 {
-    public string Display => $"{PortName} · {Description}" + (LikelyPn532 ? "（像是 PN532）" : "");
+    /// <summary>
+    /// 下拉里那一行字。
+    ///
+    /// 不能见到 CH340 就写"像是 PN532"：那是**转接板**的名字，读卡器在它后面，
+    /// 说成同一个东西，老师会以为程序已经认出读卡器了，于是不再去看接线。
+    /// </summary>
+    public string Display
+    {
+        get
+        {
+            var hint = Description.Contains("PN532", StringComparison.OrdinalIgnoreCase) ? "（PN532）"
+                : LikelyPn532 ? "（USB 转串口）"
+                : "";
+            return $"{PortName} · {Description}{hint}";
+        }
+    }
 }
 
 public enum ReaderState
@@ -25,13 +40,26 @@ public enum ReaderState
     Error,
 }
 
-public sealed record ReaderStatus(ReaderState State, string Port, string Message, long LastCardAt, int CardsRead)
+public sealed record ReaderStatus(
+    ReaderState State,
+    string Port,
+    string Message,
+    long LastCardAt,
+    int CardsRead,
+    bool PortOpen = false,
+    int Baud = 0)
 {
     public bool IsRunning => State == ReaderState.Running;
 
-    /// <summary>三个灯：设备 / 帧 / 卡。</summary>
+    /// <summary>
+    /// 三个灯：设备 / 帧 / 卡。
+    ///
+    /// 「设备」看的是串口有没有打开，不是握手有没有通过 —— 这两件事必须分开显示。
+    /// 以前握手失败时三个灯全灭，看着像"没插上"，实际串口是通的、问题在接线或模块拨码，
+    /// 老师照着"没插上"去查驱动，永远查不出来。
+    /// </summary>
     public (bool Device, bool Frame, bool Card) Lamps =>
-        (State is ReaderState.Running or ReaderState.Opening,
+        (PortOpen,
          State == ReaderState.Running,
          LastCardAt > 0 && (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - LastCardAt) < 60_000);
 }
@@ -42,10 +70,13 @@ public sealed record ReaderStatus(ReaderState State, string Port, string Message
 /// 为什么要自己拼帧：PN532 的 UART 接口不是键盘模拟，它只回二进制帧。
 /// 键盘模拟那条路要求界面上始终有个隐藏输入框抢焦点，老师一点别处就失效 —— 一体机上不能这么干。
 ///
-/// 三个坑（方案 2.4）：
-/// 1) 波特率必须是 115200，出厂 9600 的要先发 SetSerialBaudRate；
+/// 四个坑（方案 2.4 + v1.3 实测）：
+/// 1) 波特率不一定是 115200：出厂是 115200，但被 Arduino 例程改过的模块常停在 9600，
+///    所以要逐个试（见 <see cref="BaudCandidates"/>），不能只赌一个；
 /// 2) 每帧都要校验 LCS / DCS，丢一个字节就会把「有卡」读成「没卡」；
-/// 3) 同一张卡在读卡器上放着会连续命中，必须按 UID 做时间窗去重，否则一次刷卡加 20 次分。
+/// 3) 同一张卡在读卡器上放着会连续命中，必须按 UID 做时间窗去重，否则一次刷卡加 20 次分；
+/// 4) **不要拉 DTR / RTS**：CH340 这两个脚常被引到模块的复位脚上，
+///    一路拉高等于把 PN532 按在复位里 —— 表现为"一个字节都收不到"，但串口是好的。
 /// </summary>
 public sealed class Pn532Serial : IDisposable
 {
@@ -65,6 +96,8 @@ public sealed class Pn532Serial : IDisposable
     private string _statusMessage = "未启动";
     private string _portName = "";
     private ReaderState _state = ReaderState.Stopped;
+    private bool _portOpen;
+    private int _baud;
 
     /// <summary>读到一张卡（已去重）。回调在后台线程，界面要自己 DispatcherQueue 切回来。</summary>
     public event Action<CardRead>? CardDetected;
@@ -75,12 +108,14 @@ public sealed class Pn532Serial : IDisposable
     {
         get
         {
-            lock (_gate) return new ReaderStatus(_state, _portName, _statusMessage, _lastCardAt, _cardsRead);
+            lock (_gate)
+                return new ReaderStatus(_state, _portName, _statusMessage, _lastCardAt, _cardsRead, _portOpen, _baud);
         }
     }
 
     /// <summary>去重窗口：同一张卡 1.5 秒内只认一次。</summary>
     public int DebounceMs { get; set; } = 1500;
+
 
     public int PollIntervalMs { get; set; } = 150;
 
@@ -132,24 +167,31 @@ public sealed class Pn532Serial : IDisposable
     }
 
     [SupportedOSPlatform("windows")]
-    public void Start(string? portName = null)
+    public void Start(string? portName = null, int preferredBaud = 0)
     {
         Stop();
+        _preferredBaud = preferredBaud;
         _cts = new CancellationTokenSource();
         var token = _cts.Token;
         _loop = Task.Run(() => RunLoopAsync(portName, token), token);
     }
+
+    /// <summary>上次握手成功的波特率；0 = 还没成功过，从 115200 开始试。</summary>
+    private int _preferredBaud;
 
     public void Stop()
     {
         try { _cts?.Cancel(); } catch (Exception) { }
         try { _loop?.Wait(600); } catch (Exception) { }
         ClosePort();
+        _portOpen = false;
+        _baud = 0;
         _cts?.Dispose();
         _cts = null;
         _loop = null;
         SetStatus(ReaderState.Stopped, "已停止", _portName);
     }
+
 
     /// <summary>没有硬件时的调试通道：直接喂一个 UID，走同一条认人链路。</summary>
     public void SimulateSwipe(string uid)
@@ -178,16 +220,20 @@ public sealed class Pn532Serial : IDisposable
                     }
                     SetStatus(ReaderState.Opening, $"正在打开 {port}", port);
                     OpenPort(port);
-                    if (!await HandshakeAsync(token))
+                    var (ok, baud, bytes) = await HandshakeAsync(token);
+                    if (!ok)
                     {
                         failures++;
-                        SetStatus(ReaderState.Error, "读卡器没有回应（检查波特率与接线）", port);
+                        // 关端口前先把"串口是通的"这件事留下来，否则界面三个灯全灭
+                        SetStatus(ReaderState.Error, Diagnose(bytes), port);
                         ClosePort();
                         await Task.Delay(System.Math.Min(8000, 1500 * failures), token);
                         continue;
                     }
                     failures = 0;
-                    SetStatus(ReaderState.Running, "读卡中", port);
+                    _baud = baud;
+                    _preferredBaud = baud;      // 下一轮（拔插、换口）直接用这个
+                    SetStatus(ReaderState.Running, $"读卡中（{baud}）", port);
                 }
 
                 var uid = await PollOnceAsync(token);
@@ -212,17 +258,26 @@ public sealed class Pn532Serial : IDisposable
 
     private void OpenPort(string portName)
     {
-        var port = new SerialPort(portName, 115200, Parity.None, 8, StopBits.One)
+        var port = new SerialPort(portName, _preferredBaud > 0 ? _preferredBaud : DefaultBaud,
+            Parity.None, 8, StopBits.One)
         {
             ReadTimeout = 400,
             WriteTimeout = 400,
-            DtrEnable = true,
-            RtsEnable = true,
+
+            // DTR / RTS 一律不拉。
+            //
+            // 它们和 PN532 一点关系都没有，但在 CH340 这类 USB-TTL 板上，
+            // 这两个信号常被引到扩展排针、甚至就是模块的复位脚。
+            // 之前拉高 = 把模块按在复位里，表现是"串口打开了、一个字节都收不到"，
+            // 而界面只写"检查波特率与接线"，查一天也查不出来。
+            DtrEnable = false,
+            RtsEnable = false,
         };
         port.Open();
         try { port.DiscardInBuffer(); } catch (Exception) { }
         _port = port;
         _portName = portName;
+        _portOpen = true;
     }
 
     private void ClosePort()
@@ -230,25 +285,116 @@ public sealed class Pn532Serial : IDisposable
         try { _port?.Close(); } catch (Exception) { }
         try { _port?.Dispose(); } catch (Exception) { }
         _port = null;
+
+        // 这里刻意不清 _portOpen：它表示"这次连接里串口确实打开过"，
+        // 握手失败的场景要靠它把「设备」灯点亮 —— 亮的才是对的，
+        // 灭着会让老师以为线没插好，去折腾驱动。
+    }
+
+    /// <summary>
+    /// 握手的波特率候选。第一个是上次成功过的（拔插/重启后直接用），否则从 115200 开始。
+    ///
+    /// 为什么要试多个：PN532 出厂是 115200，但被 Arduino 例程改过的模块常停在 9600，
+    /// 而模块上没有任何标识说明它现在是哪个。程序只赌 115200 的话，
+    /// 遇到这种板子就是"永远连不上"，而用户完全无从下手。
+    /// </summary>
+    public static IReadOnlyList<int> BaudCandidates(int preferred)
+    {
+        var all = new List<int> { 115200, 9600, 38400, 57600, 19200, 230400 };
+        if (preferred > 0 && all.Contains(preferred))
+        {
+            all.Remove(preferred);
+            all.Insert(0, preferred);
+        }
+        return all;
+    }
+
+    public const int DefaultBaud = 115200;
+
+    /// <summary>
+    /// HSU 唤醒 / 同步序列：两个 0x55 加一串 0x00。
+    ///
+    /// PN532 的 UART 靠 0x55 的方波让主机和它对齐波特率；上电、被复位、
+    /// 或者刚从 I2C 档切过来时，不发这一串它可能一直不吭声。
+    /// 发完要给它一点时间（手册里是几毫秒，这里给 120ms 更保险）。
+    /// </summary>
+    public static byte[] WakeSequence()
+    {
+        var seq = new byte[16];
+        seq[0] = 0x55;
+        seq[1] = 0x55;
+        return seq;
+    }
+
+    /// <summary>握手全失败时，按"到底收到过几个字节"分辨原因 —— 这两种情况的下一步动作完全不同。</summary>
+    public static string Diagnose(int bytesSeen)
+    {
+        if (bytesSeen == 0)
+            return "串口通了，但读卡器一个字节都没回：检查模块上的拨码是不是 UART(HSU) 档、" +
+                   "TX/RX 有没有交叉（转接板的 TX 接模块 RX）、是否共地";
+        return $"收到 {bytesSeen} 个字节但都不是有效帧：波特率大概率对不上，" +
+               "或这个串口被别的程序占着";
     }
 
     /// <summary>握手：GetFirmwareVersion。有回应才算真的通了，光打开串口不算。</summary>
-    private async Task<bool> HandshakeAsync(CancellationToken token)
+    private async Task<(bool Ok, int Baud, int Bytes)> HandshakeAsync(CancellationToken token)
     {
-        for (var attempt = 0; attempt < 3; attempt++)
+        var seen = 0;
+        var lastBaud = _port is null ? DefaultBaud : (_preferredBaud > 0 ? _preferredBaud : DefaultBaud);
+
+        foreach (var baud in BaudCandidates(_preferredBaud))
         {
             token.ThrowIfCancellationRequested();
-            var resp = await TransceiveAsync(new byte[] { 0x02 }, token);
-            if (resp is { Length: >= 6 } && resp[0] == 0x03) return true;
-            await Task.Delay(200, token);
+            lastBaud = baud;
+
+            if (_port is not null)
+            {
+                try
+                {
+                    if (_port.BaudRate != baud) _port.BaudRate = baud;
+                    _port.DiscardInBuffer();
+                }
+                catch (Exception)
+                {
+                    // 改不了波特率就跳过这一档，不要让整个握手挂掉
+                    continue;
+                }
+            }
+
+            _baud = baud;
+            await WakeAsync(token);
+
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                var (resp, bytes) = await TransceiveAsync(new byte[] { 0x02 }, token);
+                seen += bytes;
+                if (resp is { Length: >= 6 } && resp[0] == 0x03) return (true, baud, seen);
+                await Task.Delay(120, token);
+            }
         }
-        return false;
+
+        return (false, lastBaud, seen);
     }
+
+    private async Task WakeAsync(CancellationToken token)
+    {
+        try
+        {
+            var seq = WakeSequence();
+            _port?.Write(seq, 0, seq.Length);
+        }
+        catch (Exception)
+        {
+            // 唤醒写不出去不影响后续判断（Transceive 会再失败一次）
+        }
+        try { await Task.Delay(120, token); } catch (OperationCanceledException) { throw; }
+    }
+
 
     /// <summary>一次寻卡。成功返回 UID（十六进制大写），没有卡返回 null。</summary>
     private async Task<string?> PollOnceAsync(CancellationToken token)
     {
-        var resp = await TransceiveAsync(new byte[] { 0x4A, 0x01, 0x00 }, token);
+        var (resp, _) = await TransceiveAsync(new byte[] { 0x4A, 0x01, 0x00 }, token);
         if (resp is null || resp.Length < 3) return null;
 
         // 0x4B <NrTargets> <Tg> <SENS_RES 2> <SEL_RES> <IDLength> <ID...>
@@ -264,13 +410,20 @@ public sealed class Pn532Serial : IDisposable
         return sb.ToString();
     }
 
-    private async Task<byte[]?> TransceiveAsync(byte[] command, CancellationToken token)
+    /// <summary>
+    /// 发一帧、等回应。收到的原始字节数通过 <paramref name="bytesRead"/> 带出去 ——
+    /// 握手失败时要靠它区分"一个字节都没回"和"回了但解不出来"。
+    /// </summary>
+    private async Task<(byte[]? Payload, int Bytes)> TransceiveAsync(
+        byte[] command, CancellationToken token)
     {
+        var bytesRead = 0;
         var port = _port;
-        if (port is null || !port.IsOpen) return null;
+        if (port is null || !port.IsOpen) return (null, 0);
 
         var frame = BuildFrame(command);
-        port.Write(frame, 0, frame.Length);
+        try { port.Write(frame, 0, frame.Length); }
+        catch (Exception) { return (null, 0); }
 
         var buffer = new List<byte>(64);
         var deadline = DateTime.UtcNow.AddMilliseconds(700);
@@ -283,16 +436,22 @@ public sealed class Pn532Serial : IDisposable
                 if (one >= 0)
                 {
                     buffer.Add((byte)one);
-                    if (ContainsFullFrame(buffer, out var payload)) return payload;
+                    bytesRead = buffer.Count;
+                    if (ContainsFullFrame(buffer, out var payload)) return (payload, bytesRead);
                 }
             }
             catch (TimeoutException)
             {
                 // 没数据就继续等到 deadline，别把超时当失败
             }
+            catch (InvalidOperationException)
+            {
+                // 端口在这一瞬间被关掉了（用户切了端口）：当作没回应
+                return (null, bytesRead);
+            }
             await Task.Yield();
         }
-        return null;
+        return (null, bytesRead);
     }
 
     /// <summary>00 00 FF LEN LCS D4 CMD ... DCS 00，DCS 是 TFI 起算的字节和取反加一。</summary>

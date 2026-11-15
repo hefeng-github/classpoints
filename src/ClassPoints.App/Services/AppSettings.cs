@@ -219,6 +219,13 @@ public sealed class AppSettings(Database db)
         set => db.SetSetting("reader_port", value);
     }
 
+    /// <summary>上次和读卡器握手成功的波特率（0 = 还没成功过）。只用于下次直接命中，不写进界面。</summary>
+    public int ReaderBaud
+    {
+        get => int.TryParse(db.GetSetting("reader_baud"), out var v) ? v : 0;
+        set => db.SetSetting("reader_baud", value.ToString());
+    }
+
     public string RecoveryCodeHash
     {
         get => db.GetSetting("recovery_hash") ?? "";

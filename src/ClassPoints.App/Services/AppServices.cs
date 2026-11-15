@@ -82,6 +82,15 @@ public sealed class AppServices
         Config = new ConfigService(this);
         Pump = new SyncPump(this);
         Reader = new Pn532Serial();
+
+        // 握手成功后记住这个波特率：模块被 Arduino 例程改过速率的情况很常见，
+        // 每轮重试都从 115200 一个个试到 9600，会白等好几秒才连上。
+        Reader.StatusChanged += status =>
+        {
+            if (status.State != ReaderState.Running || status.Baud <= 0) return;
+            if (Settings.ReaderBaud == status.Baud) return;
+            try { Settings.ReaderBaud = status.Baud; } catch (Exception) { }
+        };
     }
 
     public static AppServices Instance { get; private set; } = null!;

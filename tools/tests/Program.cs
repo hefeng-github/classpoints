@@ -40,6 +40,8 @@ internal static class Program
         RankingTests();
         Section("姓名归一");
         NameTests();
+        Section("读卡器协议");
+        ReaderTests();
         Section("密码与恢复码");
         SecurityTests();
         Section("成绩单解析");
@@ -359,6 +361,52 @@ internal static class Program
         });
         var stranger = ScoreSheetParser.Parse(strangerGrid, students);
         Check("名单外的人不会被悄悄塞进来", stranger.Rows.All(r => r.Kind != ScoreMatchKind.Matched));
+    }
+
+    // ---------------- 读卡器 ----------------
+
+    private static void ReaderTests()
+    {
+        // 帧格式：00 00 FF LEN LCS D4 CMD DCS 00
+        var frame = Pn532Serial.BuildFrame(new byte[] { 0x02 });
+        Check("握手帧的字节序列", frame.SequenceEqual(new byte[]
+            { 0x00, 0x00, 0xFF, 0x02, 0xFE, 0xD4, 0x02, 0x2A, 0x00 }),
+            BitConverter.ToString(frame));
+
+        // PN532 先回 ACK（00 00 FF 00 FF 00 00），再回正式帧。
+        // 解析器必须跳过 ACK，否则每一次握手都会被那条空帧打断。
+        var stream = new List<byte> { 0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00 };
+        var response = new byte[] { 0x03, 0x32, 0x01, 0x06, 0x07, 0x00 };  // GetFirmwareVersion 的响应体
+        // BuildFrame 按"主机→模块"算 DCS，这里手工拼"模块→主机"的帧
+        var body = new List<byte> { 0x00, 0x00, 0xFF, (byte)(response.Length + 1) };
+        body.Add((byte)(~(byte)(response.Length + 1) + 1));
+        body.Add(0xD5);
+        body.AddRange(response);
+        var sum = 0xD5 + response.Sum(b => b);
+        body.Add((byte)(~sum + 1));
+        body.Add(0x00);
+        stream.AddRange(body);
+
+        var got = Pn532Serial.ContainsFullFrame(stream, out var payload);
+        Check("能跨过 ACK 帧找到正式响应", got && payload.Length == response.Length, got.ToString());
+        Check("响应体首字节是命令字 +1", got && payload[0] == 0x03, got ? payload[0].ToString("X2") : "-");
+
+        // 波特率：上次成功过的排第一；没记录时从 115200 开始，并且一定要试 9600
+        var order = Pn532Serial.BaudCandidates(0);
+        Check("默认先试 115200", order[0] == 115200, order[0].ToString());
+        Check("候选里有 9600（被改过速率的模块很常见）", order.Contains(9600));
+        var preferred = Pn532Serial.BaudCandidates(9600);
+        Check("记住的波特率排第一", preferred[0] == 9600, preferred[0].ToString());
+        Check("候选不重复", preferred.Distinct().Count() == preferred.Count);
+
+        // 唤醒序列：两个 0x55 让模块对齐波特率，其余补 0
+        var wake = Pn532Serial.WakeSequence();
+        Check("唤醒序列是 0x55 0x55 打头", wake[0] == 0x55 && wake[1] == 0x55);
+        Check("唤醒序列后面补 0", wake.Skip(2).All(b => b == 0));
+
+        // 诊断：一个字节都没收到 vs 收到垃圾字节，指向的下一步完全不同
+        Check("零字节提示查拨码和 TX/RX", Pn532Serial.Diagnose(0).Contains("拨码"));
+        Check("有字节提示波特率", Pn532Serial.Diagnose(7).Contains("波特率"));
     }
 
     // ---------------- 粘贴文本切行 ----------------
