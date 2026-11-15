@@ -109,16 +109,19 @@ public sealed partial class BoardShell : UserControl, IShellHost
     // ================= 导航 =================
 
     /// <summary>
-    /// 十项导航是数据驱动的：加一页只改 <see cref="AppNav.Items"/>，
-    /// 两个外壳各自拿到同样的条目。展开面板里图标占固定 56 宽，
-    /// 文字从同一列开始 —— 展开后不会出现"图标缩进变了、文字跟着跳"。
+    /// 导航是数据驱动的：加一页只改 <see cref="AppNav.Items"/>，
+    /// 两个外壳各自拿到同样的条目。座位这类可选功能由
+    /// <see cref="AppNav.ForDisplay"/> 在关闭时整项摘掉。
+    /// 展开面板里图标占固定 56 宽，文字从同一列开始 —— 展开后不会出现"图标缩进变了、文字跟着跳"。
     /// </summary>
     private void BuildNavigation()
     {
+        // 重建期间不响应选中变化：被移除的那一项会触发 SelectionChanged。
+        _navSyncing = true;
         Nav.MenuItems.Clear();
         _navItems.Clear();
 
-        foreach (var (index, title, glyph) in AppNav.Items)
+        foreach (var (index, title, glyph) in AppNav.ForDisplay(Services.Settings.SeatEnabled))
         {
             var item = new NavigationViewItem
             {
@@ -136,6 +139,8 @@ public sealed partial class BoardShell : UserControl, IShellHost
             Nav.MenuItems.Add(item);
             _navItems[index] = item;
         }
+
+        _navSyncing = false;
     }
 
     /// <summary>原生 NavigationView 的选中回调；权限不够就弹回原来那一项。</summary>
@@ -579,4 +584,21 @@ public sealed partial class BoardShell : UserControl, IShellHost
     public void Toast(string message, double seconds = 3) => ToastLayer.Show(message, seconds);
 
     public void RefreshChrome() => RefreshHeader();
+
+    /// <summary>
+    /// 设置里开关了可选功能之后重画导航。停在当前页；当前页已经不在导航里
+    /// （座位刚被关掉）就回设置。
+    /// </summary>
+    public void RebuildNavigation()
+    {
+        BuildNavigation();
+
+        if (!_navItems.ContainsKey(_currentIndex))
+        {
+            Navigate(AppNav.Settings);
+            return;
+        }
+
+        SelectWithoutNotify(_currentIndex);
+    }
 }

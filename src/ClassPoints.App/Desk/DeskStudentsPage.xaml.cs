@@ -46,6 +46,9 @@ public sealed partial class DeskStudentsPage : Page
             var deleted = _all.Count(s => s.IsDeleted);
             SubText.Text = $"{active} 人在册" + (deleted > 0 ? $"，{deleted} 人在回收站（30 天内可恢复）" : "");
 
+            // 「座位表」入口只在可选功能打开时出现。关着的时候这一页一个字都不提座位。
+            SeatButton.Visibility = Services.Settings.SeatEnabled ? Visibility.Visible : Visibility.Collapsed;
+
             Render();
         }
         catch (Exception ex)
@@ -172,6 +175,9 @@ public sealed partial class DeskStudentsPage : Page
     private static Style Styled(string key) => (Style)Application.Current.Resources[key];
 
     private void OnSearchChanged(object sender, TextChangedEventArgs e) => Render();
+
+    /// <summary>名单页上的座位入口：只在可选功能打开时可见。排完座位回名单，名单照旧按座位排序。</summary>
+    private void OnOpenSeats(object sender, RoutedEventArgs e) => Shell?.Navigate(AppNav.Seats);
 
     // ---------------- 添加 / 编辑 / 停用 ----------------
 

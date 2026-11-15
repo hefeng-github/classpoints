@@ -5,7 +5,7 @@ namespace ClassPoints.Data;
 /// </summary>
 public static class Sql
 {
-    public const int SchemaVersion = 4;
+    public const int SchemaVersion = 5;
 
     public const string Pragmas = """
         PRAGMA journal_mode = WAL;
@@ -197,6 +197,17 @@ public static class Sql
           key   TEXT PRIMARY KEY,
           value TEXT NOT NULL
         );
+
+        -- 座位快照：可选功能「座位表」里留的底。只在本机，不参与同步 ——
+        -- 它是"排过的几版方案"，不是班里的业务数据。
+        CREATE TABLE IF NOT EXISTS seat_snapshots (
+          id         TEXT PRIMARY KEY,
+          name       TEXT NOT NULL,
+          layout     TEXT NOT NULL,
+          seats      TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_seat_snapshots_at ON seat_snapshots(created_at DESC);
 
         CREATE TABLE IF NOT EXISTS audit_log (
           id       INTEGER PRIMARY KEY AUTOINCREMENT,

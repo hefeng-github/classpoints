@@ -68,6 +68,7 @@ public sealed class AppServices
         Outbox = new SyncOutbox(db);
         Audit = new AuditRepository(db);
         Students = new StudentRepository(db);
+        SeatSnapshots = new SeatSnapshotRepository(db);
         Rules = new RuleRepository(db);
         Counters = new CounterRepository(db);
         Members = new MemberRepository(db);
@@ -89,6 +90,7 @@ public sealed class AppServices
     public SyncOutbox Outbox { get; }
     public AuditRepository Audit { get; }
     public StudentRepository Students { get; }
+    public SeatSnapshotRepository SeatSnapshots { get; }
     public RuleRepository Rules { get; }
     public CounterRepository Counters { get; }
     public MemberRepository Members { get; }

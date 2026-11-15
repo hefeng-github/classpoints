@@ -82,8 +82,11 @@ public sealed class ConfigService(AppServices services)
         var adminPin = bundle.RevealAdminPin(passphrase);
 
         services.Settings.ClassName = bundle.ClassName;
-        services.Settings.SeatRows = bundle.SeatRows;
-        services.Settings.SeatCols = bundle.SeatCols;
+
+        // 配置包只带「排数 / 列数」两个老字段：当成一个不分组的大块恢复。
+        // 分组走廊是可选功能打开之后在座位页里调的，包里没有也不该猜。
+        services.Settings.SeatLayout = ClassPoints.Core.SeatLayout.Create(
+            bundle.SeatRows, 1, bundle.SeatCols);
 
         var imported = ImportRoster(bundle);
 

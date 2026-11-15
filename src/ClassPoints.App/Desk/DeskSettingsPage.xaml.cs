@@ -52,6 +52,7 @@ public sealed partial class DeskSettingsPage : Page
             Sections.Children.Clear();
             BuildClassSection();
             BuildThisMachineSection();
+            BuildFeatureSection();
             BuildAppearanceSection();
             BuildOnScreenSection();
             BuildSecuritySection();
@@ -105,9 +106,9 @@ public sealed partial class DeskSettingsPage : Page
         body.Children.Add(ValueRow("数据文件", Services.Db.DbPath,
             "名单、积分、成绩都在这一个文件里。备份用下面的「立即备份」，不要手动复制正在写的库。"));
 
-        // 「座位布局」入口已隐藏（v1.3）：排/座不再是一个可配置的概念，
-        // 名单页也不再显示座位。seat_rows / seat_cols 两个设置项保留在库里，
-        // 记分台的列数仍然读 SeatCols —— 它只影响一屏放几列，不对外解释成"座位"。
+        // 座位布局不在这里：打开「可选功能 → 座位表」之后，布局在座位页自己的
+        // 「教室布局」里改。设置页放两个数字输入框，只会让人以为座位是必填项。
+        // seat_rows / seat_cols 两个键仍然保留 —— 记分台一屏放几列读的就是它们。
 
         // 示例数据是向导里明确勾选才写进来的，所以也要能一键清掉。
         if (Services.Settings.DemoData)
@@ -171,6 +172,59 @@ public sealed partial class DeskSettingsPage : Page
 
         Services.Audit.Add("app.mode", null, null, App.Mode.ToDb() + " → " + mode.ToDb());
         App.Window?.SwitchToMode(mode);
+    }
+
+    // ---------------- 可选功能 ----------------
+
+    /// <summary>
+    /// 可选功能：默认全关。
+    ///
+    /// 关着的时候这一节里只有一行开关，没有说明、没有"去看看"按钮，程序别处也
+    /// 不会出现任何相关的字样（导航里没有那一项、名单没有那一列）。打开之后才
+    /// 长出使用说明和入口 —— 用不上的人不该被一个功能的名词反复打扰。
+    /// </summary>
+    private void BuildFeatureSection()
+    {
+        var body = Section("可选功能", "默认关闭，打开后才会出现在导航里。");
+
+        var seats = new ToggleSwitch
+        {
+            IsOn = Services.Settings.SeatEnabled,
+            OnContent = "开",
+            OffContent = "关",
+            MinWidth = 100,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        seats.Toggled += (_, _) =>
+        {
+            var on = seats.IsOn;
+            if (Services.Settings.SeatEnabled == on) return;
+
+            Services.Settings.SeatEnabled = on;
+            Services.Audit.Add("seat.toggle", null, null, on ? "on" : "off");
+
+            // 导航项要跟着变：打开后侧栏立刻多一格，关掉后整格消失。
+            Shell?.RebuildNavigation();
+            Shell?.Toast(on ? "座位表已打开：侧栏多了一项「座位」" : "座位表已关闭：界面不再显示它，座位数据保留", 4);
+
+            // 重建这一节，让「去排座位」和说明跟着开关出现 / 消失。
+            DispatcherQueue.TryEnqueue(Reload);
+        };
+
+        body.Children.Add(Labelled("座位表", seats));
+
+        if (!Services.Settings.SeatEnabled) return;
+
+        var layout = Services.Settings.SeatLayout;
+        body.Children.Add(Note($"打开后侧栏多一页「座位」：按教室布局（当前 {layout.Rows} 排 × {layout.Groups} 组 × 每组 {layout.PerGroup} 座）" +
+                               "排座，点两个座位交换；自动排座可设前排/后排、谁和谁同桌，排完能存快照、导出 Excel/SVG。" +
+                               "关闭后数据保留，不会被清掉。"));
+
+        var go = Small("去排座位", () => Shell?.Navigate(AppNav.Seats));
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 4, 0, 4) };
+        actions.Children.Add(go);
+        body.Children.Add(actions);
     }
 
     // ---------------- 外观 ----------------

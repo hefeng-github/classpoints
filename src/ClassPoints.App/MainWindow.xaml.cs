@@ -179,6 +179,15 @@ public sealed partial class MainWindow : Window
                         Services.Log("快照 " + name);
                 }
 
+                // 座位是可选功能：开着才截，关着的时候连页面都不该出现。
+                if (Services.Settings.SeatEnabled)
+                {
+                    board.Navigate(AppNav.Seats);
+                    await Task.Delay(1400);
+                    if (await Snapshot.SaveAsync(Root, Path.Combine(dir, "board-a3-seats.png")))
+                        Services.Log("快照 board-a3-seats");
+                }
+
                 await ScrollToBottomAsync();
                 if (await Snapshot.SaveAsync(Root, Path.Combine(dir, "board-a2-settings-bottom.png")))
                     Services.Log("快照 board-a2-settings-bottom");
@@ -201,6 +210,15 @@ public sealed partial class MainWindow : Window
                     await Task.Delay(1500);
                     if (await Snapshot.SaveAsync(Root, Path.Combine(dir, names[i] + ".png")))
                         Services.Log("快照 " + names[i]);
+                }
+
+                // 座位是可选功能：开着才截，关着的时候连页面都不该出现。
+                if (Services.Settings.SeatEnabled)
+                {
+                    desk.Navigate(AppNav.Seats);
+                    await Task.Delay(1500);
+                    if (await Snapshot.SaveAsync(Root, Path.Combine(dir, "desk-a3-seats.png")))
+                        Services.Log("快照 desk-a3-seats");
                 }
 
                 // 设置页比一屏长，底部几节（同步、其它）首屏看不到 —— 滚到底再抓一张

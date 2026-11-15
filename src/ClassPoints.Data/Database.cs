@@ -149,6 +149,10 @@ public sealed class Database
         if (EnsureColumn(conn, "rules", "owner_id", "TEXT"))
             SetSetting(conn, null, "schema_note", "v4: 加分项可归属个人");
         Exec(conn, "CREATE INDEX IF NOT EXISTS idx_rules_owner ON rules(owner_id)");
+
+        // v5：座位快照表。建表语句在 CreateTables 里（IF NOT EXISTS，老库也会补上），
+        // 这里只留一句结构说明，升级后「关于」页能看到库是哪一代。
+        if (version < 5) SetSetting(conn, null, "schema_note", "v5: 座位快照（可选功能）");
     }
 
     /// <summary>两个路径是不是同一个地方。比较前统一成绝对路径、去掉末尾分隔符。</summary>

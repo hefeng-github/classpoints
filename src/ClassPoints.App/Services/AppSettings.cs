@@ -60,6 +60,84 @@ public sealed class AppSettings(Database db)
         set => db.SetSetting("seat_rows", System.Math.Clamp(value, 2, 10).ToString());
     }
 
+    // ---------------- 可选功能：座位表 ----------------
+
+    /// <summary>
+    /// 座位表默认关闭。关着的时候整个程序里不该出现"座位"两个字 ——
+    /// 导航没有这一页、名单没有这一列、设置里只剩下面这一个开关本身。
+    /// 打开后座位数据（seat_no）一直保留，关掉再打开不会丢。
+    /// </summary>
+    public bool SeatEnabled
+    {
+        get => db.GetBoolSetting("seat_enabled", false);
+        set => db.SetSetting("seat_enabled", value ? "1" : "0");
+    }
+
+    /// <summary>
+    /// 教室布局：排 × 组 × 每组座位。
+    ///
+    /// 老库里只有 seat_rows / seat_cols 两个数（v1.3 之前「座位布局」留下的），
+    /// 读的时候当成"一个不分组的大块"，写的时候两个老键跟着一起写 ——
+    /// 记分台一屏放几列读的就是 seat_cols，不能只更新新键。
+    /// </summary>
+    public ClassPoints.Core.SeatLayout SeatLayout
+    {
+        get
+        {
+            var stored = db.GetSetting("seat_layout");
+            if (!string.IsNullOrWhiteSpace(stored)) return ClassPoints.Core.SeatLayout.Parse(stored);
+
+            if (db.GetSetting("seat_rows") is not null || db.GetSetting("seat_cols") is not null)
+                return ClassPoints.Core.SeatLayout.Create(
+                    db.GetIntSetting("seat_rows", 6), 1, db.GetIntSetting("seat_cols", 8));
+
+            return ClassPoints.Core.SeatLayout.Default;
+        }
+        set
+        {
+            db.SetSetting("seat_layout", value.ToSetting());
+            db.SetSetting("seat_rows", value.Rows.ToString());
+            db.SetSetting("seat_cols", value.Columns.ToString());
+        }
+    }
+
+    /// <summary>
+    /// 固定座位：自动排座时不动的那些人。只存 id，学生被删掉后读回来时自然失效。
+    /// 这个不需要同步 —— 它是"这一次排座的意图"，不是班里的数据。
+    /// </summary>
+    public HashSet<string> SeatPinned
+    {
+        get
+        {
+            var raw = db.GetSetting("seat_pins") ?? "";
+            return raw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                .ToHashSet(StringComparer.Ordinal);
+        }
+        set => db.SetSetting("seat_pins", string.Join(",", value));
+    }
+
+    /// <summary>排座的约束：谁要坐前/中/后、谁必须或不能和谁同桌。全体共用一份。</summary>
+    public ClassPoints.Core.SeatRules SeatRules
+    {
+        get => ClassPoints.Core.SeatRules.Parse(
+            db.GetSetting("seat_zones"), db.GetSetting("seat_links"));
+        set
+        {
+            db.SetSetting("seat_zones", value.ZonesValue);
+            db.SetSetting("seat_links", value.LinksValue);
+        }
+    }
+
+    /// <summary>
+    /// 自动排座的偏好：尽量不坐上次那个区域。靠最近一份快照判断，没有快照时等于没开。
+    /// 默认关 —— 有的班就是要按成绩固定前后，轮换得由老师自己决定。
+    /// </summary>
+    public bool SeatPreferRotate
+    {
+        get => db.GetBoolSetting("seat_prefer_rotate", false);
+        set => db.SetSetting("seat_prefer_rotate", value ? "1" : "0");
+    }
+
     /// <summary>班委会话：30 秒无操作回看板。有选中项时不计时（方案 9.9）。</summary>
     public int IdleTimeoutSec
     {

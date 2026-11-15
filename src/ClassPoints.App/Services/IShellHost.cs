@@ -17,6 +17,12 @@ public interface IShellHost
     /// <summary>重画常驻状态（身份、备份时间、同步角标）。后台任务完成后调它，页面不必知道细节。</summary>
     void RefreshChrome();
 
+    /// <summary>
+    /// 导航项变了（在设置里打开 / 关掉座位表）。外壳按当前设置重画导航，
+    /// 尽量停在原页；原页已经不在导航里时回设置 —— 否则侧栏会没有选中项。
+    /// </summary>
+    void RebuildNavigation();
+
     Task<bool> ConfirmAsync(string title, string message, string primary, string close);
 
     /// <summary>没认人就弹认人；<paramref name="requireAdmin"/> 时还要求是班主任/班长。</summary>

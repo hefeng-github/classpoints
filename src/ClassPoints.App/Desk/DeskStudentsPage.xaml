@@ -28,6 +28,8 @@
                      TextChanged="OnSearchChanged" />
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                <Button x:Name="SeatButton" Content="座位表" Style="{StaticResource DeskButton}"
+                        Visibility="Collapsed" Click="OnOpenSeats" />
                 <Button Content="粘贴一列姓名" Style="{StaticResource DeskButton}" Click="OnPasteNames" />
                 <Button Content="从 Excel 导入" Style="{StaticResource DeskButton}" Click="OnImportExcel" />
                 <Button Content="新增学生" Style="{StaticResource DeskPrimaryButton}" Click="OnAddStudent" />

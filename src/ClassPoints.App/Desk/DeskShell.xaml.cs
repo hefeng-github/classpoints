@@ -115,10 +115,13 @@ public sealed partial class DeskShell : UserControl, IShellHost
 
     private void BuildNavigation()
     {
+        // 清空 / 重建期间不要响应选中变化：被移除的那一项会触发一次 SelectionChanged，
+        // 那时 Tag 还是旧序号，会把人带到别的页面去。
+        _navSyncing = true;
         Nav.MenuItems.Clear();
         _navItems.Clear();
 
-        foreach (var (index, title, glyph) in AppNav.Items)
+        foreach (var (index, title, glyph) in AppNav.ForDisplay(Services.Settings.SeatEnabled))
         {
             var item = new NavigationViewItem
             {
@@ -134,6 +137,8 @@ public sealed partial class DeskShell : UserControl, IShellHost
             Nav.MenuItems.Add(item);
             _navItems[index] = item;
         }
+
+        _navSyncing = false;
     }
 
     /// <summary>
@@ -197,6 +202,23 @@ public sealed partial class DeskShell : UserControl, IShellHost
     public void Toast(string message, double seconds = 3) => ToastLayer.Show(message, seconds);
 
     public void RefreshChrome() => Refresh();
+
+    /// <summary>
+    /// 设置里开关了可选功能之后重画导航。停在当前页；当前页已经不在导航里
+    /// （座位刚被关掉）就回设置 —— 不然侧栏没有任何一项是选中的，看着像卡死。
+    /// </summary>
+    public void RebuildNavigation()
+    {
+        BuildNavigation();
+
+        if (_index >= 0 && !_navItems.ContainsKey(_index))
+        {
+            Navigate(AppNav.Settings);
+            return;
+        }
+
+        SelectWithoutNotify(_index);
+    }
 
     private void Refresh()
     {
