@@ -19,21 +19,39 @@ public sealed class StartupOptions
     /// <summary>验收脚本用：绕过设置强制某个形态，只影响这一次运行，不写库。</summary>
     public AppMode? ModeOverride { get; init; }
 
+    /// <summary>
+    /// 解析启动参数。两种写法都认：<c>--db=x.db</c> 和 <c>--db x.db</c>。
+    ///
+    /// 空格形式是文档和验收脚本里一直用的写法，但旧实现只 Split('=') —— 于是
+    /// `ClassPoints.exe --db demo/demo.db` 会**静默**忽略路径，直接开默认库。
+    /// 那种错不会报任何东西，只表现为"指了新库，界面还是老数据"，还顺手把默认库的数据
+    /// 复制到了当前目录。所以空格形式必须当成一等写法。
+    /// </summary>
     public static StartupOptions Parse(string[] args)
     {
         string? dbPath = null;
 
-        foreach (var raw in args)
+        for (var i = 0; i < args.Length; i++)
         {
-            var arg = raw.Trim().TrimStart('-', '/');
+            var raw = args[i].Trim();
+            var arg = raw.TrimStart('-', '/');
             var parts = arg.Split('=', 2);
             if (!parts[0].Equals("db", StringComparison.OrdinalIgnoreCase)) continue;
-            if (parts.Length > 1) dbPath = parts[1];
+
+            if (parts.Length > 1)
+            {
+                dbPath = parts[1].Trim('"');
+            }
+            else if (i + 1 < args.Length && !args[i + 1].StartsWith('-'))
+            {
+                // 下一个参数当值。以 '-' 开头说明是另一个开关，别把它当成路径
+                dbPath = args[++i].Trim('"');
+            }
         }
 
         return new StartupOptions
         {
-            DbPath = dbPath,
+            DbPath = string.IsNullOrWhiteSpace(dbPath) ? null : dbPath,
             ModeOverride = AppModeNames.Parse(Environment.GetEnvironmentVariable("CP_MODE")),
         };
     }

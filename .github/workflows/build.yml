@@ -27,7 +27,9 @@ jobs:
   windows:
     name: 客户端 · 编译 + 单测 + 发布
     runs-on: windows-latest
-    timeout-minutes: 30
+    # 40 而不是 30：产物自带 .NET 运行时之后解压出来 272 MB，
+    # Compress-Archive 压 zip 和上传 artifact 都比以前重，留出余量。
+    timeout-minutes: 40
     steps:
       - name: 取源码
         uses: actions/checkout@v4

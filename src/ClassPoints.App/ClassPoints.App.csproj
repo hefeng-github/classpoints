@@ -12,6 +12,12 @@
     <UseWinUI>true</UseWinUI>
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <!-- 把 .NET 运行时一起打进产物（只有指定了 RID 的 publish 才生效）。
+         教室里那台机器是离线的，让它先装 .NET 10 桌面运行时等于把"双击就能用"变成
+         "先找 U 盘拷安装包、再找管理员装运行时"。代价是产物大 70 MB 左右，
+         换的是目标机零依赖 —— 教室网络装一次运行时的时间比这 70 MB 贵得多。
+         要发瘦身版（目标机已装运行时）时，发布脚本传 -p:SelfContained=false。 -->
+    <SelfContained Condition="'$(RuntimeIdentifier)' != ''">true</SelfContained>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>

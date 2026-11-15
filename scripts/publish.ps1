@@ -2,6 +2,11 @@
 #
 #   pwsh scripts/publish.ps1                    # 默认 win-x64
 #   pwsh scripts/publish.ps1 -Runtime win-arm64 # 国产 ARM 一体机
+#   pwsh scripts/publish.ps1 -FrameworkDependent # 瘦身版：目标机自己装 .NET 10 运行时
+#
+# 默认**内置 .NET 运行时**（SelfContained）：产物体积大 70 MB 左右，
+# 换目标机零依赖 —— 教室电脑是离线的，让它先装运行时等于把"双击就能用"变成
+# "先找安装包、再找管理员"。
 #
 # 不用 PublishSingleFile：WinUI 3 的 XBF 资源在单文件模式下要额外解包，
 # 教室电脑上杀毒软件还容易拦自解压，整目录拷贝反而更省事、启动更快。
@@ -12,6 +17,10 @@ param(
 
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
+
+    # 只发瘦身版时用：不带 .NET 运行时，产物小 70 MB，但目标机必须装
+    # ".NET 10 Desktop Runtime"。维护自己电脑的版本可以用它，发给教室别用。
+    [switch]$FrameworkDependent,
 
     # 只在发正式版时传：覆盖 csproj 里的 <Version>。
     # 装出来的 exe 的版本号、安装包文件名、更新清单里的版本号必须是同一个值，
@@ -43,6 +52,13 @@ if (Test-Path $outDir) {
 }
 
 Write-Host "==> 发布（$Configuration / $Platform / $Runtime）" -ForegroundColor Cyan
+$selfContained = -not $FrameworkDependent
+if ($selfContained) {
+    Write-Host "    内置 .NET 运行时：目标机不用装任何东西" -ForegroundColor DarkGray
+} else {
+    Write-Host "    框架依赖：目标机需要 .NET 10 Desktop Runtime！" -ForegroundColor Yellow
+}
+
 $versionArgs = @()
 if (-not [string]::IsNullOrWhiteSpace($Version)) {
     if ($Version -notmatch '^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$') {
@@ -64,11 +80,16 @@ if (-not [string]::IsNullOrWhiteSpace($UpdateFeed)) {
     $versionArgs += "-p:UpdateFeed=$UpdateFeed"
 }
 
+# 参数里不能直接写 $selfContained.ToString()：PowerShell 会把整个 "xxx.ToString()"
+# 当成字面量传给 dotnet，得到 -p:SelfContained=False.ToString()（.NET 拿它当 false，蒙对但不稳）。
+$selfContainedArg = "-p:SelfContained=$($selfContained.ToString().ToLowerInvariant())"
+
 dotnet publish (Join-Path $root 'src/ClassPoints.App/ClassPoints.App.csproj') `
     -c $Configuration `
     -r $Runtime `
     -p:Platform=$platform `
     -p:WindowsAppSDKSelfContained=true `
+    $selfContainedArg `
     -p:PublishReadyToRun=false `
     @versionArgs `
     -o $outDir
@@ -89,6 +110,19 @@ if (-not [string]::IsNullOrWhiteSpace($Version) -and $productVersion -notlike "$
     throw "发布产物里的版本是 '$productVersion'，和要求的 $Version 不一致 —— 检查 -p:Version 是否被 csproj 里的值覆盖了"
 }
 Write-Host "    产物版本：$productVersion" -ForegroundColor DarkGray
+
+# 「说好了内置运行时，产物里却没有 coreclr」是这一类改动最容易翻车的地方：
+# csproj 里 SelfContained 的条件写错、或者发布参数被覆盖，都不会报任何错，
+# 只会在教室电脑上双击时弹「你需要安装 .NET 桌面运行时」。按产物内容硬性对账。
+$runtimeFiles = 'coreclr.dll', 'hostfxr.dll', 'hostpolicy.dll', 'System.Private.CoreLib.dll'
+$present = @($runtimeFiles | Where-Object { Test-Path (Join-Path $outDir $_) })
+if ($selfContained -and $present.Count -lt $runtimeFiles.Count) {
+    $missing = $runtimeFiles | Where-Object { -not (Test-Path (Join-Path $outDir $_)) }
+    throw "要求内置 .NET，但产物里缺少 $($missing -join '、') —— 检查 csproj 的 SelfContained 条件是否生效"
+}
+if (-not $selfContained -and $present.Count -gt 0) {
+    throw "要求框架依赖，但产物里带着 $($present -join '、') —— SelfContained=false 没传下去"
+}
 
 # XAML 页面在编译期被做成 XBF 塞进 ClassPoints.pri，运行时不读 .xaml 源文件。
 # 少了这个 pri，exe 双击起来就是 XamlParseException（MainWindow.InitializeComponent），

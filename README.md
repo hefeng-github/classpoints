@@ -90,7 +90,7 @@
 
 | 项目 | 版本 |
 | --- | --- |
-| .NET SDK | 10.0 |
+| .NET SDK | 10.0（**编译用**；发布产物自带运行时，目标机不用装） |
 | Windows App SDK | 2.6.5（`WindowsAppSDKSelfContained=true`，目标机不用另装运行时） |
 | 目标框架 | `net10.0-windows10.0.26100.0`，最低 `10.0.17763.0` |
 | 平台 | `x64` / `ARM64` |
@@ -108,6 +108,20 @@ powershell -ExecutionPolicy Bypass -File scripts/publish.ps1 -Runtime win-x64
 # 装了 PowerShell 7：pwsh scripts/publish.ps1 -Runtime win-x64
 # 产物：dist/ClassPoints-win-x64/ ，整个目录拷到目标机，双击「启动.cmd」
 ```
+
+**产物自带 .NET 运行时**（`SelfContained`）和 Windows App SDK，目标机是台干净的
+Windows 10 1809 就能双击运行，不需要先装 .NET 桌面运行时。代价是体积：
+解压后约 272 MB、zip 约 100 MB（不带运行时的瘦身版是 197 MB）。
+
+给已经装过运行时的机器发瘦身版，加 `-FrameworkDependent`：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/publish.ps1 -FrameworkDependent
+```
+
+> 两条硬性校验写在 `publish.ps1` 里：要求内置时产物必须有 `coreclr.dll` / `hostfxr.dll`，
+> 要求瘦身时反过来一个都不许有。少了这道对账，`SelfContained` 被谁悄悄覆盖掉不会报任何错，
+> 只会在教室电脑上双击时弹「你需要安装 .NET」。
 
 只有一个启动脚本 `启动.cmd`，不带任何参数。用不上的语言资源在**编译期**就裁掉了
 （`csproj` 的 `SatelliteResourceLanguages`），剩下九十来个 `Microsoft.ui.xaml.dll.mui`
@@ -133,7 +147,7 @@ ClassPoints.exe --db demo/demo.db          # 直接用演示库，不碰自己�
 
 | 参数 | 作用 |
 | --- | --- |
-| `--db=<路径>` | 用指定的库文件 |
+| `--db <路径>` / `--db=<路径>` | 用指定的库文件（两种写法都认）。日志、同步凭据、更新包也跟着那个库所在目录走 |
 
 排障用的环境变量（正常使用不需要设）：
 
