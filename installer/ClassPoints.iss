@@ -120,3 +120,25 @@ begin
     '升级或卸载都不会删除。装在 C 盘时它们位于当前用户的 AppData 目录，' +
     '也可以在「设置 → 本机数据」里一键搬到别的盘。';
 end;
+
+// USB 读卡器走 CH340 转串口，这颗芯片的驱动不随 Windows 分发。
+// 机器上插着它（枚举表里有 VID_1A86&PID_7523）但驱动没装时，装完顺手把驱动装上：
+// 安装程序本身就是提权的，不再弹 UAC；设备不在就什么都不做，不给没读卡器的老师装东西。
+// 装了之后驱动会留在系统驱动仓库里，卸载本程序不回收 —— 别的程序可能也在用它。
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Rc: Integer;
+begin
+  if CurStep <> ssPostInstall then Exit;
+  if not RegKeyExists(HKEY_LOCAL_MACHINE,
+      'SYSTEM\CurrentControlSet\Enum\USB\VID_1A86&PID_7523') then Exit;
+
+  Exec(ExpandConstant('{cmd}'),
+    Format('/C pnputil /add-driver "%s\drivers\CH341SER\ch341ser.inf" /install & pnputil /scan-devices',
+      [ExpandConstant('{app}')]),
+    '', SW_HIDE, ewWaitUntilTerminated, Rc);
+  if Rc = 0 then
+    Log('CH340 driver installed for existing device')
+  else
+    Log(Format('CH340 driver install failed (exit %d); the app offers a manual button', [Rc]));
+end;

@@ -195,17 +195,53 @@ public sealed class Pn532Serial : IDisposable
         return list;
     }
 
+    /// <summary>
+    /// 只认"像是 USB 转串口"的口（CH340 / CP2102 / FT232 / USB-SERIAL）。
+    ///
+    /// 自动发现必须用它，不能退到任意串口：办公室电脑的 COM1 往往是主板串口，
+    /// 无脑探一遍，设置页一开机就顶着一行红字"读卡器没有回应"——用户什么都还没配，
+    /// 程序先报了个错，比不报错更糟。手动在端口下拉里选 COM1 仍然允许（那是明确意图）。
+    /// </summary>
     [SupportedOSPlatform("windows")]
-    public static string? GuessPort()
+    public static string? GuessUsbPort() =>
+        ListPorts().FirstOrDefault(p => p.LikelyPn532)?.PortName;
+
+    /// <summary>
+    /// 这台电脑上有没有"插着 CH340 但驱动没装好"的设备。
+    ///
+    /// 判断依据是 WMI 的 ConfigManagerErrorCode：设备枚举到了（VID_1A86&amp;PID_7523）
+    /// 但错误码非 0，典型是 CM_PROB_FAILED_INSTALL——串口列表里不会出现它，
+    /// 老师看到的只是"没有发现串口设备"，完全无从下手。True 时界面给出安装按钮。
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    public static bool NeedsCh340Driver()
     {
-        var ports = ListPorts();
-        return ports.FirstOrDefault(p => p.LikelyPn532)?.PortName ?? ports.FirstOrDefault()?.PortName;
+        try
+        {
+            using var searcher = new ManagementObjectSearcher(
+                "SELECT DeviceID, ConfigManagerErrorCode FROM Win32_PnPEntity");
+            foreach (var obj in searcher.Get())
+            {
+                var id = obj["DeviceID"]?.ToString() ?? "";
+                if (!id.StartsWith("USB\\VID_1A86&PID_7523", StringComparison.OrdinalIgnoreCase)) continue;
+                var code = obj["ConfigManagerErrorCode"] as uint? ?? 0;
+                if (code != 0) return true;
+            }
+        }
+        catch (Exception)
+        {
+            // WMI 不可用就当没有：宁可少一个按钮，不要多一个误报
+        }
+        return false;
     }
 
     [SupportedOSPlatform("windows")]
     public void Start(string? portName = null, int preferredBaud = 0, ReaderProtocol protocol = ReaderProtocol.Pn532)
     {
         Stop();
+        // 存下来的端口可能是空串（从没选过）。空串不能当"用户指定"用，
+        // 否则循环里会拿着 "" 去开串口、每轮失败——必须归一成 null，让循环自己去找。
+        if (string.IsNullOrWhiteSpace(portName)) portName = null;
         _preferredBaud = preferredBaud;
         _protocol = protocol;
         _lockedBaud = protocol == ReaderProtocol.AutoUid ? preferredBaud : 0;
@@ -259,7 +295,9 @@ public sealed class Pn532Serial : IDisposable
             {
                 if (_port is null || !_port.IsOpen)
                 {
-                    var port = preferredPort ?? GuessPort();
+                    // 没指定端口就只在"像读卡器的 USB 串口"里找（见 GuessUsbPort 的说明）。
+                    // 每轮重试都重新找一遍：拔下来插到别的口上（COM 号会变）也能跟上。
+                    var port = preferredPort ?? GuessUsbPort();
                     if (port is null)
                     {
                         SetStatus(ReaderState.NoDevice, "没找到串口设备，插上读卡器后会自动重试", "");
@@ -339,7 +377,7 @@ public sealed class Pn532Serial : IDisposable
             {
                 if (_port is null || !_port.IsOpen)
                 {
-                    var port = preferredPort ?? GuessPort();
+                    var port = preferredPort ?? GuessUsbPort();
                     if (port is null)
                     {
                         SetStatus(ReaderState.NoDevice, "没找到串口设备，插上读卡器后会自动重试", "");

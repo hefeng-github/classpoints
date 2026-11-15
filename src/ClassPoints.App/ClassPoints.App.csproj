@@ -61,6 +61,10 @@
 
   <ItemGroup>
     <Content Include="Assets\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- CH340 驱动（见 drivers/CH341SER/README.txt）：读卡器一键安装用，
+         安装包整目录拷贝时也会带上。二进制不大（~280KB），不值得做成 NuGet。 -->
+    <Content Include="..\..\drivers\CH341SER\**\*" CopyToOutputDirectory="PreserveNewest"
+             Link="drivers\CH341SER\%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 
   <!-- 发布目录里不要 .pdb。

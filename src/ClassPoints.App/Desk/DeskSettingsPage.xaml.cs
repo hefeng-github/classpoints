@@ -430,7 +430,9 @@ public sealed partial class DeskSettingsPage : Page
         if (_portCombo.Items.Count == 1)
             _portCombo.Items.Add(new ComboBoxItem
             {
-                Content = "没有发现串口设备",
+                // "没有发现"和"发现了但驱动没装"是两种病，前者等插设备，
+                // 后者得装驱动 —— 下拉里就把话说准，别让老师对着空列表猜。
+                Content = ReaderDriver.NeedsInstall ? "发现 CH340 设备，但驱动未安装" : "没有发现串口设备",
                 Tag = "",
                 IsEnabled = false,
             });
@@ -505,6 +507,24 @@ public sealed partial class DeskSettingsPage : Page
 
         body.Children.Add(Labelled("读卡器类型", kindCombo));
         body.Children.Add(Labelled("端口", portLine));
+
+        // 驱动没装的机器：设备插着、串口列表却是空的，点多少次"重新连接"都没用。
+        // 把修复按钮放在问题出现的地方，比让老师去设备管理器里认黄色感叹号近得多。
+        var realPorts = _portCombo.Items.OfType<ComboBoxItem>()
+            .Count(i => i.IsEnabled && (string?)i.Tag is { Length: > 0 });
+        if (realPorts == 0 && ReaderDriver.NeedsInstall)
+        {
+            var fix = ReaderDriver.Bundled
+                ? Small("安装 CH340 驱动…", () => _ = InstallDriverAsync())
+                : null;
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            if (fix is not null) row.Children.Add(fix);
+            body.Children.Add(Labelled("USB 驱动", row));
+            body.Children.Add(Note(ReaderDriver.Bundled
+                ? "发现 CH340 串口设备，但驱动没有安装。点上面的按钮，在弹出的授权窗口里点「是」。"
+                : "发现 CH340 串口设备，但驱动没有安装（这个包里没带驱动文件）。到 wch.cn 下载 CH341SER 装一次即可。"));
+        }
+
         body.Children.Add(_lampGrid);
         body.Children.Add(_readerStatusText);
         body.Children.Add(_readerRawText);
@@ -522,6 +542,16 @@ public sealed partial class DeskSettingsPage : Page
     }
 
     private void OnLampTick(object? sender, object e) => RefreshLamps();
+
+    private async Task InstallDriverAsync()
+    {
+        Shell?.Toast("正在安装驱动，弹出授权窗口时请点「是」", 8);
+        var ok = await ReaderDriver.InstallAsync();
+        Shell?.Toast(ok
+            ? "驱动装好了。下面选上新出现的端口，点「重新连接」。"
+            : "没有装成：授权窗口被取消，或系统拒绝了安装。可以再试一次。", 8);
+        Reload();
+    }
 
     /// <summary>
     /// 连不上时的检查清单。

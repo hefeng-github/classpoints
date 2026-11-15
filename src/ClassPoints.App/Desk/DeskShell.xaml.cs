@@ -45,19 +45,20 @@ public sealed partial class DeskShell : UserControl, IShellHost
         if (_index < 0) Navigate(Session.ReadOnly ? AppNav.Wall : AppNav.Score);
         Services.Pump.Start();
 
-        // 只在「已经选过端口」时启动读卡器：办公室电脑的 COM1 常常是主板串口，
-        // 无脑探一遍会让设置页一开机就顶着一行红字"读卡器没有回应"。
-        // 没配端口的机器，要用的时候在「设置 → 读卡器」点一下「重新连接」即可。
-        if (!string.IsNullOrWhiteSpace(Services.Settings.ReaderPort))
+        // 读卡器启动：优先用记下的端口；没记过时，只在"像是 USB 读卡器"的口存在时才自动找。
+        // 这条底线不能撤：办公室电脑的 COM1 常常是主板串口，无脑探一遍，
+        // 设置页一开机就顶着红字"读卡器没有回应"——什么都没配就先报错，比不报错更糟。
+        try
         {
-            try
-            {
-                Services.Reader.Start(Services.Settings.ReaderPort, Services.Settings.ReaderBaud, Services.Settings.ReaderProtocol);
-            }
-            catch (Exception ex)
-            {
-                Services.LogError("reader-start", ex);
-            }
+            var auto = string.IsNullOrWhiteSpace(Services.Settings.ReaderPort)
+                ? Pn532Serial.GuessUsbPort()
+                : Services.Settings.ReaderPort;
+            if (!string.IsNullOrWhiteSpace(auto))
+                Services.Reader.Start(auto, Services.Settings.ReaderBaud, Services.Settings.ReaderProtocol);
+        }
+        catch (Exception ex)
+        {
+            Services.LogError("reader-start", ex);
         }
 
         Refresh();
