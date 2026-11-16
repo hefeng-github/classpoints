@@ -184,7 +184,7 @@ public static class SeatSheetBuilder
             row++;
         }
 
-        ws.Columns().AdjustToContents();
+        SheetFit.Columns(ws, headers.Length, new[] { 5, 5, 8, 11, 15, 13, 7 });
         ws.SheetView.FreezeRows(1);
     }
 

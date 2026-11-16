@@ -56,6 +56,8 @@ internal static class Program
         ConfigTests.Run(Check);
         Section("Excel 读写");
         ExcelTests.Run(Check);
+        Section("成绩导出排版");
+        ExcelExportTests.Run(Check);
         Section("事件计数");
         CounterTests.Run(Check);
         Section("撤销");
@@ -96,6 +98,16 @@ internal static class Program
             if (parts.Length > 2 && parts[2].Length > 0) bundle.Protect(parts[2], null, parts[3]);
             ClassPoints.Data.Config.ConfigBundleFile.Save(bundle, parts[^1]);
             Console.WriteLine("已生成配置包：" + parts[^1]);
+            return 0;
+        }
+
+        // 造一份样例导出，方便在真实 Excel 里看列宽/表头 —— 版式问题只能靠眼睛验收
+        var dumpExport = args.FirstOrDefault(a => a.StartsWith("--dump-export=", StringComparison.Ordinal));
+        if (dumpExport is not null)
+        {
+            var path = dumpExport["--dump-export=".Length..];
+            ExcelExportTests.SaveSample(path);
+            Console.WriteLine("已生成样例导出：" + path);
             return 0;
         }
 

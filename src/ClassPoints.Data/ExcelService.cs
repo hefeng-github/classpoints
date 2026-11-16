@@ -150,7 +150,9 @@ public static class WorkbookBuilder
             cell.Style.Font.FontColor = HeaderFg;
             cell.Style.Fill.BackgroundColor = HeaderBg;
             cell.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+            cell.Style.Alignment.WrapText = true;
         }
+        ws.Row(1).Height = 42;
 
         var row = 2;
         foreach (var item in r.Rows)
@@ -171,16 +173,10 @@ public static class WorkbookBuilder
             row++;
         }
 
-        if (!normalized)
-        {
-            var note = ws.Cell(row + 1, 1);
-            note.Value = "本表总评为加权和，不是百分制分数，不可与考试成绩直接比较；同一表内排名有效。";
-            note.Style.Font.Italic = true;
-            note.Style.Font.FontColor = XLColor.FromHtml("#8A6D00");
-        }
-
+        // 口径说明只留在「参数说明」页，总排名页保持"表头 + 数据"干干净净
         ws.SheetView.FreezeRows(1);
-        Finish(ws, headers.Length);
+        SheetFit.Columns(ws, headers.Length, new[] { 7, 10, 12, 16, 15, 15, 13 });
+        ws.RangeUsed()?.SetAutoFilter();
     }
 
     // ---------------- 2. 成绩明细 ----------------
@@ -227,8 +223,9 @@ public static class WorkbookBuilder
                 }
                 else
                 {
+                    // 只写「缺考」，缺考政策由右边那列统一说明 —— 每格都带一遍政策，会把这一列撑成全场最宽
                     var cell = ws.Cell(row, col);
-                    cell.Value = $"缺考（{PolicyShort(b.Policy)}）";
+                    cell.Value = "缺考";
                     cell.Style.Font.FontColor = XLColor.FromHtml("#B45309");
                 }
                 col++;
@@ -248,7 +245,16 @@ public static class WorkbookBuilder
 
         ws.SheetView.FreezeRows(1);
         ws.SheetView.FreezeColumns(1);
-        Finish(ws, headers.Count);
+
+        var mins = new List<int> { 10 };
+        // 单场成绩列给 20：表头是「期中（满分 100，权重 30%）」这种长句，16 会折成三行、被行高切掉
+        for (var i = 0; i < exams.Count; i++) mins.Add(20);
+        mins.Add(16);   // 考试总分（加权）
+        mins.Add(16);   // 平时分（积分）
+        mins.Add(12);   // 总评
+        mins.Add(15);   // 缺考处理
+        SheetFit.Columns(ws, headers.Count, mins);
+        ws.RangeUsed()?.SetAutoFilter();
     }
 
     // ---------------- 3. 积分流水 ----------------
@@ -286,7 +292,8 @@ public static class WorkbookBuilder
         }
 
         ws.SheetView.FreezeRows(1);
-        Finish(ws, headers.Length);
+        SheetFit.Columns(ws, headers.Length, new[] { 16, 10, 16, 8, 10, 24, 16 });
+        ws.RangeUsed()?.SetAutoFilter();
     }
 
     // ---------------- 4. 参数说明 ----------------
@@ -363,21 +370,6 @@ public static class WorkbookBuilder
         ws.Column(2).Width = 96;
     }
 
-    private static void Finish(IXLWorksheet ws, int columns)
-    {
-        try
-        {
-            ws.Columns(1, columns).AdjustToContents();
-            for (var c = 1; c <= columns; c++)
-                if (ws.Column(c).Width > 40) ws.Column(c).Width = 40;
-        }
-        catch (Exception)
-        {
-            // 极端表格下 AdjustToContents 会算不出宽度，宁可列窄一点也不抛
-        }
-        ws.RangeUsed()?.SetAutoFilter();
-    }
-
     public static string PolicyShort(AbsencePolicy p) => p switch
     {
         AbsencePolicy.Zero => "记 0 分",
@@ -391,4 +383,44 @@ public static class WorkbookBuilder
         AbsencePolicy.ClassAverage => "缺考按该场全班平均分替代",
         _ => "缺考按权重再分配（缺考那场不计，其权重按比例摊给其余场次）",
     };
+}
+
+/// <summary>
+/// 列宽自己算。ClosedXML 的 <c>AdjustToContents</c> 拿默认字体量文本，汉字按一个字符宽算，
+/// 结果就是姓名列窄到装不下三个字、数字列反而空出一大片（界面报过这个）。
+/// 这里按"汉字/全角标点占两个字符宽"逐格量，再夹在 [下限, 上限] 之间：
+/// 下限保证表头两行放得下，上限防止一格长备注把整列拉出去。
+/// </summary>
+internal static class SheetFit
+{
+    public static void Columns(IXLWorksheet ws, int columns, IReadOnlyList<int> minWidths, double max = 40)
+    {
+        var used = ws.RangeUsed();
+        if (used is null) return;
+
+        var last = used.LastRow().RowNumber();
+        for (var c = 1; c <= columns; c++)
+        {
+            // 表头允许换行的列只按数据量宽度 —— 否则一句"期中（满分 100，权重 30%）"会把整列撑到上限
+            var from = ws.Cell(1, c).Style.Alignment.WrapText ? 2 : 1;
+
+            var widest = 0.0;
+            for (var r = from; r <= last; r++)
+            {
+                var text = ws.Cell(r, c).GetFormattedString();
+                if (text.Length == 0) continue;
+                widest = System.Math.Max(widest, TextWidth(text));
+            }
+
+            var min = c <= minWidths.Count ? minWidths[c - 1] : 8;
+            ws.Column(c).Width = System.Math.Clamp(System.Math.Ceiling(widest) + 2.6, min, max);
+        }
+    }
+
+    private static double TextWidth(string text)
+    {
+        var w = 0.0;
+        foreach (var ch in text) w += ch >= '\u2E80' ? 2 : 1;   // CJK、假名、全角标点都是双宽
+        return w;
+    }
 }
