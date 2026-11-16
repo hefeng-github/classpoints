@@ -82,15 +82,15 @@
                     <TextBlock x:Name="ImpactText" Style="{StaticResource DeskSecondaryText}" />
 
                     <StackPanel Spacing="8">
-                        <TextBlock Text="各场考试权重" Style="{StaticResource DeskColumnHeader}" />
-                        <StackPanel x:Name="WeightList" Spacing="6" />
-                        <Grid x:Name="WeightSumRow">
-                            <TextBlock x:Name="WeightSumText" Style="{StaticResource DeskBodyText}" />
-                            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-                                <Button x:Name="BalanceButton" Content="自动配平"
-                                        Style="{StaticResource DeskButton}" Click="OnAutoBalance" />
-                            </StackPanel>
+                        <!-- 合计不再是常显的一行：权重只有不等于 100% 时才在右侧提醒一句，
+                             平时它不占地方，也不跟上面的平时/考试滑块抢注意力。 -->
+                        <Grid>
+                            <TextBlock Text="各场考试权重" Style="{StaticResource DeskColumnHeader}" />
+                            <TextBlock x:Name="WeightSumWarn" HorizontalAlignment="Right"
+                                       Visibility="Collapsed"
+                                       Style="{StaticResource DeskSecondaryText}" />
                         </Grid>
+                        <StackPanel x:Name="WeightList" Spacing="6" />
                     </StackPanel>
 
                     <TextBlock x:Name="SchemeHint" Style="{StaticResource DeskSecondaryText}" />

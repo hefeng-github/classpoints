@@ -270,24 +270,20 @@ public sealed partial class DeskExamsPage : Page
                 Text = "还没有考试，导入成绩后可逐场设置权重。",
                 Style = Styled("DeskSecondaryText"),
             });
-            WeightSumText.Text = "";
-            WeightSumRow.Visibility = Visibility.Collapsed;
+            UpdateWeightState();
             _loading = false;
             UpdateImpact();
             return;
         }
 
-        WeightSumRow.Visibility = Visibility.Visible;
-        BalanceButton.Visibility = Visibility.Visible;
-
         foreach (var exam in _exams)
         {
             var value = _weights.TryGetValue(exam.Id, out var w) ? w : 0;
 
+            // 一行只有「考试名 + 权重数字」：滑块去掉之后，同名两项并排看也不挤，
+            // 而且和上面那根平时/考试的滑块不再长得一样（那根才是真正在调比例的东西）。
             var row = new Grid { ColumnSpacing = 12 };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(200) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            // 数字输入框由「− 框 +」三件组成，宽度不能再按单个输入框算
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             row.Children.Add(new TextBlock
@@ -298,7 +294,6 @@ public sealed partial class DeskExamsPage : Page
                 TextTrimming = TextTrimming.CharacterEllipsis,
             });
 
-            var slider = new Slider { Minimum = 0, Maximum = 100, StepFrequency = 5, Value = value * 100 };
             var number = new NumberInput
             {
                 Value = value * 100,
@@ -310,40 +305,44 @@ public sealed partial class DeskExamsPage : Page
             };
 
             var examId = exam.Id;
-            void Push(double percent)
+            number.ValueChanged += percent =>
             {
+                if (_loading) return;
                 _weights[examId] = percent / 100;
-                if (System.Math.Abs(slider.Value - percent) > 0.01) slider.Value = percent;
-                if (System.Math.Abs(number.Value - percent) > 0.01) number.Value = percent;
-                UpdateWeightSum();
+                UpdateWeightState();
                 DebouncedRecompute();
-            }
+            };
 
-            slider.ValueChanged += (_, e) => { if (!_loading) Push(e.NewValue); };
-            number.ValueChanged += percent => { if (!_loading) Push(percent); };
-
-            Grid.SetColumn(slider, 1);
-            row.Children.Add(slider);
-            Grid.SetColumn(number, 2);
+            Grid.SetColumn(number, 1);
             row.Children.Add(number);
 
             WeightList.Children.Add(row);
         }
 
         _loading = false;
-        UpdateWeightSum();
+        UpdateWeightState();
         UpdateImpact();
     }
 
     private double WeightSum => _weights.Values.Sum();
 
-    private void UpdateWeightSum()
+    /// <summary>
+    /// 权重"配没配平"这件事，只剩两个用处：决定导出键能不能按，以及在不平时提醒一句。
+    ///
+    /// 以前这里是一行常显的「合计 100%」加一个「自动配平」按钮。只有一场考试时
+    /// 权重恒为 100%，那一行和一个能点的按钮都只是噪音；多场时才需要合计，
+    /// 而"合计不等于 100%"本来就是个要修的错，用一句话写在标题右边比常驻一行更省地方。
+    /// </summary>
+    private void UpdateWeightState()
     {
-        if (_exams.Count == 0) return;
         var sum = WeightSum * 100;
-        WeightSumText.Text = $"合计 {sum:0.#}%";
-        WeightSumText.Foreground = System.Math.Abs(sum - 100) < 0.5 ? Pal.Positive : Pal.Negative;
-        ExportButton.IsEnabled = System.Math.Abs(sum - 100) < 0.5 || _exams.Count == 0;
+        var ok = _exams.Count == 0 || System.Math.Abs(sum - 100) < 0.5;
+
+        ExportButton.IsEnabled = ok;
+
+        WeightSumWarn.Text = ok ? "" : $"合计 {sum:0.#}%，导出前要凑到 100%";
+        WeightSumWarn.Foreground = Pal.Negative;
+        WeightSumWarn.Visibility = ok ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private void UpdateImpact()
@@ -384,25 +383,10 @@ public sealed partial class DeskExamsPage : Page
         DebouncedRecompute();
     }
 
-    private void OnAutoBalance(object sender, RoutedEventArgs e)
-    {
-        if (_exams.Count == 0) return;
-
-        // 必须按「考试表」补键。刚导入、从没设过权重时 _weights 是空字典，
-        // AutoBalance 拿到空字典配出来的还是空 —— 于是 toast 说"已配平到 100%"，
-        // 界面上权重仍是 0、合计仍是红字。v1.3 报告里的 P2-1 就是这个。
-        var source = _exams.ToDictionary(x => x.Id, x => _weights.TryGetValue(x.Id, out var w) ? w : 0);
-        _weights = SchemeMath.AutoBalance(source);
-        Services.Exams.SetWeights(_scheme.Id, _weights);
-        RenderWeights();
-        DebouncedRecompute();
-        Shell?.Toast($"权重已配平，合计 {WeightSum * 100:0.#}%", 2);
-    }
-
     /// <summary>
     /// 从没设过权重时按场次均分。
     ///
-    /// 默认全 0 的话，导入完第一场考试，总评就只剩平时分，合计那行还是红的 0% ——
+    /// 默认全 0 的话，导入完第一场考试，总评就只剩平时分（权重合计 0，导出也按不了）——
     /// 老师的理解是"算错了"，而不是"这里要我自己填"。导入之后就把这一步做掉。
     /// </summary>
     private bool EnsureWeightsInitialized()
