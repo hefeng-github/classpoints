@@ -1929,6 +1929,15 @@ public sealed partial class DeskSettingsPage : Page
             // 「待推送 136 条」只会让人以为有东西卡住了。
             body.Children.Add(ValueRow("待推送", Services.Outbox.Count() + " 条"));
 
+            // 冲突从来不挡同步（挡了就等于永远同步不上），但"某个人的学号被让出去了"
+            // 会影响下次按学号导入名单，所以留一行让人能看见。
+            if (Services.Pump.Conflicts > 0)
+            {
+                body.Children.Add(ValueRow("已合并", $"{Services.Pump.Conflicts} 处重名或学号冲突",
+                    "两台设备各自用了同一个学号（或者同一句常用理由），同步时按云端为准合并了：人都在，" +
+                    "只是其中一条的学号或那条重复理由没有重复记。下次按学号导入名单时留意一眼。"));
+            }
+
             // 自动重配这件事必须写明：它意味着配对时输的那个密码留在了本机。
             // 不说清楚，等于偷偷存口令 —— 而这台机器是要摆在教室里的。
             body.Children.Add(Note(creds?.CanSelfRepair == true

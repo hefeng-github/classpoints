@@ -36,6 +36,9 @@ public sealed record SyncReport(
     /// <summary>这一轮是"连不上"（断网、超时），还是"连上了但服务端不满意"。两者话术不同。</summary>
     public bool Offline { get; init; }
 
+    /// <summary>拉取时有多少行因为本地唯一项撞车而按云端为准合并了（见 SyncService.Conflicts）。</summary>
+    public int Conflicts { get; init; }
+
     public static SyncReport Skipped(string reason) => new(false, reason, 0, 0, 0, 0, DateTime.Now);
 }
 
@@ -299,6 +302,7 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         if (credentials is null) return SyncReport.Skipped("还没配对");
 
         _busy = true;
+        Conflicts = 0;
         try
         {
             _client = new SyncClient(credentials.BaseUrl, credentials.Access);
@@ -393,6 +397,7 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
             return new SyncReport(pushError is null, pushError, pushed, outbox.Count(), pulled, next, DateTime.Now)
             {
                 ReadOnly = IsReadOnly,
+                Conflicts = Conflicts,
             };
         }
         catch (SyncException ex) when (ex.IsAuthFailure)
@@ -551,6 +556,14 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
     // ---------------- 落库 ----------------
 
     /// <summary>
+    /// 这一轮里有多少行因为「本地唯一索引」撞车而按云端为准合并了。
+    ///
+    /// 为什么要计数而不是静默跳过：跳过本身是对的（不然整页事务回滚、游标永远不动），
+    /// 但"某人的学号被让出去了"这种事老师有权知道 —— 下次导入名单时会按学号找人对不上。
+    /// </summary>
+    public int Conflicts { get; private set; }
+
+    /// <summary>
     /// 把一页 /sync 写进本地库。顺序有讲究：先父后子，否则外键会挡。
     /// 整页一个事务：拉到一半断电，游标也不会先跑。
     /// </summary>
@@ -558,6 +571,7 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
     {
         hasMore = batch["hasMore"]?.GetValue<bool>() ?? false;
         var applied = 0;
+
 
         using var conn = db.Open();
         using var tx = conn.BeginTransaction();
@@ -609,24 +623,51 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         return n;
     }
 
-    private static int ApplyStudents(SqliteConnection conn, SqliteTransaction tx, JsonArray rows)
+    private int ApplyStudents(SqliteConnection conn, SqliteTransaction tx, JsonArray rows)
     {
         var n = 0;
         foreach (var row in rows)
         {
             if (row is not JsonObject o) continue;
-            Database.Exec(conn, tx, """
-                INSERT INTO students (id, name, student_no, seat_no, active, rev, updated_at, deleted_at, created_at)
-                VALUES ($id, $name, $no, $seat, $active, $rev, $updated, $deleted, $created)
-                ON CONFLICT(id) DO UPDATE SET
-                  name = excluded.name, student_no = excluded.student_no, seat_no = excluded.seat_no,
-                  active = excluded.active, rev = excluded.rev,
-                  updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
-                """,
-                ("$id", S(o, "id")), ("$name", S(o, "name")), ("$no", S(o, "student_no")),
-                ("$seat", L(o, "seat_no")), ("$active", B(o, "active")),
-                ("$rev", L(o, "rev")), ("$updated", L(o, "updated_at")), ("$deleted", L(o, "deleted_at")),
-                ("$created", L(o, "created_at")));
+            try
+            {
+                Database.Exec(conn, tx, """
+                    INSERT INTO students (id, name, student_no, seat_no, active, rev, updated_at, deleted_at, created_at)
+                    VALUES ($id, $name, $no, $seat, $active, $rev, $updated, $deleted, $created)
+                    ON CONFLICT(id) DO UPDATE SET
+                      name = excluded.name, student_no = excluded.student_no, seat_no = excluded.seat_no,
+                      active = excluded.active, rev = excluded.rev,
+                      updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
+                    """,
+                    ("$id", S(o, "id")), ("$name", S(o, "name")), ("$no", S(o, "student_no")),
+                    ("$seat", L(o, "seat_no")), ("$active", B(o, "active")),
+                    ("$rev", L(o, "rev")), ("$updated", L(o, "updated_at")), ("$deleted", L(o, "deleted_at")),
+                    ("$created", L(o, "created_at")));
+            }
+            catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
+            {
+                // 学号撞了：两台机器各自导入名单时，同一个学号会落到两个不同的 id 上。
+                // 本地 uq_students_no 是唯一的，硬插会让**整页**事务回滚 —— 于是每一轮都
+                // 从这一页开始重新失败，游标永远不动，界面上只有"同步失败"四个字。
+                // 处理原则：云端是权威 —— 学号归它，本地占着这个学号的那一行让出来。
+                // 只让学号，不让人：两个学生都还在，只是其中一个没有学号了。
+                Database.Exec(conn, tx,
+                    "UPDATE students SET student_no = NULL WHERE student_no = $no AND id <> $id",
+                    ("$no", S(o, "student_no")), ("$id", S(o, "id")));
+                Database.Exec(conn, tx, """
+                    INSERT INTO students (id, name, student_no, seat_no, active, rev, updated_at, deleted_at, created_at)
+                    VALUES ($id, $name, $no, $seat, $active, $rev, $updated, $deleted, $created)
+                    ON CONFLICT(id) DO UPDATE SET
+                      name = excluded.name, student_no = excluded.student_no, seat_no = excluded.seat_no,
+                      active = excluded.active, rev = excluded.rev,
+                      updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
+                    """,
+                    ("$id", S(o, "id")), ("$name", S(o, "name")), ("$no", S(o, "student_no")),
+                    ("$seat", L(o, "seat_no")), ("$active", B(o, "active")),
+                    ("$rev", L(o, "rev")), ("$updated", L(o, "updated_at")), ("$deleted", L(o, "deleted_at")),
+                    ("$created", L(o, "created_at")));
+                Conflicts++;
+            }
             n++;
         }
         return n;
@@ -681,23 +722,34 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         return n;
     }
 
-    private static int ApplyNotes(SqliteConnection conn, SqliteTransaction tx, JsonArray rows)
+    private int ApplyNotes(SqliteConnection conn, SqliteTransaction tx, JsonArray rows)
     {
         var n = 0;
         foreach (var row in rows)
         {
             if (row is not JsonObject o) continue;
-            Database.Exec(conn, tx, """
-                INSERT INTO note_templates (id, text, use_count, last_used_at, archived_at, rev, updated_at, deleted_at)
-                VALUES ($id, $text, $count, $last, $archived, $rev, $updated, $deleted)
-                ON CONFLICT(id) DO UPDATE SET
-                  text = excluded.text, use_count = excluded.use_count, last_used_at = excluded.last_used_at,
-                  archived_at = excluded.archived_at, rev = excluded.rev, updated_at = excluded.updated_at,
-                  deleted_at = excluded.deleted_at
-                """,
-                ("$id", S(o, "id")), ("$text", S(o, "text")), ("$count", L(o, "use_count") ?? 1),
-                ("$last", L(o, "last_used_at")), ("$archived", L(o, "archived_at")), ("$rev", L(o, "rev") ?? 1),
-                ("$updated", L(o, "updated_at")), ("$deleted", L(o, "deleted_at")));
+            try
+            {
+                Database.Exec(conn, tx, """
+                    INSERT INTO note_templates (id, text, use_count, last_used_at, archived_at, rev, updated_at, deleted_at)
+                    VALUES ($id, $text, $count, $last, $archived, $rev, $updated, $deleted)
+                    ON CONFLICT(id) DO UPDATE SET
+                      text = excluded.text, use_count = excluded.use_count, last_used_at = excluded.last_used_at,
+                      archived_at = excluded.archived_at, rev = excluded.rev, updated_at = excluded.updated_at,
+                      deleted_at = excluded.deleted_at
+                    """,
+                    ("$id", S(o, "id")), ("$text", S(o, "text")), ("$count", L(o, "use_count") ?? 1),
+                    ("$last", L(o, "last_used_at")), ("$archived", L(o, "archived_at")), ("$rev", L(o, "rev") ?? 1),
+                    ("$updated", L(o, "updated_at")), ("$deleted", L(o, "deleted_at")));
+            }
+            catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
+            {
+                // 两台机器各自攒了一句同样的话（「作业未交」这种），云端给了两个 id，
+                // 本地 uq_note_text 只认文本。文本一样就是同一个意思 —— 留着已有的那条即可，
+                // 不能让这一行把整页拉取拖住。
+                Conflicts++;
+                continue;
+            }
             n++;
         }
         return n;

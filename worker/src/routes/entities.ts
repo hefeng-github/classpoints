@@ -254,13 +254,59 @@ export async function upsertEntity(env: Env, request: Request, rawEntity: string
   const sql = `INSERT INTO ${spec.table} (${names.join(', ')}) VALUES (${placeholders})
                ON CONFLICT(id) DO UPDATE SET ${updates}${spec.hasRev ? ', rev = excluded.rev' : ''}${guard}`;
 
-  const results = await env.DB.batch([
-    env.DB.prepare(sql).bind(...values),
-    changeStmt(env.DB, claims.cid, spec.entity, id, 'upsert', at),
-  ]);
+  const results = await write(env, claims.cid, id, at, values, sql, cols, spec);
 
-  const applied = (results[0].meta?.changes ?? 0) > 0;
-  return json({ ok: true, id, applied, rev: incomingRev, classId: claims.cid }, applied ? 200 : 200);
+  const applied = (results.meta?.changes ?? 0) > 0;
+  return json({ ok: true, id, applied, rev: incomingRev, classId: claims.cid, ...results.note });
+}
+
+/**
+ * 写一行，并处理"唯一索引撞车"这一类必然会发生的事：
+ *
+ * - students.student_no：两台设备各自导入名单时，同一个学号会落到两个不同的 id 上。
+ *   硬写就是 UNIQUE 约束错误 → 500 → 客户端把它当 5xx 无限退避重试，
+ *   那条学生永远上不了云，界面上只有一句"同步失败"。
+ *   处理原则是**人比学号重要**：人照样进来，学号让出来（它只是导入时的对号线索）。
+ * - note_templates.text：两台机器各自攒了同一句「作业未交」。文本一样就是同一条，
+ *   留着已有的那条、这次当作已处理（不能 500，也不能 422 —— 422 会让客户端把它丢掉，
+ *   结果一样是"这句没上云"）。
+ */
+async function write(
+  env: Env,
+  classId: string,
+  id: string,
+  at: number,
+  values: (string | number | null)[],
+  sql: string,
+  cols: Col[],
+  spec: Spec,
+): Promise<{ meta?: { changes?: number }; note: Record<string, unknown> }> {
+  const change = changeStmt(env.DB, classId, spec.entity, id, 'upsert', at);
+  try {
+    const out = await env.DB.batch([env.DB.prepare(sql).bind(...values), change]);
+    return { meta: out[0].meta as { changes?: number }, note: {} };
+  } catch (err) {
+    const message = String((err as { message?: string })?.message ?? err);
+    if (!/UNIQUE constraint failed/i.test(message)) throw err;
+
+    if (spec.entity === 'students') {
+      const idx = cols.findIndex((c) => c.col === 'student_no');
+      if (idx >= 0) {
+        // values = [id, class_id, ...cols]
+        const relaxed = [...values];
+        relaxed[2 + idx] = null;
+        const out = await env.DB.batch([env.DB.prepare(sql).bind(...relaxed), change]);
+        return { meta: out[0].meta as { changes?: number }, note: { studentNoDropped: true } };
+      }
+    }
+
+    if (spec.entity === 'note_templates') {
+      // 文本已经有一条一模一样的：这次不写，但算它处理过了
+      return { note: { deduped: true } };
+    }
+
+    throw err;
+  }
 }
 
 /** 各场考试的权重：一次换掉，不是逐条改 */

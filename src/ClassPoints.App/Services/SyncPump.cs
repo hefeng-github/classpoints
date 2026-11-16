@@ -24,6 +24,9 @@ public sealed class SyncPump(AppServices services)
     public int LastPushed { get; private set; }
     public int LastPulled { get; private set; }
 
+    /// <summary>拉取时按云端为准合并掉的行数（学号/标签重名）。只在设置页露出来，不打扰记分。</summary>
+    public int Conflicts { get; private set; }
+
     /// <summary>云端不认这台机器的凭据了。界面据此给"重新配对"的入口 —— 这条路只能人来走。</summary>
     public bool NeedsPairing { get; private set; }
 
@@ -131,6 +134,7 @@ public sealed class SyncPump(AppServices services)
 
             LastPushed += report.Pushed;
             LastPulled += report.Pulled;
+            Conflicts += report.Conflicts;
 
             // 状态条上的"本机存储 / 已同步 / 离线"不能各页面各猜一套：
             // 以前三处各存一份判断，结果设置页说"已连接"、侧栏说"本机存储"。

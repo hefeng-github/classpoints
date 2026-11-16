@@ -296,6 +296,19 @@ const aNo01 = await call('POST', '/students', {
   body: { action: 'upsert', student: { id: uuid(), name: '学号一班', studentNo: '01', active: true, rev: 1, createdAt: now, updatedAt: now } },
 });
 check('A 班先占住学号 01', aNo01.status === 200 && aNo01.data?.applied === true, JSON.stringify(aNo01.data));
+
+// 同一个班里第二个人也用 01：两台设备各自导入名单时一定会发生。
+// 以前这里 500（UNIQUE 约束透出来），客户端当 5xx 无限退避 —— 那条学生永远上不了云。
+const aNo01Dup = await call('POST', '/students', {
+  token: access,
+  body: { action: 'upsert', student: { id: uuid(), name: '学号重复', studentNo: '01', active: true, rev: 1, createdAt: now, updatedAt: now } },
+});
+check('同学的学号撞车不算失败：人进来、学号让出',
+  aNo01Dup.status === 200 && aNo01Dup.data?.applied === true && aNo01Dup.data?.studentNoDropped === true,
+  JSON.stringify(aNo01Dup.data));
+const dupRow = ((await call('GET', '/sync?since=0&limit=500', { token: access })).data?.students ?? [])
+  .find((s) => s.name === '学号重复');
+check('撞车那条落库了，只是没有学号', dupRow !== undefined && dupRow.student_no === null, JSON.stringify(dupRow));
 const bNo01 = await call('POST', '/students', {
   token: accessB,
   body: { action: 'upsert', student: { id: uuid(), name: '学号二班', studentNo: '01', active: true, rev: 1, createdAt: now, updatedAt: now } },

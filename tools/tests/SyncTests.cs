@@ -118,6 +118,35 @@ internal static class SyncTests
         check("积分合计对得上", pulledEntries.Sum(e => e.Delta) == 15, pulledEntries.Sum(e => e.Delta).ToString());
         check("规则拉过来了", b.Rules.ListAll().Any(r => r.Label == "回答问题"));
 
+        // ---- 本地学号撞车：不许把整页拉取拖死 ----
+        // 两台设备各自导入名单，同一个学号会落到两个不同的 id 上。以前这种行一插就撞
+        // uq_students_no，整页事务回滚、游标不动，界面上只剩"同步失败"四个字 ——
+        // 而且每一轮都从同一页重新失败，永远好不了。
+        var numbered = a.Students.Get(students[0].Id)!;
+        numbered.StudentNo = "01";
+        a.Students.Update(numbered);
+        var pushNo = await a.Sync.RunOnceAsync();
+        check("学号推送成功", pushNo.Ok, pushNo.Error ?? "");
+
+        using (var connSeed = b.Db.Open())
+            Database.Exec(connSeed, """
+                INSERT INTO students (id, name, student_no, active, rev, updated_at, created_at)
+                VALUES ('local_dup', '本地插班生', '01', 1, 1, $now, $now)
+                """, ("$now", Clock.NowMs()));
+
+        var pullClash = await b.Sync.RunOnceAsync();
+        check("学号撞车时整页照样落库（不是同步失败）", pullClash.Ok, pullClash.Error ?? "");
+        check("撞车算进「已合并」，不是静默跳过", pullClash.Conflicts >= 1, pullClash.Conflicts.ToString());
+        var clashRows = b.Students.ListAll(true).Where(x => x.Id == students[0].Id || x.Id == "local_dup").ToList();
+        check("两个学生都还在（只是学号只归一个人）", clashRows.Count == 2, clashRows.Count.ToString());
+        check("学号归云端那一行（云端是权威）",
+            clashRows.FirstOrDefault(x => x.Id == students[0].Id)?.StudentNo == "01",
+            clashRows.FirstOrDefault(x => x.Id == students[0].Id)?.StudentNo ?? "null");
+
+        var pullAgain = await b.Sync.RunOnceAsync();
+        check("同一处冲突不会每轮都算一次（第二次为 0）",
+            pullAgain.Ok && pullAgain.Conflicts == 0, $"ok={pullAgain.Ok} conflicts={pullAgain.Conflicts}");
+
         // ---- 凭据被别处换掉：不问人，自己重配回来 ----
         // 现场就是这种情况：同一份数据目录被两台机器用，先续期的那台把后一台的
         // refresh token 顶掉。以前只能弹"请重新配对"，老师得停下去输十分钟前才输过的密码。
