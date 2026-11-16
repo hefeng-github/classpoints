@@ -427,6 +427,8 @@ public sealed partial class BoardShell : UserControl, IShellHost
         if (Session.IsAdmin)
         {
             Session.ExitAdmin();
+            // 退出管理态回到记分台：只有管理态能进的页面留着会全是灰按钮
+            Navigate(AppNav.Score);
             Toast("已退出管理模式（身份保留）");
             IdentityChip.Refresh();
             return true;
@@ -435,6 +437,8 @@ public sealed partial class BoardShell : UserControl, IShellHost
         var ok = await AskPinAsync("切换身份", "输入谁的密码，就按谁的身份记分", requireManager: false);
         if (!ok) return false;
 
+        // 换了人回记分台：换了身份之后，上一页的内容和权限都不是这个人的了
+        Navigate(AppNav.Score);
         Toast($"当前身份：{Session.IdentityText}");
         return true;
     }

@@ -350,6 +350,9 @@ public sealed partial class DeskShell : UserControl, IShellHost
         if (Session.IsAdmin)
         {
             Session.ExitAdmin();
+            // 退出管理态就别停在只有管理态能进的页面上（设置/考试/周期）。
+            // 留在那儿，页面内容还是刚才的，按钮已经点不动，比空白更让人迷惑。
+            Navigate(AppNav.Score);
             Toast("已退出管理模式（身份保留）");
             return true;
         }
@@ -357,6 +360,9 @@ public sealed partial class DeskShell : UserControl, IShellHost
         var ok = await AskPinAsync("切换身份", "输入谁的密码，就按谁的身份记分", requireManager: false);
         if (!ok) return false;
 
+        // 换了人送回记分台：名单、考试、设置这些页面都是按身份说话的，
+        // 停在原地看着像"还是刚才那个人"，点下去才发现什么都改不了。
+        Navigate(AppNav.Score);
         Toast($"当前身份：{Session.IdentityText}");
         return true;
     }
@@ -368,6 +374,9 @@ public sealed partial class DeskShell : UserControl, IShellHost
         var name = Session.Current.DisplayName;
         Session.SignOut();
         RefreshChrome();
+        // 退出身份回记分台（桌面端的主页）。停在设置这类按身份放行的页面上，
+        // 内容还是上一个人的、操作已经全部失效 —— 一眼看不出"我已经不是我了"。
+        Navigate(AppNav.Score);
         Toast($"{name} 已退出，下次记分要重新认人", 5);
     }
 
