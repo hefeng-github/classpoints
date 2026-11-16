@@ -52,7 +52,10 @@ public sealed partial class DeskExamsPage : Page
             _students = Services.Students.ListActive();
             _termPoints = Services.Entries.CumulativeTotals();
 
-            WeightSlider.Value = _scheme.ExamPercent;
+            // 滑块代表「平时分的占比」：填充段就是平时那一段，剩下的才是考试。
+            // 以前这里存的是考试占比，于是"平时 20%"旁边却拉着一条 80% 长的填充 ——
+            // 点跑到了 80% 的位置，看着就是平时和考试反了。
+            WeightSlider.Value = _scheme.DailyPercent;
 
             _loading = false;
 
@@ -247,7 +250,10 @@ public sealed partial class DeskExamsPage : Page
 
         var examPercent = _scheme.ExamPercent;
         var dailyPercent = 100 - examPercent;
-        if (System.Math.Abs(WeightSlider.Value - examPercent) > 0.01) WeightSlider.Value = examPercent;
+        // 滑块的值是"平时占比"，和左边那个标签同一个数。
+        // 用考试占比做值的话，填充段会一路长到考试那一侧，而它紧挨着的却是「平时 20%」——
+        // 这就是"平时和考试的位置反了"的来源。
+        if (System.Math.Abs(WeightSlider.Value - dailyPercent) > 0.01) WeightSlider.Value = dailyPercent;
         DailyWeightLabel.Text = $"平时 {dailyPercent}%";
         ExamWeightLabel.Text = $"考试 {examPercent}%";
 
@@ -362,15 +368,16 @@ public sealed partial class DeskExamsPage : Page
     {
         if (_loading) return;
 
-        var exam = (int)System.Math.Round(WeightSlider.Value / 5) * 5;
-        exam = System.Math.Clamp(exam, 0, 100);
-        _scheme.ExamWeight = exam / 100.0;
-        _scheme.DailyWeight = 1 - _scheme.ExamWeight;
+        // 滑块量的是平时分占比（填充段 = 平时那一段），剩下自动归考试。
+        var daily = (int)System.Math.Round(WeightSlider.Value / 5) * 5;
+        daily = System.Math.Clamp(daily, 0, 100);
+        _scheme.DailyWeight = daily / 100.0;
+        _scheme.ExamWeight = 1 - _scheme.DailyWeight;
 
         _loading = true;
-        if (System.Math.Abs(WeightSlider.Value - exam) > 0.01) WeightSlider.Value = exam;
-        DailyWeightLabel.Text = $"平时 {100 - exam}%";
-        ExamWeightLabel.Text = $"考试 {exam}%";
+        if (System.Math.Abs(WeightSlider.Value - daily) > 0.01) WeightSlider.Value = daily;
+        DailyWeightLabel.Text = $"平时 {daily}%";
+        ExamWeightLabel.Text = $"考试 {100 - daily}%";
         _loading = false;
 
         Services.Exams.SaveScheme(_scheme);

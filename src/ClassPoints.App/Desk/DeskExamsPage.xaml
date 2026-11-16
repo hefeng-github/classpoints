@@ -62,7 +62,7 @@
                 <StackPanel Spacing="14">
                     <StackPanel Spacing="2">
                         <TextBlock Text="权重" Style="{StaticResource DeskH2Text}" />
-                        <TextBlock Text="拖动中间的点：往左是平时分多，往右是考试成绩多。"
+                        <TextBlock Text="拖动中间的点：圆点左边是平时分，右边是考试成绩。"
                                    Style="{StaticResource DeskSecondaryText}" />
                     </StackPanel>
 
