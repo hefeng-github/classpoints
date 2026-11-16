@@ -74,6 +74,8 @@ internal static class Program
         SeatSheetTests.Run(Check);
         Section("同步凭据");
         SyncStoreTests.Run(Check);
+        Section("本机重置");
+        ResetTests.Run(Check);
         Section("数据目录");
         DataPathTests.Run(Check);
         Section("设备特征码");

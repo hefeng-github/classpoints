@@ -467,4 +467,44 @@ public sealed class Database
         using var conn = Open();
         Exec(conn, Sql.SyncStateSet, ("$key", key), ("$value", value));
     }
+
+    /// <summary>
+    /// 就地把库清成"没初始化过"：所有表/视图删掉、结构版本归零，下次 <see cref="Initialize"/> 重新建表 + 播种。
+    ///
+    /// 这是「本机重置」的兜底方案：库文件被别的进程占着（另一份安装同时开着、杀软正在扫）时，
+    /// 删不掉也改不了名，但 SQL 还能写。文件名留着，内容和刚装好的一样 —— 对老师来说结果没区别。
+    /// </summary>
+    public void WipeInPlace()
+    {
+        using var conn = Open();
+
+        // 先关外键约束再删表，否则删到被引用的那张就停下（子表反而留着）
+        Exec(conn, "PRAGMA foreign_keys = OFF;");
+
+        // 删掉的内容就地覆盖，别让它以旧页的形式留在空闲页里 —— "清空"就该是清空
+        Exec(conn, "PRAGMA secure_delete = ON;");
+
+        var drops = new List<string>();
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText =
+                "SELECT type, name FROM sqlite_master " +
+                "WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                var kind = reader.GetString(0) == "view" ? "VIEW" : "TABLE";
+                var name = reader.GetString(1).Replace("\"", "\"\"");
+                drops.Add($"DROP {kind} IF EXISTS \"{name}\";");
+            }
+        }
+
+        foreach (var sql in drops) Exec(conn, sql);
+
+        Exec(conn, "PRAGMA user_version = 0;");
+
+        // WAL 里可能还压着旧页；截断掉，别让下一次启动把它们恢复回来
+        try { Exec(conn, "PRAGMA wal_checkpoint(TRUNCATE);"); }
+        catch (Exception) { /* 有别的读连接时截断会失败，不影响"表已删光"这个结论 */ }
+    }
 }

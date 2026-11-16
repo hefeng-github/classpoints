@@ -374,6 +374,7 @@ public sealed partial class MainWindow : Window
     public void ResetLocalAndRestart()
     {
         var dbPath = Services.Db.DbPath;
+        var removed = false;
 
         try
         {
@@ -383,23 +384,32 @@ public sealed partial class MainWindow : Window
                 var path = dbPath + suffix;
                 if (File.Exists(path)) File.Delete(path);
             }
+            removed = true;
         }
         catch (Exception ex)
         {
+            // 文件被别的进程占着（同一份数据开了两个窗口、杀软正在扫）就删不掉，改名字一样会失败。
+            // 这时退一步：把库就地清空 —— 表全删、结构版本归零，下次启动重新建表 + 播种。
+            // 文件名还在，但对老师来说结果完全一样：打开就是刚装好的样子。
             Services.LogError("reset-local", ex);
-
-            // 删不掉就改名让它消失：下次启动会新建一个空库，旧文件留在旁边由人取舍
             try
             {
-                File.Move(dbPath, dbPath + ".old-" + DateTime.Now.ToString("yyyyMMdd-HHmmss"), overwrite: true);
+                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+                Services.Db.WipeInPlace();
             }
-            catch (Exception moveError)
+            catch (Exception wipe)
             {
-                Services.LogError("reset-local-move", moveError);
-                throw;
+                Services.LogError("reset-local-wipe", wipe);
+                throw;   // 两条路都断了才真的没辙，交给调用方报给用户
             }
         }
 
+        // 库清干净了，旧配对也得断：否则新班级会顶着旧班级码去同步，
+        // 一启动就把云端的名单拉回来，"重置"看起来等于没重置。
+        try { Services.Sync.SignOut(); }
+        catch (Exception ex) { Services.LogError("reset-local-sync", ex); }
+
+        Services.Log(removed ? "本机重置：库文件已删除" : "本机重置：库文件占用中，已就地清空");
         Relaunch();
     }
 

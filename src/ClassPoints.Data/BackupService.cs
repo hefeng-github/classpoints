@@ -148,7 +148,7 @@ public sealed class BackupService(Database db)
             catch (Exception) { /* 快照失败不影响数据库副本，副本才是命根子 */ }
         }
 
-        var entries = Convert.ToInt32(Database.Scalar(OpenRead(), "SELECT COUNT(*) FROM entries"));
+        var entries = CountEntries();
         using (var conn = db.Open())
             Database.Exec(conn,
                 "INSERT INTO backups (at, path, entry_count, ok) VALUES ($at, $p, $c, 1)",
@@ -430,9 +430,8 @@ public sealed class BackupService(Database db)
         try
         {
             VacuumInto(tmpDb);
-            var entryCount = Convert.ToInt32(Database.Scalar(OpenRead(), "SELECT COUNT(*) FROM entries"));
-            var studentCount = Convert.ToInt32(Database.Scalar(OpenRead(),
-                "SELECT COUNT(*) FROM students WHERE deleted_at IS NULL"));
+            var entryCount = CountEntries();
+            var studentCount = CountStudents();
             var sha = Crypto.Sha256Hex(File.ReadAllBytes(tmpDb));
 
             var manifest = new JsonObject
@@ -569,6 +568,25 @@ public sealed class BackupService(Database db)
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT COUNT(*) FROM entries";
         return Convert.ToInt32(cmd.ExecuteScalar());
+    }
+
+    /// <summary>
+    /// 数条数用的读连接**必须用完就关**。
+    /// 以前写成 `Database.Scalar(OpenRead(), …)`，连接对象随手丢掉、没人 Dispose：
+    /// 它就一直挂在池子里算"使用中"，连 ClearAllPools 都收不回来 ——
+    /// 于是「本机重置」删库时永远报"文件正被另一进程使用"（2026-11-16 的报障）。
+    /// </summary>
+    private int CountEntries()
+    {
+        using var conn = OpenRead();
+        return Convert.ToInt32(Database.Scalar(conn, "SELECT COUNT(*) FROM entries"));
+    }
+
+    private int CountStudents()
+    {
+        using var conn = OpenRead();
+        return Convert.ToInt32(Database.Scalar(conn,
+            "SELECT COUNT(*) FROM students WHERE deleted_at IS NULL"));
     }
 
     private SqliteConnection OpenRead() => db.Open();
