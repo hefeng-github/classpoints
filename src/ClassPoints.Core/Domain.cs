@@ -90,6 +90,20 @@ public static class MemberRoleNames
 
     /// <summary>这个角色能不能进管理模式。班主任和班长都可以，班委只能记分。</summary>
     public static bool CanManage(this MemberRole r) => r is MemberRole.Owner or MemberRole.CoOwner;
+
+    /// <summary>
+    /// 「管理密码」这道门槛，对这个身份还算不算数。
+    ///
+    /// 电脑端开机就以班主任身份进来（DeskShell.EnsureDefaultIdentity），
+    /// 然后再让他为了改名单输一遍同一个密码 —— 没有任何防护价值，
+    /// 只会把密码逼到写成便签贴在显示器边框上（真事）。
+    /// 大屏端不一样：机器摆在教室里，谁都能站在跟前点，所以那边一律要验。
+    ///
+    /// 注意这**只**免掉"你已经是管理者了吗"这一问；换人（切换身份）仍旧要输密码，
+    /// 因为那是"你是谁"的问题，不是"你有没有权限"。
+    /// </summary>
+    public static bool SkipsManagerPin(this MemberRole r, bool onDeskMachine) =>
+        onDeskMachine && r.CanManage();
 }
 
 public sealed class Student

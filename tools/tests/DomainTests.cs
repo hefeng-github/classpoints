@@ -41,6 +41,13 @@ internal static class DomainTests
         C("成员身份文案带角色",
             new Member { DisplayName = "李明", Role = MemberRole.CoOwner }.IdentityText == "李明 · 班长");
 
+        // ---- 管理密码这道门槛：电脑端认过的管理者不用再输，大屏永远要验 ----
+        C("电脑端：班主任不再输管理密码", MemberRole.Owner.SkipsManagerPin(onDeskMachine: true));
+        C("电脑端：班长同样不再输", MemberRole.CoOwner.SkipsManagerPin(onDeskMachine: true));
+        C("电脑端：班委该输还得输", !MemberRole.Officer.SkipsManagerPin(onDeskMachine: true));
+        C("大屏端：班主任照样要输", !MemberRole.Owner.SkipsManagerPin(onDeskMachine: false));
+        C("大屏端：班长照样要输", !MemberRole.CoOwner.SkipsManagerPin(onDeskMachine: false));
+
         // ---- 配置包：名单与管理密码都要能带 ----
         var bundle = new ConfigBundle
         {

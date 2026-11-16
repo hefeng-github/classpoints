@@ -700,6 +700,7 @@ public sealed partial class DeskSettingsPage : Page
 
         body.Children.Add(Labelled("管理模式密码",
             Wrap(setPin, ValueText(owner?.HasPin == true ? "已设置" : "未设置"))));
+        body.Children.Add(Note("电脑端已经认出班主任/班长就不再问；大屏每次进管理模式都要输。"));
 
         // 恢复码的明文只在"生成的那一次"存在，所以：
         // ① 生成后必须能立刻存下来（教室里找不到笔的那次就白生成了）；

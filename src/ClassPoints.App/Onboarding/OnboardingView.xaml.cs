@@ -1084,7 +1084,7 @@ public sealed partial class OnboardingView : UserControl
         {
             Text = _pinFromBundle
                 ? "配置包里已有管理密码，留空即沿用；如需更换在此重设。"
-                : "进入管理模式时输入。班主任与班长可管理，班委只能记分。",
+                : "大屏上进管理模式时要输它；电脑端认出班主任/班长后就不再问，班委只能记分。",
             Style = Styled("SmallText"),
         });
 

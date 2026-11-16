@@ -390,6 +390,14 @@ public sealed partial class DeskShell : UserControl, IShellHost
             return Task.FromResult(false);
         }
 
+        // 电脑端已经认出班主任/班长了，就不再问管理密码。
+        // 这台机器一开机就是班主任身份（见 EnsureDefaultIdentity），让他为了改名单
+        // 再输一遍同一个密码，只会把密码逼成显示器边上的便利贴。
+        // 大屏端（BoardShell）照旧要验 —— 那台机器放在教室里，谁都够得着。
+        // 换人也不走这条路：切换身份用的是 requireManager: false，仍旧要输密码。
+        if (requireManager && Session.Current is { } me && me.Role.SkipsManagerPin(onDeskMachine: true))
+            return Task.FromResult(true);
+
         var tcs = new TaskCompletionSource<bool>();
 
         // 密码框开着的时候也收卡：卡本身就是身份凭证，班委没必要为了记一次分背一串数字。
