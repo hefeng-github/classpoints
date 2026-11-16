@@ -33,6 +33,24 @@ internal static class SyncStoreTests
             check("access 不落盘（只在内存里活 12 小时）", !raw.Contains("access-in-memory"), "");
             check("默认不是只读", loaded?.ReadOnly == false, loaded?.ReadOnly.ToString() ?? "null");
 
+            // ---------------- 自动重配用的口令 ----------------
+            // 口令必须跟着凭据一起存活：凭据被云端换掉之后，能自己接上的前提是
+            // "班级码 + 口令"都还在手上。老文件没有这项，就只能手动重配。
+            new SyncStore(path).Save(new SyncCredentials(
+                "https://sync.example.com", "cid-1", "a", "refresh-9", "ABC12345")
+            {
+                Secret = "246810",
+                Kind = "board",
+            });
+            var withSecret = new SyncStore(path).Load();
+            check("口令能存回来（自动重配靠它）", withSecret?.Secret == "246810", withSecret?.Secret ?? "null");
+            check("设备类型能存回来（重配要原样再报一次）", withSecret?.Kind == "board", withSecret?.Kind ?? "null");
+            check("存了口令才算能自愈", withSecret?.CanSelfRepair == true, "");
+            check("口令也是密文落盘", !File.ReadAllText(path).Contains("246810"), "");
+
+            // 老版本写出来的文件里没有 pairSecret：不能因此崩，只能退化成手动重配
+            // （具体验证放在下面那段"老文件"里一起做，那边已经把文件改造成老格式了）
+
             // 只读标记必须落盘：重启后界面不能又从"待审核"跳回"可写"，
             // 否则老师会在一个根本没权限的界面上改半天，最后发现一条都没同步上去。
             new SyncStore(path).Save(new SyncCredentials(
@@ -43,13 +61,27 @@ internal static class SyncStoreTests
             // 做法是把新文件里的 readOnly 行删掉，其余原样保留（refresh 仍是密文）。
             var legacyPath = Path.Combine(dir, "legacy.json");
             new SyncStore(legacyPath).Save(new SyncCredentials(
-                "https://sync.example.com", "cid-1", "a", "refresh-3", "ABC12345", ReadOnly: true));
+                "https://sync.example.com", "cid-1", "a", "refresh-3", "ABC12345", ReadOnly: true)
+            {
+                Secret = "246810",
+            });
             File.WriteAllLines(legacyPath,
                 File.ReadAllLines(legacyPath).Where(line => !line.Contains("\"readOnly\"")));
             var legacy = new SyncStore(legacyPath).Load();
             check("老文件没有 readOnly 字段时按可写处理（不误伤老设备）",
                 legacy?.ReadOnly == false && legacy.Refresh == "refresh-3",
                 $"readOnly={legacy?.ReadOnly} refresh={(legacy is null ? "null" : "ok")}");
+
+            // 升级前的文件里既没有 readOnly 也没有 pairSecret：这类机器不该自己乱试口令
+            var oldPath = Path.Combine(dir, "old.json");
+            new SyncStore(oldPath).Save(new SyncCredentials(
+                "https://sync.example.com", "cid-1", "a", "refresh-4", "ABC12345") { Secret = "246810" });
+            File.WriteAllLines(oldPath,
+                File.ReadAllLines(oldPath).Where(line => !line.Contains("\"pairSecret\"")));
+            var old = new SyncStore(oldPath).Load();
+            check("升级前的文件没有口令时不许自己重配（只能人来）",
+                old is not null && old.Secret.Length == 0 && !old.CanSelfRepair && old.Refresh == "refresh-4",
+                $"secretLen={old?.Secret.Length} can={old?.CanSelfRepair}");
 
             // 文件不存在 = 没配对，不是异常
             check("没有文件时返回 null", new SyncStore(Path.Combine(dir, "absent.json")).Load() is null, "");

@@ -13,8 +13,7 @@ public sealed record SyncReport(
     int Pulled,
     long Next,
     DateTime At)
-{
-    /// <summary>建班时把班级码回传给向导显示，其余场景为 null。</summary>
+{    /// <summary>建班时把班级码回传给向导显示，其余场景为 null。</summary>
     public string? CreatedCode { get; init; }
 
     /// <summary>本轮之后是不是只读（待审设备）。true = 能看不能写。</summary>
@@ -31,10 +30,93 @@ public sealed record SyncReport(
     /// </summary>
     public bool NeedsPairing { get; init; }
 
+    /// <summary>凭据失效的成因。三种成因的提示语完全不同，见 <see cref="Sync.PairingReason"/>。</summary>
+    public PairingReason Reason { get; init; }
+
     /// <summary>这一轮是"连不上"（断网、超时），还是"连上了但服务端不满意"。两者话术不同。</summary>
     public bool Offline { get; init; }
 
     public static SyncReport Skipped(string reason) => new(false, reason, 0, 0, 0, 0, DateTime.Now);
+}
+
+/// <summary>
+/// refresh 被云端拒掉的原因。服务端把三种情况分开报（`bad_refresh` / `refresh_expired` /
+/// `device_revoked`），客户端也要分开说 —— 老师该做的事完全不同：
+/// 被别处轮换要查"是不是两台电脑共用了一份数据"，过期只是时间到了，被撤销得找班主任。
+/// </summary>
+public enum PairingReason
+{
+    None,
+
+    /// <summary>token 认不出来：多半是同一份 sync.json 被复制到了另一台机器，那边续期把它换掉了。</summary>
+    Rotated,
+
+    /// <summary>90 天没续期，自然过期。</summary>
+    Expired,
+
+    /// <summary>设备被班主任从白名单里撤销，或整班重置过。</summary>
+    Revoked,
+
+    /// <summary>自动重配时云端说口令不对 —— 老师改过密码，本机存的那份过期了。</summary>
+    SecretRejected,
+
+    /// <summary>班级码在云端已经不存在（整班注销，或者换了另一个部署）。</summary>
+    ClassGone,
+
+    /// <summary>云端拒绝但没说清原因。</summary>
+    Unknown,
+}
+
+public static class PairingReasonTexts
+{
+    public static string Title(this PairingReason reason) => reason switch
+    {
+        PairingReason.Rotated => "同步凭据被换掉了",
+        PairingReason.Expired => "同步凭据过期了",
+        PairingReason.Revoked => "这台设备已被撤销",
+        PairingReason.SecretRejected => "管理密码改过了",
+        PairingReason.ClassGone => "这个班在云端找不到了",
+        _ => "同步凭据已失效",
+    };
+
+    /// <summary>一句话说清"为什么"和"怎么办"，界面直接显示，不再自己拼。</summary>
+    public static string Advice(this PairingReason reason) => reason switch
+    {
+        PairingReason.Rotated =>
+            "这台电脑的同步凭据在别处被换掉了（多半是另一台机器用了同一份数据目录，也可能重装过），" +
+            "自动重配也没能接上。到「设置 → 同步」点「重新配对」，地址和班级码已经填好，" +
+            "补一次班主任密码就行；积压的记录会自动补推。",
+        PairingReason.Expired =>
+            "这台电脑 90 天没连过云端，凭据自然过期了，自动重配也没能接上。" +
+            "到「设置 → 同步」点「重新配对」，积压的记录不会丢。",
+        PairingReason.Revoked =>
+            "班主任在班级管理台把这台设备移出了白名单（或者整班重置过）。" +
+            "请班主任先在网页上重新批准，再到「设置 → 同步」重新配对；本机的数据一条都没少。",
+        PairingReason.SecretRejected =>
+            "自动重配时云端说口令不对 —— 班主任密码或班长口令应该是改过了。" +
+            "到「设置 → 同步」点「重新配对」，用现在的密码再连一次；本机的名单和流水都还在。",
+        PairingReason.ClassGone =>
+            "云端没有这个班级码了（整班被注销，或者同步地址换成了另一个部署）。" +
+            "确认地址和班级码之后到「设置 → 同步」重新配对；已经记下的分不会被删。",
+        _ =>
+            "云端不再认这台电脑，自动重配也没成功。到「设置 → 同步」点「重新配对」，" +
+            "本机的名单和流水都还在，积压的记录会自动补推。",
+    };
+
+    public static PairingReason FromCode(string? errorCode) => errorCode switch
+    {
+        "bad_refresh" => PairingReason.Rotated,
+        "refresh_expired" => PairingReason.Expired,
+        "device_revoked" => PairingReason.Revoked,
+
+        // 下面几个是 /pair 的错误码：只有"自动重配也失败"之后才会走到这里
+        "bad_secret" => PairingReason.SecretRejected,
+        "class_not_found" => PairingReason.ClassGone,
+        "device_blocked" or "review_queue_full" or "device_fingerprint_required" => PairingReason.Revoked,
+
+        null or "" => PairingReason.None,
+        _ => PairingReason.Unknown,
+    };
 }
 /// <summary>
 /// 同步编排：先推、再拉。
@@ -118,7 +200,11 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         using var client = new SyncClient(normalized);
         var (classId, code, access, refresh) =
             await client.CreateClassAsync(name, ownerName, ownerPin, recoveryCode, kind, bootstrapSecret, ct);
-        _store.Save(new SyncCredentials(normalized, classId, access, refresh, code));
+        _store.Save(new SyncCredentials(normalized, classId, access, refresh, code)
+        {
+            Secret = ownerPin,
+            Kind = kind,
+        });
         return new SyncReport(true, null, 0, outbox.Count(), 0, 0, DateTime.Now) { CreatedCode = code };
     }
 
@@ -128,8 +214,15 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         var normalized = SyncClient.NormalizeBaseUrl(baseUrl);
         using var client = new SyncClient(normalized);
         var (classId, access, refresh, readOnly, message) = await client.PairAsync(code, secret, kind, ct);
-        _store.Save(new SyncCredentials(normalized, classId, access, refresh, code, readOnly));
+        _store.Save(new SyncCredentials(normalized, classId, access, refresh, code, readOnly)
+        {
+            // 口令留在本机（DPAPI 加密）：下次 refresh 被云端拒掉时不用再麻烦人
+            Secret = secret,
+            Kind = kind,
+        });
         IsReadOnly = readOnly;
+        // 手动配过之后，自动重配的冷却要清零 —— 刚才这一下已经证明口令是对的
+        _repairBlockedUntil = DateTime.MinValue;
         // 待审不是失败：配对确实成功了，只是暂时只能看。Ok 仍然是 true，
         // 界面据 ReadOnly 决定说"连上了，等通过"还是"配对成功，开始同步"。
         return new SyncReport(true, null, 0, outbox.Count(), 0, 0, DateTime.Now)
@@ -234,8 +327,7 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
                     if (outcome.AuthExpired)
                     {
                         var refreshed = await TryRefreshAsync(credentials, ct);
-                        if (refreshed is null)
-                            return new SyncReport(false, "这台电脑的同步凭据已经失效（云端不再认它）", 0, outbox.Count(), 0, LastSeq, DateTime.Now) { NeedsPairing = true };
+                        if (refreshed is null) return RefreshFailed(0, 0, LastSeq);
 
                         _client.SetAccess(refreshed.Access);
                         credentials = refreshed;
@@ -280,8 +372,7 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
                     // 这里不补一次的话，界面会永远停在"令牌过期，下一轮续期"，
                     // 而下一轮同样没有推送 —— 等到班主任点通过也恢复不了。
                     var refreshed = await TryRefreshAsync(credentials, ct);
-                    if (refreshed is null)
-                        return new SyncReport(false, "这台电脑的同步凭据已经失效（云端不再认它）", pushed, outbox.Count(), pulled, next, DateTime.Now) { NeedsPairing = true };
+                    if (refreshed is null) return RefreshFailed(pushed, pulled, next);
 
                     credentials = refreshed;
                     _client.SetAccess(refreshed.Access);
@@ -326,8 +417,21 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         }
     }
 
+    /// <summary>续期时云端说的"为什么不认这台机器"。只有 401 才有意义（其余是网络/服务端的事）。</summary>
+    private string? _refreshErrorCode;
+
+    /// <summary>自动重配失败的原因（`bad_secret` / `class_not_found` / `device_blocked`…）。</summary>
+    private string? _repairErrorCode;
+
+    /// <summary>自动重配失败后冷却到什么时候。口令错了再去试只会给云端送失败计数，最后被封 15 分钟。</summary>
+    private DateTime _repairBlockedUntil = DateTime.MinValue;
+
+    /// <summary>这一次是「自己接上了」。界面据此给一句轻提示，别让老师以为系统抽风。</summary>
+    public event Action? AutoRepaired;
+
     private async Task<SyncCredentials?> TryRefreshAsync(SyncCredentials credentials, CancellationToken ct)
     {
+        _refreshErrorCode = null;
         try
         {
             var (access, refresh, readOnly) = await _client!.RefreshAsync(credentials.Refresh, ct);
@@ -337,10 +441,95 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
             IsReadOnly = readOnly;
             return next;
         }
+        catch (SyncException ex) when (ex.Status == 401)
+        {
+            // 云端明确说"不认这个 refresh"：先自己接一次，接不上才需要人来
+            _refreshErrorCode = ex.Code;
+        }
         catch (Exception)
         {
+            // 断网、超时、429、5xx：凭据还是好的，下一轮再来。
+            // 以前这里也返回 null，于是"学校网断了"会被说成"凭据失效，请重新配对"——
+            // 老师按提示跑去重配，越弄越乱。
             return null;
         }
+
+        return await TryRepairAsync(credentials, ct);
+    }
+
+    /// <summary>
+    /// 凭据被云端拒掉之后，用本机存着的口令自己重新配对一次。
+    ///
+    /// 为什么值得自动做：refresh token 一次一换，同一份数据目录被两台机器用（或者
+    /// 换过系统、隔了 90 天）时，token 必然失效一次。而失效的时候本机其实什么都不缺 ——
+    /// 班级码在，配对时的口令也在，完全够再换一对新的回来。把这一步推给老师，
+    /// 等于让人停下手里的活去输一遍十分钟前才输过的密码。
+    ///
+    /// 三次机会用完（口令改了、设备被撤销、班级注销）就不再自己试：
+    /// 继续试只会在云端攒失败计数，最后连手动重配都被限流挡住。
+    /// </summary>
+    private async Task<SyncCredentials?> TryRepairAsync(SyncCredentials stale, CancellationToken ct)
+    {
+        _repairErrorCode = null;
+        if (!stale.CanSelfRepair) return null;
+        if (DateTime.Now < _repairBlockedUntil) return null;
+
+        try
+        {
+            using var client = new SyncClient(stale.BaseUrl);
+            var (classId, access, refresh, readOnly, _) =
+                await client.PairAsync(stale.ClassCode, stale.Secret, stale.Kind, ct);
+
+            var next = stale with
+            {
+                ClassId = classId,
+                Access = access,
+                Refresh = refresh,
+                ReadOnly = readOnly,
+            };
+            _store.Save(next);
+            IsReadOnly = readOnly;
+            _repairBlockedUntil = DateTime.MinValue;
+            AutoRepaired?.Invoke();
+            return next;
+        }
+        catch (SyncException ex)
+        {
+            // 口令不对 / 班级码不对 / 设备被撤销：再试一万次也一样。
+            // 而且每试一次云端就记一次失败，攒够 6 次这个来源会被封 15 分钟 ——
+            // 到时候连老师手动重配都进不来。所以冷却半小时。
+            _repairErrorCode = ex.Code;
+            _repairBlockedUntil = DateTime.Now.AddMinutes(30);
+            return null;
+        }
+        catch (Exception)
+        {
+            // 网络断了：凭据本身没坏，过一会儿再自己试一次
+            _repairBlockedUntil = DateTime.Now.AddMinutes(2);
+            return null;
+        }
+    }
+
+    /// <summary>续期失败之后的报告：真是凭据问题才叫 NeedsPairing，网络问题只说"等一会儿"。</summary>
+    private SyncReport RefreshFailed(int pushed, int pulled, long next)
+    {
+        // 自动重配失败的原因更贴近"现在该做什么"：token 被换掉是过去时，
+        // 口令不对才是拦住我们的那件事。
+        var repaired = PairingReasonTexts.FromCode(_repairErrorCode);
+        var reason = repaired != PairingReason.None ? repaired : PairingReasonTexts.FromCode(_refreshErrorCode);
+        if (reason == PairingReason.None)
+        {
+            return new SyncReport(false, "连不上云端，下一轮再试", pushed, outbox.Count(), pulled, next, DateTime.Now)
+            {
+                Offline = true,
+            };
+        }
+
+        return new SyncReport(false, reason.Title() + "：" + reason.Advice(), pushed, outbox.Count(), pulled, next, DateTime.Now)
+        {
+            NeedsPairing = true,
+            Reason = reason,
+        };
     }
 
     /// <summary>

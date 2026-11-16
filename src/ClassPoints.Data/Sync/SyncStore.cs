@@ -16,6 +16,24 @@ namespace ClassPoints.Data.Sync;
 public sealed record SyncCredentials(string BaseUrl, string ClassId, string Access, string Refresh, string ClassCode = "", bool ReadOnly = false)
 {
     public bool HasAccess => !string.IsNullOrWhiteSpace(Access);
+
+    /// <summary>
+    /// 配对时用过的口令（班主任密码 / 班长口令 / 恢复码）。
+    ///
+    /// 存它是为了让「凭据被换掉」能自己接上：refresh token 一次一换，同一份数据目录
+    /// 被两台机器用的时候，先续期的那台会把后一台的 token 顶掉。以前这种情况只能
+    /// 弹一句「请重新配对」，老师得停下手里的活去输密码 —— 而配对时那个口令本来就在手上。
+    ///
+    /// 落盘方式和 refresh token 一样（DPAPI，按 Windows 账号加密），
+    /// 换一个 Windows 用户就读不出来。
+    /// </summary>
+    public string Secret { get; init; } = "";
+
+    /// <summary>配对时上报的设备类型（desk / board）。自动重配要原样再报一次，否则设备记录会对不上。</summary>
+    public string Kind { get; init; } = "desk";
+
+    /// <summary>能不能不问人自己重配。老版本存的凭据里没有 secret，只能走手动那条路。</summary>
+    public bool CanSelfRepair => Secret.Length > 0 && ClassCode.Length > 0 && BaseUrl.Length > 0;
 }
 
 public sealed class SyncStore(string? path = null)
@@ -28,6 +46,11 @@ public sealed class SyncStore(string? path = null)
         [JsonPropertyName("classCode")] public string? ClassCode { get; set; }
         [JsonPropertyName("readOnly")] public bool ReadOnly { get; set; }
         [JsonPropertyName("savedAt")] public long SavedAt { get; set; }
+
+        /// <summary>配对口令的密文。老文件里没有这一项 —— 那就退化成"手动手动重配"。</summary>
+        [JsonPropertyName("pairSecret")] public string? PairSecret { get; set; }
+
+        [JsonPropertyName("kind")] public string? Kind { get; set; }
     }
 
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
@@ -48,7 +71,11 @@ public sealed class SyncStore(string? path = null)
             var refresh = Unprotect(dto.Refresh);
             if (refresh is null) return null;
 
-            return new SyncCredentials(dto.BaseUrl, dto.ClassId, _access, refresh, dto.ClassCode ?? "", dto.ReadOnly);
+            return new SyncCredentials(dto.BaseUrl, dto.ClassId, _access, refresh, dto.ClassCode ?? "", dto.ReadOnly)
+            {
+                Secret = Unprotect(dto.PairSecret) ?? "",
+                Kind = string.IsNullOrWhiteSpace(dto.Kind) ? "desk" : dto.Kind,
+            };
         }
         catch (Exception)
         {
@@ -67,6 +94,8 @@ public sealed class SyncStore(string? path = null)
             ClassCode = credentials.ClassCode,
             ReadOnly = credentials.ReadOnly,
             SavedAt = Clock.NowMs(),
+            PairSecret = credentials.Secret.Length > 0 ? Protect(credentials.Secret) : null,
+            Kind = credentials.Kind,
         };
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_path)!);
         File.WriteAllText(_path, JsonSerializer.Serialize(dto, Json), Encoding.UTF8);

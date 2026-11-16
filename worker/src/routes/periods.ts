@@ -10,6 +10,7 @@
  */
 import type { Env } from '../types';
 import { requireAuth } from '../auth';
+import { trimOldPeriods } from '../trim';
 import {
   HttpError,
   changeStmt,
@@ -57,6 +58,10 @@ export async function upsertPeriod(env: Env, request: Request): Promise<Response
   const takeOver = body.action === 'rollover' || !existing || existing.id === id;
   const status = dto.status === 'archived' ? 'archived' : takeOver ? 'active' : 'archived';
 
+  // 这一推会把旧的当前周期归档吗？归档之后要不要清老周期明细，看这个。
+  // 换班不换期（补推自己的周期）不触发 —— 那只是 upsert，没有新的边界。
+  const archivesOthers = status === 'active' && existing !== null && existing.id !== id;
+
   const stmts: D1PreparedStatement[] = [];
   // uq_period_active 是唯一索引：一个班同时只能有一个 active
   if (status === 'active') {
@@ -85,7 +90,12 @@ export async function upsertPeriod(env: Env, request: Request): Promise<Response
   );
 
   await env.DB.batch(stmts);
-  return json({ ok: true, id, status, classId: claims.cid });
+
+  // 归档了旧周期之后，把翻篇太久的周期明细清掉（云端只留最近 4 个）。
+  // 放在这里而不是定时任务：教室电脑没人保证一直开着，而"重置"是唯一能确定边界事件。
+  const trimmed = archivesOthers ? await trimOldPeriods(env, claims.cid) : { dropped: [] };
+
+  return json({ ok: true, id, status, classId: claims.cid, trimmed: trimmed.dropped });
 }
 
 export async function resetPeriod(env: Env, request: Request): Promise<Response> {

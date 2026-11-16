@@ -2,6 +2,7 @@ using ClassPoints.App.Services;
 using ClassPoints.App.Theme;
 using ClassPoints.Core;
 using ClassPoints.Data;
+using ClassPoints.Data.Sync;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -74,6 +75,8 @@ public sealed partial class BoardShell : UserControl, IShellHost
         RefreshClock();
 
         Session.Changed += OnSessionChanged;
+        Services.Pump.PairingNeeded += OnPairingNeeded;
+        Services.Pump.AutoRepaired += OnAutoRepaired;
         _tick.Tick += OnTick;
         _tick.Start();
 
@@ -99,10 +102,19 @@ public sealed partial class BoardShell : UserControl, IShellHost
         Services.Log("大屏外壳初始化完成");
     }
 
+    /// <summary>凭据失效时说一句：大屏通常没人守着，这句提示是班主任唯一的线索。</summary>
+    private void OnPairingNeeded(PairingReason reason) =>
+        Toast($"{reason.Title()}：到「设置 → 同步」点「重新配对」", 10);
+
+    /// <summary>凭据自己接上了也留一句：教室里没人守着，出过什么事都要能从这块屏上看出来。</summary>
+    private void OnAutoRepaired() => Toast("同步凭据已自动续上", 5);
+
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         _tick.Stop();
         Session.Changed -= OnSessionChanged;
+        Services.Pump.PairingNeeded -= OnPairingNeeded;
+        Services.Pump.AutoRepaired -= OnAutoRepaired;
         Services.Reader.CardDetected -= OnCardDetected;
         Services.Reader.Stop();
     }

@@ -38,6 +38,31 @@ internal static class SyncPushTests
         Check("缺字段是永久失败（400 invalid_delta）",
             PushVerdicts.Classify(400, "invalid_delta") == PushVerdict.Drop);
 
+        // ---- 凭据失效的三种成因要分得开（提示语和该做的事都不一样） ----
+        Check("凭据认不出来 = 被别处换掉了",
+            PairingReasonTexts.FromCode("bad_refresh") == PairingReason.Rotated);
+        Check("90 天没续期 = 过期",
+            PairingReasonTexts.FromCode("refresh_expired") == PairingReason.Expired);
+        Check("设备被踢 = 撤销",
+            PairingReasonTexts.FromCode("device_revoked") == PairingReason.Revoked);
+        Check("没有错误码就不算凭据问题",
+            PairingReasonTexts.FromCode(null) == PairingReason.None);
+        Check("被换掉时的提示要说出「可能两台机器共用一份数据」",
+            PairingReasonTexts.Advice(PairingReason.Rotated).Contains("另一台机器"));
+
+        // ---- 自动重配也失败时，原因要落到 /pair 的错误码上 ----
+        // 「口令改过了」和「设备被撤销」的下一步完全不同：一个去输新密码，一个去找班主任。
+        Check("口令不对 = 密码改过了（别让人对着旧密码反复试）",
+            PairingReasonTexts.FromCode("bad_secret") == PairingReason.SecretRejected);
+        Check("班级码找不到 = 班没了",
+            PairingReasonTexts.FromCode("class_not_found") == PairingReason.ClassGone);
+        Check("设备被拒 = 撤销",
+            PairingReasonTexts.FromCode("device_blocked") == PairingReason.Revoked);
+        Check("待审队列满也算设备侧的事",
+            PairingReasonTexts.FromCode("review_queue_full") == PairingReason.Revoked);
+        Check("口令不对的提示要说清「用现在的密码再连一次」",
+            PairingReasonTexts.Advice(PairingReason.SecretRejected).Contains("现在的密码"));
+
         // ---- 出队之后本地必须知道「这条已经上云了」 ----
         var dir = Path.Combine(Path.GetTempPath(), "cp-push-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(dir);

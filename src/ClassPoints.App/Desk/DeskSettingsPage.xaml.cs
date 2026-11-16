@@ -1350,7 +1350,7 @@ public sealed partial class DeskSettingsPage : Page
 
     private void BuildBackupSection()
     {
-        var body = Section("备份与恢复", "每天首次启动自动备份，保留 30 天。");
+        var body = Section("备份与恢复", "每天首次启动自动备份，保留最近 7 天（至少留一份）。");
 
         // 路径可能很长（数据在安装目录下时尤其长），所以给整行宽度，按钮另起一行；
         // 挤在一行时后半截会被截掉，正好截掉盘符之后最要紧的那段。
@@ -1429,7 +1429,7 @@ public sealed partial class DeskSettingsPage : Page
         buttons.Children.Add(Small("清理旧备份", () =>
         {
             Services.Backups.Cleanup();
-            Shell?.Toast("已清理（保留最近 30 天与每月 1 日）", 4);
+            Shell?.Toast("已清理（保留最近 7 天，至少留一份）", 4);
             Reload();
         }));
         buttons.Children.Add(Async("整包导出（换机用）", ExportPackAsync));
@@ -1929,14 +1929,19 @@ public sealed partial class DeskSettingsPage : Page
             // 「待推送 136 条」只会让人以为有东西卡住了。
             body.Children.Add(ValueRow("待推送", Services.Outbox.Count() + " 条"));
 
+            // 自动重配这件事必须写明：它意味着配对时输的那个密码留在了本机。
+            // 不说清楚，等于偷偷存口令 —— 而这台机器是要摆在教室里的。
+            body.Children.Add(Note(creds?.CanSelfRepair == true
+                ? "配对时用的口令随 Windows 账号加密留在本机（换 Windows 用户就读不出）。凭据被别处换掉时会先用它自动重配，接不上才请你重新配对。"
+                : "这台机器的凭据里没有留口令，凭据一旦失效只能手动重新配对。到「设置 → 同步」点「重新配对」补一次密码即可。"));
+
             // 凭据失效是"只能人来救"的那一类：云端把设备踢了、重置过班级、
             // 或者这台机器重装过。以前只写一句"请重新配对"，可界面上没有那个入口，
             // 老师得自己摸到"解除配对"再走一遍表单 —— 所以这里直接把按钮摆出来。
             if (Services.Pump.NeedsPairing)
             {
-                body.Children.Add(ValueRow("凭据", "云端已经不再认这台电脑",
-                    "本机的名单、流水和积压记录都还在。重新配对不会动它们，" +
-                    "配好之后积压的记录会自动补推。"));
+                body.Children.Add(ValueRow("凭据", Services.Pump.PairingReason.Title(),
+                    Services.Pump.PairingReason.Advice()));
             }
 
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };

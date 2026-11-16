@@ -38,6 +38,14 @@ public sealed class BoardSession(MemberRepository members)
 
     public bool SyncEnabled { get; set; }
 
+    /// <summary>
+    /// 云端已经不认这台机器的同步凭据了（只有重新配对能救）。
+    ///
+    /// 放在会话里是为了状态条能一直说出来：同步断了却还显示"已同步"，
+    /// 老师会以为数据在云上，直到换台机器才发现少了半个月。
+    /// </summary>
+    public bool NeedsPairing { get; set; }
+
     public bool IsOnline { get; set; } = true;
 
     public DateTime LastActivity { get; private set; } = DateTime.Now;
@@ -108,6 +116,8 @@ public sealed class BoardSession(MemberRepository members)
         {
             // 只读优先说出来：老师最先要知道的不是"同步了几条"，而是"为什么记不了分"
             if (ReadOnly) return PendingCount > 0 ? $"待审核 · 只读（{PendingCount} 条待同步）" : "待审核 · 只读";
+            // 凭据失效比"待同步 N 条"更要紧：那些条数在它面前永远不会变
+            if (NeedsPairing) return PendingCount > 0 ? $"凭据失效 · {PendingCount} 条待同步" : "凭据失效 · 需重新配对";
             if (!SyncEnabled) return "本机存储";
             if (!IsOnline) return PendingCount > 0 ? $"离线 · 待同步 {PendingCount} 条" : "离线";
             return PendingCount > 0 ? $"待同步 {PendingCount} 条" : "已同步";

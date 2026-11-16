@@ -243,6 +243,46 @@ const periodPull = await call('GET', '/sync?since=0&limit=500', { token: access 
 const activeCount = (periodPull.data?.periods ?? []).filter((p) => p.status === 'active').length;
 check('同时只有一个 active 周期', activeCount === 1, `active=${activeCount}`);
 
+console.log('\n8b) 云端只留最近 4 个周期');
+// 教室里的重置走的是 rollover（POST /periods，action=rollover），不是 /periods/reset。
+// 再重置三次，凑够 5 个周期 —— 最老那个（periodId，带流水和期中考试）该被清掉。
+const rolled = [newPeriodId];
+for (let i = 0; i < 3; i++) {
+  const id = uuid();
+  const at = now + 1000 * (i + 1);
+  const ro = await call('POST', '/periods', {
+    token: access,
+    body: {
+      action: 'rollover',
+      archivedId: rolled[rolled.length - 1],
+      endAt: at - 1,
+      period: { id, name: `第 ${5 + i} 周期`, termKey: '2026-AUT', startAt: at, createdAt: at },
+    },
+  });
+  check(`第 ${5 + i} 个周期（rollover）`, ro.status === 200 && ro.data?.status === 'active', JSON.stringify(ro.data));
+  rolled.push(id);
+}
+
+const trimmed = await call('GET', '/sync?since=0&limit=500', { token: access });
+const keptPeriods = (trimmed.data?.periods ?? []).filter((p) => p.id === periodId || rolled.includes(p.id));
+check('云端只留 4 个周期', keptPeriods.length === 4, `kept=${keptPeriods.length}`);
+check('最老周期已被清掉', !keptPeriods.some((p) => p.id === periodId), keptPeriods.map((p) => p.id).join(','));
+check(
+  '最老周期的流水一条不剩',
+  (trimmed.data?.entries ?? []).every((e) => e.period_id !== periodId),
+  `left=${(trimmed.data?.entries ?? []).filter((e) => e.period_id === periodId).length}`,
+);
+check(
+  '最老周期的考试与成绩也清掉了',
+  (trimmed.data?.exams ?? []).every((e) => e.period_id !== periodId),
+  `left=${(trimmed.data?.exams ?? []).filter((e) => e.period_id === periodId).length}`,
+);
+check(
+  '新周期里的数据不受影响',
+  (trimmed.data?.entries ?? []).some((e) => e.period_id === newPeriodId),
+  `newPeriod=${(trimmed.data?.entries ?? []).filter((e) => e.period_id === newPeriodId).length}`,
+);
+
 console.log('\n9) 多班隔离（同一套 D1 服务两个班，谁也不许看见谁）');
 const clsB = await call('POST', '/classes', {
   body: { name: '高三 (1) 班', ownerName: '李老师', ownerPin: '654321', kind: 'desk' },
@@ -313,7 +353,8 @@ const pB = await call('POST', '/periods', {
 check('B 班能建自己的 active 周期', pB.status === 200, `status=${pB.status} ${JSON.stringify(pB.data)}`);
 const stillActiveA = await call('GET', '/sync?since=0&limit=500', { token: access });
 const activeA = (stillActiveA.data?.periods ?? []).filter((p) => p.status === 'active');
-check('A 班的 active 周期不受 B 班影响', activeA.length === 1 && activeA[0].id === newPeriodId, JSON.stringify(activeA.map((p) => p.id)));
+// A 班的当前周期是 8b) 里最后一次 rollover 的那个（不是最初那个 newPeriodId）
+check('A 班的 active 周期不受 B 班影响', activeA.length === 1 && activeA[0].id === rolled[rolled.length - 1], JSON.stringify(activeA.map((p) => p.id)));
 
 console.log('\n10) 角色鉴权（输谁的口令就是谁）');
 

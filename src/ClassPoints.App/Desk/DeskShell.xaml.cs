@@ -2,6 +2,7 @@ using ClassPoints.App.Services;
 using ClassPoints.App.Theme;
 using ClassPoints.Core;
 using ClassPoints.Data;
+using ClassPoints.Data.Sync;
 using ClassPoints.Data.Update;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -68,6 +69,11 @@ public sealed partial class DeskShell : UserControl, IShellHost
         // 更新提示跟着外壳走，不跟着页面走：切页不该把它弄丢，也不该重复订阅。
         UpdateCenter.Current.Changed += OnUpdateStateChanged;
         UpdateCenter.Current.Found += OnUpdateFound;
+
+        // 凭据失效要主动说一句：只写在设置页里没人会去看，
+        // 而"待同步 9 条"一直挂着，老师会以为是网络慢
+        Services.Pump.PairingNeeded += OnPairingNeeded;
+        Services.Pump.AutoRepaired += OnAutoRepaired;
         RefreshUpdateBadge();
 
         if (Services.Settings.UpdateAutoCheck)
@@ -78,6 +84,8 @@ public sealed partial class DeskShell : UserControl, IShellHost
             Session.Changed -= OnSessionChanged;
             UpdateCenter.Current.Changed -= OnUpdateStateChanged;
             UpdateCenter.Current.Found -= OnUpdateFound;
+            Services.Pump.PairingNeeded -= OnPairingNeeded;
+            Services.Pump.AutoRepaired -= OnAutoRepaired;
             Services.Reader.Stop();
         };
     }
@@ -248,6 +256,14 @@ public sealed partial class DeskShell : UserControl, IShellHost
     // ================= 更新提示 =================
 
     private void OnUpdateStateChanged() => DispatcherQueue?.TryEnqueue(RefreshUpdateBadge);
+
+    /// <summary>凭据失效时主动提示一次（恢复后再失效会再提示）。点提示不跳页，免得打断正在记的分。</summary>
+    private void OnPairingNeeded(PairingReason reason) =>
+        Toast($"{reason.Title()}：到「设置 → 同步」点「重新配对」，积压的记录会自动补推", 10);
+
+    /// <summary>自己接上了也要吭一声 —— 否则上一秒"待同步 9 条"、下一秒清零，看着像界面在乱跳。</summary>
+    private void OnAutoRepaired() =>
+        Toast("同步凭据已自动续上，积压的记录正在补推", 6);
 
     private void OnUpdateFound(UpdateManifest manifest) =>
         DispatcherQueue?.TryEnqueue(() =>

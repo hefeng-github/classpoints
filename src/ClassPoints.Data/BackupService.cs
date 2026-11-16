@@ -187,14 +187,27 @@ public sealed class BackupService(Database db)
         catch (Exception) { }
     }
 
-    /// <summary>保留最近 30 天 + 每月 1 号那份。</summary>
+    /// <summary>备份保留天数。窗口外的删掉，但永远至少留最新的一份（见下）。</summary>
+    public const int KeepDays = 7;
+
+    /// <summary>
+    /// 保留最近 7 天。
+    ///
+    /// 以前是 30 天 + 每月 1 号那份：一个班一天一份、每份几 MB，攒一个月就是几百兆，
+    /// 而真正会用到的是"最近几天"。
+    ///
+    /// 但有一条底线不能丢：**至少留最新的一份**。老师放寒暑假两周不开机时，
+    /// 唯一那份备份早就落在 7 天窗口外了 —— 全删掉等于把最后一份救命数据也删了。
+    /// </summary>
     public void Cleanup()
     {
         try
         {
             if (!Directory.Exists(BackupRoot)) return;
             var keep = new HashSet<string>();
-            var cutoff = DateTime.Today.AddDays(-30);
+            var cutoff = DateTime.Today.AddDays(-KeepDays);
+            string? newest = null;
+            var newestAt = DateTime.MinValue;
 
             foreach (var d in Directory.GetDirectories(BackupRoot))
             {
@@ -202,11 +215,15 @@ public sealed class BackupService(Database db)
                 if (!DateTime.TryParseExact(name, "yyyyMMdd-HHmmss", null,
                         System.Globalization.DateTimeStyles.None, out var at))
                 {
-                    keep.Add(d);
+                    keep.Add(d);   // 人手建的目录（比如"开学前"），不认识但也不动
                     continue;
                 }
-                if (at >= cutoff || at.Day == 1) keep.Add(d);
+
+                if (at > newestAt) { newest = d; newestAt = at; }
+                if (at >= cutoff) keep.Add(d);
             }
+
+            if (keep.Count == 0 && newest is not null) keep.Add(newest);
 
             foreach (var d in Directory.GetDirectories(BackupRoot))
                 if (!keep.Contains(d))

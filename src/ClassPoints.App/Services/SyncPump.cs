@@ -24,6 +24,25 @@ public sealed class SyncPump(AppServices services)
     /// <summary>云端不认这台机器的凭据了。界面据此给"重新配对"的入口 —— 这条路只能人来走。</summary>
     public bool NeedsPairing { get; private set; }
 
+    /// <summary>凭据失效的成因（被别处轮换 / 过期 / 被撤销），提示语按它分。</summary>
+    public PairingReason PairingReason { get; private set; }
+
+    /// <summary>
+    /// 刚发现凭据失效时触发一次（恢复之后再失效会再触发）。
+    ///
+    /// 只触发"变化"而不是每轮都喊：45 秒一次、每次弹一句同样的话，
+    /// 老师第一件事就是把提示关掉，然后真的需要重配时也看不见了。
+    /// </summary>
+    public event Action<PairingReason>? PairingNeeded;
+
+    /// <summary>
+    /// 凭据失效后自己接上了（用本机存着的口令重新配对成功）。
+    ///
+    /// 也要说一句：老师上一眼可能刚看到"待同步 9 条"，下一秒这些记录自己走了，
+    /// 不说的话很像界面在乱跳。但我们把它说成"已经自动接上"，而不是"出错了"。
+    /// </summary>
+    public event Action? AutoRepaired;
+
     /// <summary>每轮结束后触发，界面用来刷新角标。</summary>
     public event Action? Changed;
 
@@ -55,6 +74,9 @@ public sealed class SyncPump(AppServices services)
         services.Session.SyncEnabled = services.Sync.IsConfigured;
 
         _timer.Tick += OnTick;
+        // 凭据是自己接上的还是需要人管，只有 SyncService 知道 —— 这里只负责搬到 UI 线程
+        services.Sync.AutoRepaired -= OnAutoRepaired;
+        services.Sync.AutoRepaired += OnAutoRepaired;
         _timer.Start();
         _ = RunAsync();
     }
@@ -64,6 +86,14 @@ public sealed class SyncPump(AppServices services)
         _running = false;
         _timer.Stop();
         _timer.Tick -= OnTick;
+        services.Sync.AutoRepaired -= OnAutoRepaired;
+    }
+
+    private void OnAutoRepaired()
+    {
+        var queue = DispatcherQueue.GetForCurrentThread();
+        if (queue is null) AutoRepaired?.Invoke();
+        else queue.TryEnqueue(() => AutoRepaired?.Invoke());
     }
 
     private void OnTick(object? sender, object e) => _ = RunAsync();
@@ -81,7 +111,18 @@ public sealed class SyncPump(AppServices services)
             var report = await services.Sync.RunOnceAsync();
             LastAttempt = DateTime.Now;
             LastError = report.Ok ? "" : report.Error ?? "";
+
+            var wasPairing = NeedsPairing;
             NeedsPairing = report.NeedsPairing;
+            PairingReason = report.Reason;
+            if (NeedsPairing && !wasPairing)
+            {
+                // 扔到 UI 线程再喊：这里可能就在 DispatcherTimer 的回调里
+                var queue = DispatcherQueue.GetForCurrentThread();
+                if (queue is null) PairingNeeded?.Invoke(report.Reason);
+                else queue.TryEnqueue(() => PairingNeeded?.Invoke(report.Reason));
+            }
+
             LastPushed += report.Pushed;
             LastPulled += report.Pulled;
 
@@ -113,6 +154,7 @@ public sealed class SyncPump(AppServices services)
         // 有没有接云端也是同一件事：SyncEnabled 以前只在记分台被硬写成 false，
         // 于是"已连接云端"和"本机存储"可以同时出现在同一台机器上。
         services.Session.SyncEnabled = services.Sync.IsConfigured;
+        services.Session.NeedsPairing = NeedsPairing;
         var queue = DispatcherQueue.GetForCurrentThread();
         if (queue is null)
         {

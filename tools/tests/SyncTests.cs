@@ -25,7 +25,8 @@ internal static class SyncTests
             Periods = new PeriodRepository(Db);
             Entries = new EntryService(Db, new AuditRepository(Db));
             Exams = new ExamRepository(Db);
-            Sync = new SyncService(Db, Outbox, new SyncStore(Path.Combine(dir, "sync.json")));
+            Store = new SyncStore(Path.Combine(dir, "sync.json"));
+            Sync = new SyncService(Db, Outbox, Store);
         }
 
         public string Dir { get; }
@@ -38,6 +39,9 @@ internal static class SyncTests
         public EntryService Entries { get; }
         public ExamRepository Exams { get; }
         public SyncService Sync { get; }
+
+        /// <summary>落盘的凭据。测试要故意把它弄坏，模拟"续期在别处被换掉"。</summary>
+        public SyncStore Store { get; }
 
         public void Dispose()
         {
@@ -113,6 +117,37 @@ internal static class SyncTests
         check("流水拉过来了", pulledEntries.Count == 3, pulledEntries.Count.ToString());
         check("积分合计对得上", pulledEntries.Sum(e => e.Delta) == 15, pulledEntries.Sum(e => e.Delta).ToString());
         check("规则拉过来了", b.Rules.ListAll().Any(r => r.Label == "回答问题"));
+
+        // ---- 凭据被别处换掉：不问人，自己重配回来 ----
+        // 现场就是这种情况：同一份数据目录被两台机器用，先续期的那台把后一台的
+        // refresh token 顶掉。以前只能弹"请重新配对"，老师得停下去输十分钟前才输过的密码。
+        var healed = 0;
+        b.Sync.AutoRepaired += () => healed++;
+        var credentials = b.Store.Load()!;
+        b.Store.Save(credentials with { Access = "token-rotated-elsewhere", Refresh = "token-rotated-elsewhere" });
+
+        var afterRotation = await b.Sync.RunOnceAsync();
+        check("凭据被换掉后能自己接上（不需要人输密码）",
+            afterRotation.Ok && healed == 1,
+            $"ok={afterRotation.Ok} healed={healed} err={afterRotation.Error}");
+        check("接上之后没把机器变成只读", !afterRotation.NeedsPairing && !b.Sync.IsReadOnly,
+            $"pairing={afterRotation.Reason}");
+        check("接上之后拿到的是新凭据",
+            b.Store.Load()?.Refresh is { Length: > 0 } r && r != "token-rotated-elsewhere");
+
+        // 再接不上就该好好说人话了：口令改过 → 明确说"用现在的密码再连一次"
+        var wrong = b.Store.Load()!;
+        b.Store.Save(wrong with { Access = "token-rotated-elsewhere", Refresh = "token-rotated-elsewhere", Secret = "000000" });
+        var brokenRepair = await b.Sync.RunOnceAsync();
+        check("自动重配失败时给出「密码改过了」而不是「网络不好」",
+            brokenRepair.NeedsPairing && brokenRepair.Reason == PairingReason.SecretRejected,
+            $"needsPairing={brokenRepair.NeedsPairing} reason={brokenRepair.Reason} err={brokenRepair.Error}");
+        check("自动重配失败后本机数据一条不丢", b.Students.ListActive().Count >= 3, "");
+
+        // 把对的凭据换回来，后面几段照常跑
+        b.Store.Save(wrong);
+        var restored = await b.Sync.RunOnceAsync();
+        check("手动换回正确凭据后恢复同步", restored.Ok, restored.Error ?? "");
 
         // ---- 幂等：重推一次不应该多出流水 ----
         var replay = await a.Sync.RunOnceAsync();
