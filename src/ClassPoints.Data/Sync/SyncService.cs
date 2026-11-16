@@ -256,13 +256,14 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
             using var conn = db.Open();
             using (var cmd = conn.CreateCommand())
             {
-                cmd.CommandText = "SELECT payload FROM outbox WHERE kind IN ('entry','reverse') LIMIT 200";
+                cmd.CommandText = "SELECT payload FROM outbox WHERE kind IN ('entry','reverse','tick') LIMIT 200";
                 using var reader = cmd.ExecuteReader();
                 while (reader.Read())
                 {
                     if (JsonNode.Parse(reader.GetString(0)) is not JsonObject node) continue;
-                    var entry = node["entry"] as JsonObject ?? node;
-                    if (entry["periodId"]?.GetValue<string>() is { Length: > 0 } id) periodIds.Add(id);
+                    // 流水是 {entry:{…}}，打点是 {tick:{…}}
+                    var row = node["entry"] as JsonObject ?? node["tick"] as JsonObject ?? node;
+                    if (row["periodId"]?.GetValue<string>() is { Length: > 0 } id) periodIds.Add(id);
                 }
             }
 
@@ -580,12 +581,14 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         applied += ApplyStudents(conn, tx, Ar(batch, "students"));
         applied += ApplyMembers(conn, tx, Ar(batch, "members"));
         applied += ApplyRules(conn, tx, Ar(batch, "rules"));
+        applied += ApplyCounters(conn, tx, Ar(batch, "counters"));
         applied += ApplyNotes(conn, tx, Ar(batch, "note_templates"));
         applied += ApplySchemes(conn, tx, Ar(batch, "schemes"));
         applied += ApplyExams(conn, tx, Ar(batch, "exams"));
         applied += ApplyScores(conn, tx, Ar(batch, "exam_scores"));
         applied += ApplyWeights(conn, tx, Ar(batch, "scheme_weights"));
         applied += ApplyEntries(conn, tx, Ar(batch, "entries"));
+        applied += ApplyTicks(conn, tx, Ar(batch, "counter_ticks"));
         applied += ApplyTombstones(conn, tx, batch["deleted"] as JsonObject);
 
         tx.Commit();
@@ -717,6 +720,66 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
                 ("$owner", S(o, "owner_id")), ("$cap", L(o, "cap_value")), ("$scope", S(o, "cap_scope")),
                 ("$archived", L(o, "archived_at")),
                 ("$rev", L(o, "rev") ?? 1), ("$updated", L(o, "updated_at")), ("$deleted", L(o, "deleted_at")));
+            n++;
+        }
+        return n;
+    }
+
+    private int ApplyCounters(SqliteConnection conn, SqliteTransaction tx, JsonArray rows)
+    {
+        var n = 0;
+        foreach (var row in rows)
+        {
+            if (row is not JsonObject o) continue;
+            try
+            {
+                Database.Exec(conn, tx, """
+                    INSERT INTO counters (id, label, icon, sort, preset_key, archived_at, rev, updated_at, deleted_at)
+                    VALUES ($id, $label, $icon, $sort, $preset, $archived, $rev, $updated, $deleted)
+                    ON CONFLICT(id) DO UPDATE SET
+                      label = excluded.label, icon = excluded.icon, sort = excluded.sort,
+                      preset_key = excluded.preset_key, archived_at = excluded.archived_at,
+                      rev = excluded.rev, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
+                    """,
+                    ("$id", S(o, "id")), ("$label", S(o, "label")), ("$icon", S(o, "icon")),
+                    ("$sort", L(o, "sort") ?? 0), ("$preset", S(o, "preset_key")),
+                    ("$archived", L(o, "archived_at")),
+                    ("$rev", L(o, "rev") ?? 1), ("$updated", L(o, "updated_at")), ("$deleted", L(o, "deleted_at")));
+            }
+            catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
+            {
+                // 两台机器各自建了同一类事件（预设的 preset_key 一样，id 不一样）。
+                // 和备注模板同理：键一样就是同一件事，留着已有的那条，别让整页拉取翻车。
+                Conflicts++;
+                continue;
+            }
+            n++;
+        }
+        return n;
+    }
+
+    /// <summary>
+    /// 事件打点：只追加，按 id 幂等（重拉不会重复计数）。
+    /// 不写 seq —— 那是本地自增列，把云端的值抄过来必然撞主键。
+    /// </summary>
+    private static int ApplyTicks(SqliteConnection conn, SqliteTransaction tx, JsonArray rows)
+    {
+        var n = 0;
+        foreach (var row in rows)
+        {
+            if (row is not JsonObject o) continue;
+            var id = S(o, "id");
+            if (string.IsNullOrEmpty(id)) continue;
+
+            Database.Exec(conn, tx, """
+                INSERT OR IGNORE INTO counter_ticks
+                  (id, counter_id, student_id, period_id, value, note, operator_id, operator_name, occurred_at, created_at)
+                VALUES ($id, $c, $s, $p, $v, $note, $op, $opName, $at, $created)
+                """,
+                ("$id", id), ("$c", S(o, "counter_id")), ("$s", S(o, "student_id")), ("$p", S(o, "period_id")),
+                ("$v", L(o, "value") ?? 0), ("$note", S(o, "note")),
+                ("$op", S(o, "operator_id") ?? "unknown"), ("$opName", S(o, "operator_name") ?? "未知"),
+                ("$at", L(o, "occurred_at")), ("$created", L(o, "created_at")));
             n++;
         }
         return n;
@@ -888,6 +951,7 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
             ("rules", "rules"),
             ("members", "members"),
             ("note_templates", "note_templates"),
+            ("counters", "counters"),
             ("exams", "exams"),
             ("schemes", "schemes"),
             ("periods", "periods"),

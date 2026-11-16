@@ -9,6 +9,7 @@
  *   POST /api/v1/signout            退出登录（撤销设备）
  *   GET  /api/v1/sync?since=&limit= 增量拉取
  *   POST /api/v1/entries            批量入账 1–50 条
+ *   POST /api/v1/counter_ticks      批量写事件打点 1–100 条（只追加，幂等）
  *   POST /api/v1/entries/batch/:id/reverse  按批次撤销
  *   POST /api/v1/exams              一场考试 + 全部成绩
  *   POST|PATCH /api/v1/:entity      新增 / 修改（students / rules / members / note_templates / schemes）
@@ -42,6 +43,7 @@ import { assertWritable, requireAuth, requireManager } from './auth';
 import { ADMIN_HTML } from './admin';
 import { ping, adminSession, createClass, pair, refresh, signOut } from './routes/classes';
 import { postEntries, reverseBatch } from './routes/entries';
+import { postTicks } from './routes/counters';
 import { putSchemeWeights, resolveEntity, upsertEntity } from './routes/entities';
 import { upsertExam } from './routes/exams';
 import { resetPeriod, upsertPeriod } from './routes/periods';
@@ -162,6 +164,17 @@ async function route(request: Request, env: Env): Promise<Response> {
           name: typeof body.operatorName === 'string' && body.operatorName ? body.operatorName : '未知',
         };
         return reverseBatch(env, request, claims.cid, decodeURIComponent(third), operator);
+      }
+      break;
+    }
+
+    // 事件打点：只追加，写门槛和记分一样（能写就能记一次）
+    case 'counter_ticks': {
+      if (!second && method === 'POST') {
+        const claims = await requireAuth(env, request);
+        assertWritable(claims);
+        await assertNotResetting(env, claims.cid);
+        return postTicks(env, request);
       }
       break;
     }

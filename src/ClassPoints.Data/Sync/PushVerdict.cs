@@ -34,8 +34,8 @@ public static class PushVerdicts
         if (status is 403 or 408 or 423 or 429) return PushVerdict.Retry;
         if (status >= 500) return PushVerdict.Retry;
 
-        // 周期/学生还没同步上来：另一台设备刚建，过一会儿拉一轮就有了
-        if (code is "unknown_period" or "unknown_student") return PushVerdict.Retry;
+        // 周期/学生/事件还没同步上来：另一台设备刚建，过一会儿拉一轮就有了
+        if (code is "unknown_period" or "unknown_student" or "unknown_counter") return PushVerdict.Retry;
 
         // 其余 4xx 是这条记录本身有问题（分值不是整数、缺字段、超出合理性上限），重试一万次也一样
         return status >= 400 ? PushVerdict.Drop : PushVerdict.Retry;

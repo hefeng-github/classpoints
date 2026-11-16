@@ -265,17 +265,13 @@ public sealed partial class DeskShell : UserControl, IShellHost
     private void OnAutoRepaired() =>
         Toast("同步凭据已自动续上，积压的记录正在补推", 6);
 
-    private void OnUpdateFound(UpdateManifest manifest) =>
-        DispatcherQueue?.TryEnqueue(() =>
-        {
-            RefreshUpdateBadge();
-
-            // 同一版只主动说一次：老师正在记分，被一句话打断两次就会去关掉自动检查。
-            if (string.Equals(Services.Settings.UpdateSeenVersion, manifest.Version.ToString(),
-                    StringComparison.Ordinal)) return;
-            Services.Settings.UpdateSeenVersion = manifest.Version.ToString();
-            Toast($"有新版本 {manifest.Version}，点左下角提示安装", 8);
-        });
+    private void OnUpdateFound(UpdateManifest manifest)
+    {
+        // 弹窗自己会按版本去重（见 UpdatePrompt），这里只负责把角标刷新一下。
+        // 以前这里是一句 Toast：大屏端根本没有自动检查，电脑端一句话飘过去就没了。
+        UpdatePrompt.NotifyIfNew(manifest);
+        DispatcherQueue?.TryEnqueue(RefreshUpdateBadge);
+    }
 
     private void RefreshUpdateBadge()
     {

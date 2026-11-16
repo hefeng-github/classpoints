@@ -134,6 +134,22 @@ const SPECS: Record<string, Spec> = {
       column('deletedAt', 'deleted_at', 'int'),
     ],
   },
+  counters: {
+    entity: 'counters',
+    table: 'counters',
+    hasRev: true,
+    cols: [
+      column('label', 'label'),
+      column('icon', 'icon', 'text', { dflt: '⚑' }),
+      column('sort', 'sort', 'int', { dflt: 0 }),
+      // 预设事件的去重键：班内唯一，两个班各有一份"迟到"是正常的
+      column('presetKey', 'preset_key'),
+      column('archivedAt', 'archived_at', 'int'),
+      // 老客户端不发这两个字段，给个默认值再入库
+      column('updatedAt', 'updated_at', 'int', { dflt: 0 }),
+      column('deletedAt', 'deleted_at', 'int'),
+    ],
+  },
   schemes: {
     entity: 'schemes',
     table: 'schemes',
@@ -156,6 +172,7 @@ const ALIASES: Record<string, string> = {
   member: 'members', members: 'members',
   note: 'note_templates', notes: 'note_templates', note_templates: 'note_templates',
   scheme: 'schemes', schemes: 'schemes',
+  counter: 'counters', counters: 'counters',
 };
 
 export function resolveEntity(raw: string): Spec | null {

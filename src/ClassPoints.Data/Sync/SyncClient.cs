@@ -183,9 +183,11 @@ public sealed class SyncClient : IDisposable
         var tally = new PushTally();
 
         var entries = new List<OutboxItem>();
+        var ticks = new List<OutboxItem>();
         foreach (var item in items)
         {
             if (item.Kind is "entry" or "reverse") { entries.Add(item); continue; }
+            if (item.Kind == "tick") { ticks.Add(item); continue; }
 
             var (ok, verdict, error) = await PushEntityAsync(item, ct);
             if (verdict == PushVerdict.Auth)
@@ -207,7 +209,14 @@ public sealed class SyncClient : IDisposable
 
         foreach (var chunk in Chunk(entries, 50))
         {
-            await PushEntriesAsync(chunk, tally, allowSplit: true, ct);
+            await PushBatchAsync("/api/v1/entries", "entries", chunk, EntryNode, "流水", tally, allowSplit: true, ct);
+            if (tally.AuthExpired) break;
+        }
+
+        // 事件打点：和流水一样是"只追加"的事实表，一批一个事务
+        foreach (var chunk in Chunk(ticks, 50))
+        {
+            await PushBatchAsync("/api/v1/counter_ticks", "ticks", chunk, TickNode, "计数", tally, allowSplit: true, ct);
             if (tally.AuthExpired) break;
         }
 
@@ -217,12 +226,16 @@ public sealed class SyncClient : IDisposable
         };
     }
 
-    /// <summary>一批流水。失败时按"会不会自己好"分开处理，永久失败的二分下去定位到那一条。</summary>
-    private async Task PushEntriesAsync(List<OutboxItem> chunk, PushTally tally, bool allowSplit, CancellationToken ct)
+    /// <summary>
+    /// 一批「只追加」的记录（流水 / 事件打点）。失败时按"会不会自己好"分开处理，
+    /// 永久失败就二分下去定位到那一条 —— 一条毒数据不该让整批永远上不去。
+    /// </summary>
+    private async Task PushBatchAsync(string path, string arrayKey, List<OutboxItem> chunk,
+        Func<OutboxItem, JsonObject> node, string what, PushTally tally, bool allowSplit, CancellationToken ct)
     {
         if (tally.AuthExpired || chunk.Count == 0) return;
 
-        var (ok, verdict, code, error) = await PostEntriesAsync(chunk, ct);
+        var (ok, verdict, code, error) = await PostBatchAsync(path, arrayKey, chunk, node, what, ct);
 
         if (ok)
         {
@@ -249,29 +262,32 @@ public sealed class SyncClient : IDisposable
         if (allowSplit && chunk.Count > 1)
         {
             var half = chunk.Count / 2;
-            await PushEntriesAsync(chunk.GetRange(0, half), tally, true, ct);
-            await PushEntriesAsync(chunk.GetRange(half, chunk.Count - half), tally, true, ct);
+            await PushBatchAsync(path, arrayKey, chunk.GetRange(0, half), node, what, tally, true, ct);
+            await PushBatchAsync(path, arrayKey, chunk.GetRange(half, chunk.Count - half), node, what, tally, true, ct);
             return;
         }
 
         tally.Dropped.Add(chunk[0].Id);
-        tally.LastError = error is null ? "云端拒收了一条记录，已从待推送里移出" : $"云端拒收：{error}";
+        tally.LastError = error is null
+            ? $"云端拒收了一条{what}记录，已从待推送里移出"
+            : $"云端拒收{what}：{error}";
     }
 
-    private async Task<(bool Ok, PushVerdict Verdict, string? Code, string? Error)> PostEntriesAsync(
-        List<OutboxItem> chunk, CancellationToken ct)
+    private async Task<(bool Ok, PushVerdict Verdict, string? Code, string? Error)> PostBatchAsync(
+        string path, string arrayKey, List<OutboxItem> chunk,
+        Func<OutboxItem, JsonObject> node, string what, CancellationToken ct)
     {
-        var payload = new JsonObject { ["entries"] = new JsonArray(chunk.Select(EntryNode).ToArray()) };
+        var payload = new JsonObject { [arrayKey] = new JsonArray(chunk.Select(node).ToArray()) };
         try
         {
-            using var res = await _http.PostAsync($"{BaseUrl}/api/v1/entries",
+            using var res = await _http.PostAsync($"{BaseUrl}{path}",
                 new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json"), ct);
             var text = await res.Content.ReadAsStringAsync(ct);
 
             if (res.IsSuccessStatusCode) return (true, PushVerdict.Retry, null, null);
 
             var code = ErrorCode(text);
-            var message = Describe(text, $"entries {(int)res.StatusCode} 提交失败");
+            var message = Describe(text, $"{what} {(int)res.StatusCode} 提交失败");
             return (false, PushVerdicts.Classify((int)res.StatusCode, code), code, message);
         }
         catch (Exception ex)
@@ -391,6 +407,7 @@ public sealed class SyncClient : IDisposable
             "period" => "/api/v1/periods",
             "exam" => "/api/v1/exams",
             "scheme" => "/api/v1/schemes",
+            "counter" => "/api/v1/counters",
             _ => null,
         };
         return (path, node.ToJsonString());
@@ -401,6 +418,14 @@ public sealed class SyncClient : IDisposable
         var node = JsonNode.Parse(item.Payload) as JsonObject ?? new JsonObject();
         var entry = node["entry"] as JsonObject ?? node;
         return (JsonObject)entry.DeepClone();
+    }
+
+    /// <summary>事件打点。载荷形状是 {action:'tick', tick:{…}}，云端只收里面那个对象。</summary>
+    private static JsonObject TickNode(OutboxItem item)
+    {
+        var node = JsonNode.Parse(item.Payload) as JsonObject ?? new JsonObject();
+        var tick = node["tick"] as JsonObject ?? node;
+        return (JsonObject)tick.DeepClone();
     }
 
     // ---------------- 拉取 ----------------

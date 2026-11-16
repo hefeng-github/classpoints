@@ -14,7 +14,17 @@ import { HttpError, chunk, json } from './util';
 const ENTITIES = [
   'students', 'rules', 'members', 'periods', 'entries',
   'exams', 'exam_scores', 'schemes', 'scheme_weights', 'note_templates',
+  'counters', 'counter_ticks',
 ] as const;
+
+/**
+ * 只追加的表：**不参与"取不回来就是被删了"的推断**。
+ *
+ * 事件打点没有任何删除路径，而且云端按周期清理时会成片删掉老周期 ——
+ * 如果照常推墓碑，另一台设备拉到的"服务端说没有这行"会把它本地那份也删掉。
+ * 那正是我们最不想要的：删的是云端副本，本地各留各的。
+ */
+const APPEND_ONLY = new Set<string>(['counter_ticks']);
 
 type EntityName = (typeof ENTITIES)[number];
 
@@ -66,6 +76,8 @@ export async function pull(env: Env, request: Request): Promise<Response> {
   await fetchById('rules', (ph) => `id IN (${ph})`);
   await fetchById('members', (ph) => `id IN (${ph})`);
   await fetchById('note_templates', (ph) => `id IN (${ph})`);
+  await fetchById('counters', (ph) => `id IN (${ph})`);
+  await fetchById('counter_ticks', (ph) => `id IN (${ph})`);
   await fetchById('periods', (ph) => `id IN (${ph})`);
   await fetchById('entries', (ph) => `id IN (${ph})`);
   await fetchById('exams', (ph) => `id IN (${ph})`);
@@ -77,6 +89,7 @@ export async function pull(env: Env, request: Request): Promise<Response> {
   // 客户端要据此把本地的也删掉，否则会一直留着一份幽灵数据。
   const deleted: Record<string, string[]> = {};
   for (const name of ENTITIES) {
+    if (APPEND_ONLY.has(name)) continue;
     const wanted = [...(ids.get(name) ?? [])];
     if (wanted.length === 0) continue;
     const present = new Set<string>();

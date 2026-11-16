@@ -3,6 +3,7 @@ using ClassPoints.App.Theme;
 using ClassPoints.Core;
 using ClassPoints.Data;
 using ClassPoints.Data.Sync;
+using ClassPoints.Data.Update;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -83,6 +84,12 @@ public sealed partial class BoardShell : UserControl, IShellHost
         // 同步只在后台跑，永不挡在"加一分"的路径上
         Services.Pump.Start();
 
+        // 大屏以前压根不检查更新：教室那台机器永远收不到新版本，
+        // 只能等老师自己想起来去装。这里补上，和电脑端同一套（弹窗 + 版本去重）。
+        UpdateCenter.Current.Found += OnUpdateFound;
+        if (Services.Settings.UpdateAutoCheck)
+            _ = UpdateCenter.Current.AutoCheckAsync();
+
         // 常驻读卡监听：在看板前碰一下卡就直接进记分台，这是班委最常用的路径
         Services.Reader.CardDetected += OnCardDetected;
         try
@@ -109,12 +116,16 @@ public sealed partial class BoardShell : UserControl, IShellHost
     /// <summary>凭据自己接上了也留一句：教室里没人守着，出过什么事都要能从这块屏上看出来。</summary>
     private void OnAutoRepaired() => Toast("同步凭据已自动续上", 5);
 
+    /// <summary>有新版本就弹一次（同一版只弹一次）。大屏前面通常没人守着，弹窗比角标靠谱。</summary>
+    private void OnUpdateFound(UpdateManifest manifest) => UpdatePrompt.NotifyIfNew(manifest);
+
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         _tick.Stop();
         Session.Changed -= OnSessionChanged;
         Services.Pump.PairingNeeded -= OnPairingNeeded;
         Services.Pump.AutoRepaired -= OnAutoRepaired;
+        UpdateCenter.Current.Found -= OnUpdateFound;
         Services.Reader.CardDetected -= OnCardDetected;
         Services.Reader.Stop();
     }

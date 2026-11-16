@@ -117,6 +117,35 @@ check('POST /entries 整批入库', posted.status === 200 && posted.data?.insert
 const replayed = await call('POST', '/entries', { token: access, body: { entries } });
 check('同一批重传不重复计分', replayed.data?.inserted === 0 && replayed.data?.duplicates === 3, JSON.stringify(replayed.data));
 
+// 事件计数：定义走通用实体，打点走只追加的批量接口
+const counterId = uuid();
+const c1 = await call('POST', '/counters', {
+  token: access,
+  body: { action: 'upsert', counter: { id: counterId, label: '迟到', icon: '⚑', sort: 10, rev: 1, updatedAt: now } },
+});
+check('POST /counters 建事件', c1.status === 200 && c1.data?.applied === true, JSON.stringify(c1.data));
+
+const ticks = studentIds.slice(0, 2).map((sid) => ({
+  id: uuid(), counterId, studentId: sid, periodId, value: 1,
+  operatorId: 'm1', operatorName: '张老师', occurredAt: now, createdAt: now,
+}));
+const t1 = await call('POST', '/counter_ticks', { token: access, body: { ticks } });
+check('POST /counter_ticks 整批入库', t1.status === 200 && t1.data?.inserted === 2, JSON.stringify(t1.data));
+const t2 = await call('POST', '/counter_ticks', { token: access, body: { ticks } });
+check('打点重传不重复计数', t2.data?.inserted === 0 && t2.data?.duplicates === 2, JSON.stringify(t2.data));
+
+const badTick = await call('POST', '/counter_ticks', {
+  token: access,
+  body: { ticks: [{ ...ticks[0], id: uuid(), counterId: uuid() }] },
+});
+check('打点引用不存在的事件回 422 unknown_counter', badTick.status === 422 && badTick.data?.error === 'unknown_counter', JSON.stringify(badTick.data));
+
+const pullTicks = await call('GET', '/sync?since=0&limit=500', { token: access });
+check('拉取能看到事件定义与打点',
+  (pullTicks.data?.counters ?? []).some((c) => c.id === counterId)
+  && (pullTicks.data?.counter_ticks ?? []).some((t) => t.counter_id === counterId),
+  `counters=${(pullTicks.data?.counters ?? []).length} ticks=${(pullTicks.data?.counter_ticks ?? []).length}`);
+
 const tooMany = await call('POST', '/entries', {
   token: access,
   body: { entries: Array.from({ length: 51 }, () => ({ ...entries[0], id: uuid() })) },

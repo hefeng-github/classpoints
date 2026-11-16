@@ -28,6 +28,8 @@ internal static class SyncPushTests
             PushVerdicts.Classify(422, "unknown_period") == PushVerdict.Retry);
         Check("学生还没同步上来要等（unknown_student）",
             PushVerdicts.Classify(422, "unknown_student") == PushVerdict.Retry);
+        Check("事件还没同步上来也要等（unknown_counter）",
+            PushVerdicts.Classify(422, "unknown_counter") == PushVerdict.Retry);
         Check("身份不够要等（403，换回班主任能补推）",
             PushVerdicts.Classify(403, "read_only_device") == PushVerdict.Retry);
         Check("正在重置周期要等（423）", PushVerdicts.Classify(423, "period_reset") == PushVerdict.Retry);

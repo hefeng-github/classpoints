@@ -153,6 +153,49 @@ public sealed class Database
         // v5：座位快照表。建表语句在 CreateTables 里（IF NOT EXISTS，老库也会补上），
         // 这里只留一句结构说明，升级后「关于」页能看到库是哪一代。
         if (version < 5) SetSetting(conn, null, "schema_note", "v5: 座位快照（可选功能）");
+
+        // v6：事件计数进云同步 —— outbox 要接纳两种新 kind（tick / counter）。
+        // outbox.kind 上有 CHECK 约束，SQLite 改不了 CHECK，只能重建表。
+        if (RebuildOutboxKinds(conn))
+            SetSetting(conn, null, "schema_note", "v6: 事件计数参与同步");
+    }
+
+    /// <summary>
+    /// 把 outbox 的 kind 约束换成宽的那一版（加 tick / counter）。
+    ///
+    /// SQLite 没有"改 CHECK"，只能建新表、搬数据、改名。老库升级必须走过这一步，
+    /// 否则打点入队直接抛约束错误 —— 而那个异常发生在"点一下计数"的路径上，
+    /// 老师看到的会是"点了没反应"。
+    ///
+    /// 幂等：先看 sqlite_master 里那条建表语句有没有 'tick'，有就什么都不做。
+    /// </summary>
+    private static bool RebuildOutboxKinds(SqliteConnection conn)
+    {
+        string? sql;
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'outbox'";
+            sql = cmd.ExecuteScalar() as string;
+        }
+        if (sql is null || sql.Contains("'tick'", StringComparison.Ordinal)) return false;
+
+        using var tx = conn.BeginTransaction();
+        Exec(conn, tx, """
+            CREATE TABLE outbox_new (
+              id         TEXT PRIMARY KEY,
+              kind       TEXT NOT NULL CHECK (kind IN ('entry','reverse','tick','student','rule','period','exam','member','note','scheme','counter')),
+              payload    TEXT NOT NULL,
+              attempts   INTEGER NOT NULL DEFAULT 0,
+              next_at    INTEGER NOT NULL,
+              created_at INTEGER NOT NULL
+            )
+            """);
+        Exec(conn, tx, "INSERT INTO outbox_new (id, kind, payload, attempts, next_at, created_at) SELECT id, kind, payload, attempts, next_at, created_at FROM outbox");
+        Exec(conn, tx, "DROP TABLE outbox");
+        Exec(conn, tx, "ALTER TABLE outbox_new RENAME TO outbox");
+        Exec(conn, tx, "CREATE INDEX IF NOT EXISTS idx_outbox_next ON outbox(next_at)");
+        tx.Commit();
+        return true;
     }
 
     /// <summary>两个路径是不是同一个地方。比较前统一成绝对路径、去掉末尾分隔符。</summary>

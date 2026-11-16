@@ -10,9 +10,11 @@ namespace ClassPoints.Data;
 ///   多出一个 if；事件只关心"几次"。
 /// - 次数永远现算 SUM(value)，允许 value 直接写成 +3/-2，"改成 5 次"就是补一条差值，
 ///   不需要在流水上改历史（改历史在同步下必然打架）。
-/// - 只存本机。这是刻意取舍：云端同步要连带改 Worker、D1 建表、拉取协议，
-///   而事件计数几乎都是在大屏上现场点的，跨机合并的收益远小于引入的复杂度。
-///   要跨机看，用「整包导出 / 导入」把数据整份带过去。
+/// - **也参与云同步**（1.3.3 起）：事件定义走通用实体接口（counters），
+///   打点走只追加的批量接口（counter_ticks）。并入同步的理由很实际 ——
+///   教室那台大屏上点的次数，班主任在办公室电脑上要能看见，否则"两个班委
+///   各点各的、谁也不知道真实次数"就是每天都会发生的事。
+///   设计上仍然刻意**不并入积分**：次数永远现算 SUM(value)，不参与总评。
 /// </summary>
 public sealed class CounterRepository(Database db)
 {
@@ -51,10 +53,11 @@ public sealed class CounterRepository(Database db)
         counter.UpdatedAt = now;
 
         using var conn = db.Open();
+        using var tx = conn.BeginTransaction();
         if (isNew)
         {
             counter.Rev = 1;
-            Database.Exec(conn, """
+            Database.Exec(conn, tx, """
                 INSERT INTO counters (id, label, icon, sort, preset_key, rev, updated_at)
                 VALUES ($id, $label, $icon, $sort, $preset, 1, $now)
                 """,
@@ -64,13 +67,16 @@ public sealed class CounterRepository(Database db)
         else
         {
             counter.Rev++;
-            Database.Exec(conn, """
+            Database.Exec(conn, tx, """
                 UPDATE counters SET label = $label, icon = $icon, sort = $sort, rev = $rev, updated_at = $now
                 WHERE id = $id
                 """,
                 ("$id", counter.Id), ("$label", counter.Label), ("$icon", counter.Icon),
                 ("$sort", counter.Sort), ("$rev", counter.Rev), ("$now", now));
         }
+        SyncOutbox.Enqueue(conn, tx, $"counters:{counter.Id}", "counter",
+            new { action = "upsert", counter });
+        tx.Commit();
         return counter;
     }
 
@@ -78,9 +84,15 @@ public sealed class CounterRepository(Database db)
     {
         var now = Clock.NowMs();
         using var conn = db.Open();
+        using var tx = conn.BeginTransaction();
         // archived_at 可以写 NULL（恢复归档），updated_at 不行 —— 两列必须分开传参
-        Database.Exec(conn, "UPDATE counters SET archived_at = $archived, updated_at = $now, rev = rev + 1 WHERE id = $id",
+        Database.Exec(conn, tx, "UPDATE counters SET archived_at = $archived, updated_at = $now, rev = rev + 1 WHERE id = $id",
             ("$id", id), ("$archived", archived ? now : (object)DBNull.Value), ("$now", now));
+        // 归档/恢复都是"这一行变了"，整行推给云端（archived_at 也在 entities 的列里）
+        var current = ReadCounter(conn, tx, id);
+        if (current is not null)
+            SyncOutbox.Enqueue(conn, tx, $"counters:{id}", "counter", new { action = "upsert", counter = current });
+        tx.Commit();
     }
 
     /// <summary>停用而不删除：删了以后历史次数还在表里，界面上却查不到名字，那是最难解释的一种数据。</summary>
@@ -88,8 +100,21 @@ public sealed class CounterRepository(Database db)
     {
         var now = Clock.NowMs();
         using var conn = db.Open();
-        Database.Exec(conn, "UPDATE counters SET archived_at = $at, updated_at = $at, rev = rev + 1 WHERE id = $id",
+        using var tx = conn.BeginTransaction();
+        Database.Exec(conn, tx, "UPDATE counters SET archived_at = $at, updated_at = $at, rev = rev + 1 WHERE id = $id",
             ("$id", id), ("$at", now));
+        SyncOutbox.Enqueue(conn, tx, $"counters:{id}", "counter", new { action = "delete", id, deletedAt = now });
+        tx.Commit();
+    }
+
+    private static Counter? ReadCounter(SqliteConnection conn, SqliteTransaction tx, string id)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = "SELECT * FROM counters WHERE id = $id";
+        cmd.Parameters.AddWithValue("$id", id);
+        using var r = cmd.ExecuteReader();
+        return r.Read() ? Mappers.Counter(r) : null;
     }
 
     // ---------------- 次数 ----------------
@@ -236,13 +261,35 @@ public sealed class CounterRepository(Database db)
     private static void InsertTick(SqliteConnection conn, SqliteTransaction tx,
         string counterId, string studentId, string periodId, int value, Member op, string? note, long now)
     {
+        var id = Ids.NewUuid7();
         Database.Exec(conn, tx, """
             INSERT INTO counter_ticks
               (id, counter_id, student_id, period_id, value, note, operator_id, operator_name, occurred_at, created_at)
             VALUES ($id, $c, $s, $p, $v, $note, $op, $opName, $now, $now)
             """,
-            ("$id", Ids.NewUuid7()), ("$c", counterId), ("$s", studentId), ("$p", periodId),
+            ("$id", id), ("$c", counterId), ("$s", studentId), ("$p", periodId),
             ("$v", value), ("$note", note), ("$op", op.Id), ("$opName", op.DisplayName), ("$now", now));
+
+        // 打点和流水一样进 outbox：本地写成功就算成功，推送在后台补。
+        // 载荷显式列字段：CounterTick 上有 Seq（本地自增）和两个只用于显示的名字，
+        // 整对象序列化会把它们一起发上去，云端没有对应列。
+        SyncOutbox.Enqueue(conn, tx, id, "tick", new
+        {
+            action = "tick",
+            tick = new
+            {
+                id,
+                counterId,
+                studentId,
+                periodId,
+                value,
+                note,
+                operatorId = op.Id,
+                operatorName = op.DisplayName,
+                occurredAt = now,
+                createdAt = now,
+            },
+        });
     }
 
     // ---------------- 明细 ----------------

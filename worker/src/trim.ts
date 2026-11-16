@@ -5,7 +5,7 @@
  * 用两年 D1 免费额度也未必撑满，但每次拉取、每次重建索引都在为"早就翻篇的周期"付费，
  * 而且这些老数据在教室那台机器上本来就有完整副本。
  *
- * 做法：只保留最近 4 个周期（含当前这个）的明细，更早的周期连流水、考试、成绩一起删。
+ * 做法：只保留最近 4 个周期（含当前这个）的明细，更早的周期连流水、事件计数、考试、成绩一起删。
  *
  * 三条约束，缺一条就会出事：
  * ① 删的是**云端副本**。不写 changelog、不发删除墓碑 —— 否则另一台设备拉到"服务端说没有这行"
@@ -58,6 +58,12 @@ export async function trimOldPeriods(
     );
     stmts.push(
       env.DB.prepare(
+        `DELETE FROM changelog WHERE class_id = ? AND entity = 'counter_ticks'
+           AND row_id IN (SELECT id FROM counter_ticks WHERE class_id = ? AND period_id = ?)`,
+      ).bind(classId, classId, periodId),
+    );
+    stmts.push(
+      env.DB.prepare(
         `DELETE FROM changelog WHERE class_id = ? AND entity = 'exam_scores'
            AND row_id IN (
              SELECT e.id || ':' || s.student_id
@@ -78,6 +84,9 @@ export async function trimOldPeriods(
         `DELETE FROM scheme_weights
            WHERE exam_id IN (SELECT id FROM exams WHERE class_id = ? AND period_id = ?)`,
       ).bind(classId, periodId),
+    );
+    stmts.push(
+      env.DB.prepare('DELETE FROM counter_ticks WHERE class_id = ? AND period_id = ?').bind(classId, periodId),
     );
     stmts.push(
       env.DB.prepare('DELETE FROM entries WHERE class_id = ? AND period_id = ?').bind(classId, periodId),

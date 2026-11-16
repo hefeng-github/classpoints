@@ -57,7 +57,7 @@ public sealed partial class DeskCountersPage : Page
 
             // 事件流水还没接同步（worker 侧只放行固定几张表）。这句必须写出来：
             // 不写的话，老师在办公室这台机器上看到一片 0，会以为教室里记的事件丢了。
-            SubText.Text = $"{period.Name} · {period.RangeText} · 只数次数不加分 · 事件只记在本机，暂不参与云端同步";
+            SubText.Text = $"{period.Name} · {period.RangeText} · 只数次数不加分 · 两台设备之间会同步";
 
             var total = counts.Values.Sum();
             SummaryText.Text = _counters.Count == 0

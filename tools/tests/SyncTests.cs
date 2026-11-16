@@ -25,6 +25,7 @@ internal static class SyncTests
             Periods = new PeriodRepository(Db);
             Entries = new EntryService(Db, new AuditRepository(Db));
             Exams = new ExamRepository(Db);
+            Counters = new CounterRepository(Db);
             Store = new SyncStore(Path.Combine(dir, "sync.json"));
             Sync = new SyncService(Db, Outbox, Store);
         }
@@ -38,6 +39,7 @@ internal static class SyncTests
         public PeriodRepository Periods { get; }
         public EntryService Entries { get; }
         public ExamRepository Exams { get; }
+        public CounterRepository Counters { get; }
         public SyncService Sync { get; }
 
         /// <summary>落盘的凭据。测试要故意把它弄坏，模拟"续期在别处被换掉"。</summary>
@@ -117,6 +119,28 @@ internal static class SyncTests
         check("流水拉过来了", pulledEntries.Count == 3, pulledEntries.Count.ToString());
         check("积分合计对得上", pulledEntries.Sum(e => e.Delta) == 15, pulledEntries.Sum(e => e.Delta).ToString());
         check("规则拉过来了", b.Rules.ListAll().Any(r => r.Label == "回答问题"));
+
+        // ---- 事件计数：定义和打点都要跨机 ----
+        // 教室大屏上点的次数，班主任在办公室电脑上得能看见；云端算次数用 SUM(value)，
+        // 所以两台机器各 +1 加起来自然是 2，不需要在云端存一个会打架的"当前次数"。
+        var counterA = a.Counters.Save(new Counter { Label = "迟到", Icon = IconCatalog.Flag });
+        var first = a.Counters.AddTick(counterA.Id, students[0].Id, periodA.Id, 1, ownerA);
+        var second = a.Counters.AddTick(counterA.Id, students[0].Id, periodA.Id, 1, ownerA);
+        check("事件本地记两次", first == 1 && second == 2, $"{first}/{second}");
+
+        var pushTick = await a.Sync.RunOnceAsync();
+        check("事件定义与打点推送成功", pushTick.Ok, pushTick.Error ?? "");
+        var pullTick = await b.Sync.RunOnceAsync();
+        check("另一端收到事件定义",
+            b.Counters.ListAll(true).Any(c => c.Id == counterA.Id && c.Label == "迟到"));
+        var ticksB = b.Counters.Total(pulledPeriod!.Id, students[0].Id, counterA.Id);
+        check("另一端次数一致（2 次）", ticksB == 2, ticksB.ToString());
+
+        // 重推一遍：打点按 id 幂等，不能变成 4 次
+        await a.Sync.RunOnceAsync();
+        await b.Sync.RunOnceAsync();
+        var ticksAgain = b.Counters.Total(pulledPeriod!.Id, students[0].Id, counterA.Id);
+        check("重跑不会把次数算重", ticksAgain == 2, ticksAgain.ToString());
 
         // ---- 本地学号撞车：不许把整页拉取拖死 ----
         // 两台设备各自导入名单，同一个学号会落到两个不同的 id 上。以前这种行一插就撞
