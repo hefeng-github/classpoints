@@ -323,6 +323,13 @@ public sealed partial class DeskStudentsPage : Page
                 return;
             }
 
+            // 全校成绩大表（两行表头 + 班级列）：先挑班再导入，别把整个年级塞进一个人的班
+            if (GradeSheet.TryParse(grid, out var grade) && grade is not null)
+            {
+                await ImportFromGradeSheetAsync(Path.GetFileName(picked), grade);
+                return;
+            }
+
             // 名单只认「姓名」一列，其余列尽量识别；识别不准就让用户自己选
             var options = Enumerable.Range(0, grid.ColumnCount)
                 .Select(c => new ColumnOption(c, grid.Cell(0, c), grid.RowCount > 1 ? grid.Cell(1, c) : ""))
@@ -421,6 +428,184 @@ public sealed partial class DeskStudentsPage : Page
             Services.LogError("import-students", ex);
             Shell?.Toast("导入失败：" + ex.Message, 6);
         }
+    }
+
+    /// <summary>
+    /// 从全校大表里导入一个班：先选班，再预览会新增多少人；另外给一个姓名搜索，
+    /// 让老师能把**别的班**的某个学生单独加进来（转班、借读、临时合班都用得上）。
+    /// </summary>
+    private async Task ImportFromGradeSheetAsync(string fileName, GradeSheet sheet)
+    {
+        var classBox = new ComboBox
+        {
+            Header = "班级",
+            Width = 200,
+            ItemsSource = sheet.Classes,
+            SelectedIndex = 0,
+        };
+
+        var preview = new TextBlock
+        {
+            Style = Styled("DeskSecondaryText"),
+            TextWrapping = TextWrapping.Wrap,
+        };
+
+        var seat = _all.Where(x => !x.IsDeleted).Max(x => x.SeatNo) ?? 0;
+        var added = 0;
+
+        void RefreshPreview()
+        {
+            if (classBox.SelectedItem is not string className) return;
+            var rows = sheet.DataRows(className).ToList();
+            var have = rows.Count(r =>
+                _all.Any(x => !x.IsDeleted &&
+                    NameNormalizer.NormalizeKey(x.Name) == NameNormalizer.NormalizeKey(sheet.NameOf(r))));
+            preview.Text = $"{className} 班：表里 {rows.Count} 人，其中 {have} 人已在名单里，"
+                         + $"导入会新增 {rows.Count - have} 人。本次已另外添加 {added} 人。";
+        }
+
+        // ---- 跨班搜索：把「不是这个班」的某个学生单独加进来 ----
+        var searchBox = new TextBox
+        {
+            Header = "加一个人（可以不是上面这个班）",
+            PlaceholderText = "输入姓名的一部分，例如：朱",
+            Width = 320,
+        };
+        var hits = new StackPanel { Spacing = 4 };
+
+        void RenderHits()
+        {
+            hits.Children.Clear();
+            var keyword = searchBox.Text.Trim();
+            if (keyword.Length == 0) return;
+
+            var found = sheet.Search(keyword, 8).ToList();
+            if (found.Count == 0)
+            {
+                hits.Children.Add(new TextBlock
+                {
+                    Text = "表里没有这个人",
+                    Style = Styled("DeskSecondaryText"),
+                });
+                return;
+            }
+
+            foreach (var row in found)
+            {
+                var name = sheet.NameOf(row);
+                var line = new Grid { ColumnSpacing = 10 };
+                line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
+                line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(80) });
+                line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+                line.Children.Add(new TextBlock { Text = name, Style = Styled("DeskBodyText") });
+
+                var cls = new TextBlock
+                {
+                    Text = sheet.ClassOf(row) + " 班",
+                    Style = Styled("DeskSecondaryText"),
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                Grid.SetColumn(cls, 1);
+                line.Children.Add(cls);
+
+                var add = new Button
+                {
+                    Content = "加入名单",
+                    Style = Styled("DeskButton"),
+                    Height = 26,
+                    MinWidth = 84,
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                };
+                add.Click += (_, _) =>
+                {
+                    if (_all.Any(x => !x.IsDeleted &&
+                            NameNormalizer.NormalizeKey(x.Name) == NameNormalizer.NormalizeKey(name)))
+                    {
+                        Shell?.Toast($"{name} 已经在名单里了", 4);
+                        return;
+                    }
+                    var student = Services.Students.Insert(new Student
+                    {
+                        Name = name,
+                        StudentNo = sheet.NoOf(row).Length > 0 ? sheet.NoOf(row) : null,
+                        SeatNo = ++seat,
+                    });
+                    _all.Add(student);
+                    added++;
+                    RefreshPreview();
+                    RenderHits();
+                    Shell?.Toast($"已加入 {name}（{sheet.ClassOf(row)} 班）", 4);
+                };
+                Grid.SetColumn(add, 2);
+                line.Children.Add(add);
+
+                hits.Children.Add(line);
+            }
+        }
+
+        searchBox.TextChanged += (_, _) => RenderHits();
+        classBox.SelectionChanged += (_, _) => RefreshPreview();
+        RefreshPreview();
+
+        var panel = new StackPanel { Spacing = 12, Width = 460 };
+        panel.Children.Add(new TextBlock
+        {
+            Text = fileName + " · 全校成绩表",
+            Style = Styled("DeskBodyText"),
+        });
+        panel.Children.Add(classBox);
+        panel.Children.Add(preview);
+        panel.Children.Add(searchBox);
+        panel.Children.Add(hits);
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "导入名单",
+            Content = new ScrollViewer { Content = panel, MaxHeight = 560 },
+            PrimaryButtonText = "导入这个班",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary)
+        {
+            Reload();
+            return;
+        }
+        if (classBox.SelectedItem is not string chosen) return;
+
+        var imported = 0;
+        var skipped = 0;
+        foreach (var row in sheet.DataRows(chosen))
+        {
+            var name = NameNormalizer.StripListIndex(sheet.NameOf(row));
+            if (name.Length == 0) continue;
+
+            if (_all.Any(x => !x.IsDeleted &&
+                    NameNormalizer.NormalizeKey(x.Name) == NameNormalizer.NormalizeKey(name)))
+            {
+                skipped++;
+                continue;
+            }
+
+            var student = Services.Students.Insert(new Student
+            {
+                Name = name,
+                StudentNo = sheet.NoOf(row).Length > 0 ? sheet.NoOf(row) : null,
+                SeatNo = ++seat,
+            });
+            _all.Add(student);
+            imported++;
+        }
+
+        Reload();
+        Services.Audit.Add("students.import_grade", null, fileName,
+            $"{chosen} 班：新增 {imported}，跳过 {skipped}");
+        Shell?.Toast($"已从 {chosen} 班导入 {imported} 人"
+                     + (added > 0 ? $"，另外手动加入 {added} 人" : "")
+                     + (skipped > 0 ? $"，跳过 {skipped} 人（已在名单里）" : ""), 6);
     }
 
     // ---------------- 回收站 ----------------

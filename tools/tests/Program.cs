@@ -54,6 +54,8 @@ internal static class Program
         DomainTests.Run(Check);
         Section("预配置包");
         ConfigTests.Run(Check);
+        Section("全校大表识别");
+        GradeSheetTests.Run(Check);
         Section("Excel 读写");
         ExcelTests.Run(Check);
         Section("成绩导出排版");

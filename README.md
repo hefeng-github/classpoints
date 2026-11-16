@@ -479,12 +479,26 @@ scripts/prune-cnb-releases.sh    清理 CNB 旧版本（保留 stable）
   只刷新界面不够 —— 内存里的会话、周期和形态还是旧库的。
 - `entries` 表只追加。总分永远 `SUM(delta)` 现算，撤销是追加冲销行 + 给原行打 `reversed_at`。
 
+### 导入全校成绩大表
+
+县里/学校统考发下来的那种表可以直接导：两行表头（`学校 | 班级 | 考号 | 姓名 | 总分(物理) | 语文 | …`，
+第二行是 `分数 / 班名次 / 校名次 / 全体名次 / 市级名次`）。
+
+- **名单页**：认出班级列后先选班再导入，只进这个班的人；表里同一名字重复时跳过。
+  另有一个姓名搜索框，可以把**别的班**的某个学生单独加进来（转班、借读、临时合班）。
+- **成绩页**：认出班级列和每一科的「分数」列（名次列一概不碰），选班级 + 选科目后导入；
+  满分跟着科目自动猜（总分 750 / 语文 150）。
+- 识别逻辑在 `Core/GradeSheet.cs`（纯文本判定，有单测钉住）：两行表头、合并单元格靠
+  "往左找最近的非空"还原科目名。普通两列名单不会被误判成这种表。
+
 ### 表结构版本
 
-`PRAGMA user_version` 现在是 **4**。v4 给 `rules` 补了 `owner_id`（NULL = 全班共用），
-老库启动时自动 `ALTER TABLE`，不需要回填。服务端配套的是 `worker/migrations/0004_rule_owner.sql`，
-**部署服务端时要记得 `wrangler d1 migrations apply --remote`** —— 少这一步，换台设备拉下来的
-私有项会丢掉归属。
+`PRAGMA user_version` 现在是 **6**。
+- v4 给 `rules` 补了 `owner_id`（NULL = 全班共用）。服务端配套 `0004_rule_owner.sql`。
+- v6 让事件计数进同步：`outbox.kind` 的 CHECK 要接纳 `tick` / `counter`，
+  SQLite 改不了 CHECK，启动时重建这张小表（幂等）。服务端配套 `0006_counters.sql`。
+- **部署服务端时要记得 `wrangler d1 migrations apply --remote`** —— 少一步，换台设备拉下来的
+  私有项会丢掉归属、事件计数也进不了云端。
 
 ### 事件计数
 

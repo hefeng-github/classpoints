@@ -529,8 +529,9 @@ public sealed partial class DeskExamsPage : Page
                 return;
             }
 
-            var parsed = ScoreSheetParser.Parse(grid, _students);
-            await ShowImportDialogAsync(Path.GetFileName(picked), picked, grid, parsed);
+            // 全校大表：先挑班、再挑科，然后投影成「姓名/分数」两列，走同一条匹配管线
+            GradeSheet.TryParse(grid, out var grade);
+            await ShowImportDialogAsync(Path.GetFileName(picked), picked, grid, grade);
         }
         catch (Exception ex)
         {
@@ -539,20 +540,24 @@ public sealed partial class DeskExamsPage : Page
         }
     }
 
-    private async Task ShowImportDialogAsync(string fileName, string path, SheetGrid grid, ScoreParseResult parsed)
+    private async Task ShowImportDialogAsync(string fileName, string path, SheetGrid grid, GradeSheet? grade)
     {
+        var parsed = ScoreSheetParser.Parse(
+            grade is null ? grid : grade.Project(grade.Classes[0], grade.Subjects[0]), _students);
         var nameBox = new TextBox { Header = "考试名称", Text = GuessExamName(fileName), Width = 240 };
 
         // 满分默认值按"这张表里最大那个分"去猜常见的档位：95 → 100、150 → 150、750 → 750。
         // 以前写死 750，导一份百分制成绩进来，全班都显示成"13% 得分率"，
         // 还得手工改一次满分才看得懂。而直接取最大值向上取整也不行：
         // 班里最高 88 分的百分制卷子会变成"满分 88"，看起来更莫名其妙。
-        var peak = parsed.Rows
+        static double PeakOf(ScoreParseResult p) => p.Rows
             .Where(r => r.Kind is not (ScoreMatchKind.Summary or ScoreMatchKind.Duplicate))
             .Select(r => ScoreSheetParser.TryParseScore(r.ScoreText, out var v) ? v : double.NaN)
             .Where(v => !double.IsNaN(v) && v > 0)
             .DefaultIfEmpty(double.NaN)
             .Max();
+
+        var peak = PeakOf(parsed);
 
         var fullBox = new NumberInput
         {
@@ -648,6 +653,44 @@ public sealed partial class DeskExamsPage : Page
         RenderRows();
 
         var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+
+        if (grade is not null)
+        {
+            // 全校大表：一个年级几百人、二十几科，不先挑就问"导哪个"等于没做
+            var classBox = new ComboBox
+            {
+                Header = "班级",
+                Width = 110,
+                ItemsSource = grade.Classes,
+                SelectedIndex = 0,
+            };
+            var subjectBox = new ComboBox
+            {
+                Header = "科目",
+                Width = 150,
+                ItemsSource = grade.Subjects.Select(x => x.Label).ToList(),
+                SelectedIndex = 0,
+            };
+
+            void Reparse()
+            {
+                if (classBox.SelectedItem is not string className) return;
+                if (subjectBox.SelectedIndex < 0 || subjectBox.SelectedIndex >= grade.Subjects.Count) return;
+
+                parsed = ScoreSheetParser.Parse(grade.Project(className, grade.Subjects[subjectBox.SelectedIndex]), _students);
+                summary.Text = parsed.SummaryText;
+                // 满分跟着科目走：总分 750、语文 150，猜错了会导致得分率全错
+                fullBox.Value = GuessFullScore(PeakOf(parsed));
+                RenderRows();
+            }
+
+            classBox.SelectionChanged += (_, _) => Reparse();
+            subjectBox.SelectionChanged += (_, _) => Reparse();
+
+            header.Children.Add(classBox);
+            header.Children.Add(subjectBox);
+        }
+
         header.Children.Add(nameBox);
         header.Children.Add(fullBox);
         header.Children.Add(dateBox);
@@ -657,7 +700,9 @@ public sealed partial class DeskExamsPage : Page
             Style = Styled("DeskSecondaryText"),
             TextWrapping = TextWrapping.Wrap,
             MaxWidth = 620,
-            Text = "按姓名匹配，同名与汇总行跳过。",
+            Text = grade is null
+                ? "按姓名匹配，同名与汇总行跳过。"
+                : "这是一张全校成绩表：先选班级和科目，导入只取该班该科那一列分数（名次列不参与）。",
         };
 
         var panel = new StackPanel { Spacing = 12, Width = 640 };
