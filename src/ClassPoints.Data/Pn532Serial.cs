@@ -277,14 +277,6 @@ public sealed class Pn532Serial : IDisposable
     }
 
 
-    /// <summary>没有硬件时的调试通道：直接喂一个 UID，走同一条认人链路。</summary>
-    public void SimulateSwipe(string uid)
-    {
-        var normalized = Crypto.NormalizeUid(uid);
-        if (normalized.Length == 0) return;
-        Emit(new CardRead(normalized, DateTime.Now));
-    }
-
     [SupportedOSPlatform("windows")]
     private async Task RunLoopAsync(string? preferredPort, CancellationToken token)
     {

@@ -469,11 +469,6 @@ public sealed partial class DeskSettingsPage : Page
             Services.Reader.Start(port, Services.Settings.ReaderBaud, Services.Settings.ReaderProtocol);
             RefreshLamps();
         }));
-        actions.Children.Add(Small("模拟刷一张卡", () =>
-        {
-            Services.Reader.SimulateSwipe("04A1B2C3D4E5F6");
-            Shell?.Toast("已模拟一次刷卡（没有硬件时用来验链路）", 5);
-        }));
         actions.Children.Add(Small("连不上怎么办", () => ShowReaderHelp()));
 
         // 读卡器类型：市面上两种设备外观几乎一样、协议完全不同，选错的表现
