@@ -16,6 +16,9 @@ public sealed class SyncPump(AppServices services)
     private bool _running;
     private bool _busy;
 
+    /// <summary>Start() 那一刻的 UI 队列。后台链路上要回 UI 只能靠它。</summary>
+    private DispatcherQueue? _ui;
+
     public DateTime LastAttempt { get; private set; } = DateTime.MinValue;
     public string LastError { get; private set; } = "";
     public int LastPushed { get; private set; }
@@ -68,6 +71,7 @@ public sealed class SyncPump(AppServices services)
     {
         if (_running) return;
         _running = true;
+        _ui = DispatcherQueue.GetForCurrentThread();
 
         // 先把"有没有接云端"这件事同步出去：第一轮网络还没跑完，
         // 侧栏就已经能显示正确的状态，不用先错一次再改。
@@ -91,7 +95,9 @@ public sealed class SyncPump(AppServices services)
 
     private void OnAutoRepaired()
     {
-        var queue = DispatcherQueue.GetForCurrentThread();
+        // 这个回调可能落在同步那条 async 链的任意一段上（网络续完也可能是后台线程），
+        // 所以用 Start 时记下来的 UI 队列，而不是"当前线程的"。
+        var queue = _ui ?? DispatcherQueue.GetForCurrentThread();
         if (queue is null) AutoRepaired?.Invoke();
         else queue.TryEnqueue(() => AutoRepaired?.Invoke());
     }
