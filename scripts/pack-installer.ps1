@@ -166,8 +166,11 @@ Write-Host "==> 编译安装包（版本 $Version）" -ForegroundColor Cyan
 # [Code] 里把 Format 的数组参数换行后正好长这样，编译直接报 "Invalid section tag."
 # —— 这不是 Pascal 语法错，光看代码看不出问题，而且只有编译安装包这一步才暴露。
 # v1.3.2 的正式版发布就是这么挂的（CI 跑完 publish 才在这里失败）。先自己扫一遍。
-$issLines = @(Get-Content $iss)
-for ($i = 0; $i -lt $issLines.Count; $i++) {
+#
+# 用 File.ReadAllLines 而不是 Get-Content：Windows PowerShell 5.1 的默认编码是
+# 单字节 ANSI，UTF-8 的中文里常出现 0x85（NEL），会被当成换行 —— 行号全错、扫描也漏。
+$issLines = [IO.File]::ReadAllLines($iss)
+for ($i = 0; $i -lt $issLines.Length; $i++) {
     if ($issLines[$i] -match '^\s+\[') {
         $lineNo = $i + 1
         $text = $issLines[$i].Trim()
