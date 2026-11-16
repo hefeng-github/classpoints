@@ -123,6 +123,20 @@ const tooMany = await call('POST', '/entries', {
 });
 check('超过 50 条被拒绝', tooMany.status === 422, `status=${tooMany.status}`);
 
+// 内置规则「课上黑板演题」就是 +100：这里以前按"超过 50 必须 overCap"拒掉，
+// 于是这类记录永远推不上来，客户端只能一轮轮退避。
+const bigOne = await call('POST', '/entries', {
+  token: access,
+  body: { entries: [{ ...entries[0], id: uuid(), batchId: uuid(), ruleId: 'r_board', ruleLabel: '课上黑板演题', ruleDeltaDefault: 100, delta: 100 }] },
+});
+check('100 分的记录能入库（内置规则的分值）', bigOne.status === 200 && bigOne.data?.inserted === 1, JSON.stringify(bigOne.data));
+
+const absurd = await call('POST', '/entries', {
+  token: access,
+  body: { entries: [{ ...entries[0], id: uuid(), batchId: uuid(), delta: 5000 }] },
+});
+check('明显是垃圾的分值仍然被拒（>1000 且没标 overCap）', absurd.status === 422 && absurd.data?.error === 'delta_too_large', JSON.stringify(absurd.data));
+
 const noAuth = await call('POST', '/entries', { body: { entries } });
 check('没令牌写入被拒', noAuth.status === 401, `status=${noAuth.status}`);
 

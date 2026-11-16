@@ -89,8 +89,14 @@ async function requireKnownRefs(env: Env, classId: string, list: EntryDto[]): Pr
 function bindEntry(env: Env, classId: string, e: EntryDto): D1PreparedStatement {  const id = requireString(e.id, 'id', 40);
   const delta = intOrNull(e.delta);
   if (delta === null) throw new HttpError(422, 'invalid_delta', 'delta 必须是整数');
-  if (Math.abs(delta) > 50 && !e.overCap) {
-    throw new HttpError(422, 'delta_too_large', '单条超过 50 分必须显式 overCap');
+  // 合理性上限，不是业务规则。
+  //
+  // 这里原来写的是 50 —— 而客户端允许规则分行 ±500，内置的「课上黑板演题」就是 +100。
+  // 于是这台机器上每一条 100 分的记录都被 422 拒收，整批一起回滚，
+  // 界面上只显示「待同步 N 条」，看起来像网络不好。撤销行是原值取反，同样过不去。
+  // 现在只挡明显是垃圾的数据（超过 1000），业务上的"该不该给这么多"由客户端的封顶规则管。
+  if (Math.abs(delta) > 1000 && !e.overCap) {
+    throw new HttpError(422, 'delta_too_large', '单条超过 1000 分必须显式 overCap');
   }
   const source = e.source === 'custom' ? 'custom' : 'rule';
   const at = intOrNull(e.occurredAt) ?? now();

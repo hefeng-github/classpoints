@@ -72,6 +72,8 @@ internal static class Program
         SeatSnapshotTests.Run(Check);
         Section("座次表导出");
         SeatSheetTests.Run(Check);
+        Section("推送失败分类与出队标记");
+        SyncPushTests.Run(Check);
         Section("同步凭据");
         SyncStoreTests.Run(Check);
         Section("本机重置");

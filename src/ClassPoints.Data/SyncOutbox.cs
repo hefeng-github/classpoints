@@ -68,6 +68,34 @@ public sealed class SyncOutbox(Database db)
         Database.Exec(conn, Sql.DeleteOutbox, ("$id", id));
     }
 
+    /// <summary>一批出队。一条连接、一个事务：推完 200 条不该开 200 次连接。</summary>
+    public void RemoveMany(IReadOnlyCollection<string> ids)
+    {
+        if (ids.Count == 0) return;
+        using var conn = db.Open();
+        using var tx = conn.BeginTransaction();
+        foreach (var id in ids) Database.Exec(conn, tx, Sql.DeleteOutbox, ("$id", id));
+        tx.Commit();
+    }
+
+    /// <summary>
+    /// 推上去的那几条，本地标记为"已上云"。
+    ///
+    /// 以前没人写这个字段：entries.synced 永远是 0，于是
+    /// ① 「30 秒内物理撤销」对已经推到云端的批次照样放行 —— 本地删干净了，云端还留着分，
+    ///    两台设备对不上；② 拉取时服务端说"没有这一行"的墓碑也不敢删本地。
+    /// 出队和标记必须一起做，否则这两件事一直是错的。
+    /// </summary>
+    public void MarkSynced(IReadOnlyCollection<string> ids)
+    {
+        if (ids.Count == 0) return;
+        using var conn = db.Open();
+        using var tx = conn.BeginTransaction();
+        foreach (var id in ids)
+            Database.Exec(conn, tx, "UPDATE entries SET synced = 1 WHERE id = $id AND synced = 0", ("$id", id));
+        tx.Commit();
+    }
+
     public void Backoff(OutboxItem item)
     {
         var delay = System.Math.Min(60_000, 1000 * (int)System.Math.Pow(2, System.Math.Min(6, item.Attempts)));

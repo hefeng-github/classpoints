@@ -242,14 +242,25 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
                         outcome = await _client.PushAsync(due, ct);
                     }
 
-                    foreach (var id in outcome.Done) outbox.Remove(id);
+                    outbox.RemoveMany(outcome.Done);
+                    outbox.RemoveMany(outcome.Dropped);
                     foreach (var id in outcome.Failed)
                     {
                         var item = due.FirstOrDefault(i => i.Id == id);
                         if (item is not null) outbox.Backoff(item);
                     }
+
+                    // 推上去的本地标记"已上云"：撤销要不要走冲销、墓碑敢不敢删，都看这个字段
+                    outbox.MarkSynced(outcome.Done);
                     pushed = outcome.Done.Count;
-                    pushError = outcome.Failed.Count > 0 ? outcome.LastError : null;
+
+                    // 退避的只报最后一条原因（下一轮还会再来）；被云端明确拒收的必须点名，
+                    // 因为它已经从队列里出去了 —— 不说不等于没发生，老师会以为已经同步完。
+                    pushError = outcome.Failed.Count > 0
+                        ? outcome.LastError ?? "推送失败，稍后重试"
+                        : outcome.Dropped.Count > 0
+                            ? $"有 {outcome.Dropped.Count} 条记录被云端拒收，已从待推送里移出（{outcome.LastError}）"
+                            : null;
                 }
             }
 

@@ -12,7 +12,16 @@ public sealed record PushOutcome(
     IReadOnlyList<string> Done,
     IReadOnlyList<string> Failed,
     bool AuthExpired,
-    string? LastError);
+    string? LastError)
+{
+    /// <summary>
+    /// 服务端明确拒收、永远也推不上去的那些（已经决定从队列里移出）。
+    /// 和 Failed 分开：Failed 是"等一等还会再来"，这些是"不用等了，但要告诉人"。
+    /// </summary>
+    public IReadOnlyList<string> Dropped { get; init; } = Array.Empty<string>();
+
+    public bool HasDropped => Dropped.Count > 0;
+}
 
 public sealed record PullOutcome(
     long Next,
@@ -165,63 +174,116 @@ public sealed class SyncClient : IDisposable
     /// <summary>
     /// 一次推一批 outbox。
     /// - 流水按 50 条一批合并成一次请求（云端整批一个事务，也只算一次配额）。
-    /// - 4xx 一律当"这条永远推不上去"，直接从队列里丢掉，否则队列会被一条毒消息卡死；
-    ///   但要排除 423（正在重置周期），那是暂时性的。
-    /// - 5xx / 网络错误留在队列里等退避重试。
+    /// - 失败分两类（见 <see cref="PushVerdicts"/>）：会自己好的退避重试，永远过不去的从队列移出，
+    ///   并把原因带出去。**不能一律重试** —— 一条毒消息会把整批卡死，界面上只剩「待同步 N 条」。
+    /// - 整批被永久拒时一分为二继续找，别让一条坏数据带走同批的好数据。
     /// </summary>
     public async Task<PushOutcome> PushAsync(IReadOnlyList<OutboxItem> items, CancellationToken ct = default)
     {
-        var done = new List<string>();
-        var failed = new List<string>();
-        string? lastError = null;
+        var tally = new PushTally();
 
         var entries = new List<OutboxItem>();
         foreach (var item in items)
         {
-            if (item.Kind is "entry" or "reverse") entries.Add(item);
+            if (item.Kind is "entry" or "reverse") { entries.Add(item); continue; }
+
+            var (ok, verdict, error) = await PushEntityAsync(item, ct);
+            if (verdict == PushVerdict.Auth)
+                return new PushOutcome(tally.Done, items.Select(i => i.Id).ToList(), true, error) { Dropped = tally.Dropped };
+
+            if (ok) tally.Done.Add(item.Id);
+            else if (verdict == PushVerdict.Drop)
+            {
+                // 以前这里当成"推成功了"直接出队，老师永远不知道哪条没上去
+                tally.Dropped.Add(item.Id);
+                tally.LastError = error;
+            }
             else
             {
-                var (ok, authExpired, error) = await PushEntityAsync(item, ct);
-                if (authExpired) return new PushOutcome(done, items.Select(i => i.Id).ToList(), true, error);
-                if (ok) done.Add(item.Id);
-                else { failed.Add(item.Id); lastError = error; }
+                tally.Failed.Add(item.Id);
+                tally.LastError = error;
             }
         }
 
         foreach (var chunk in Chunk(entries, 50))
         {
-            var payload = new JsonObject { ["entries"] = new JsonArray(chunk.Select(EntryNode).ToArray()) };
-            try
-            {
-                using var res = await _http.PostAsync($"{BaseUrl}/api/v1/entries",
-                    new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json"), ct);
-                var text = await res.Content.ReadAsStringAsync(ct);
-
-                if (res.StatusCode == HttpStatusCode.Unauthorized)
-                    return new PushOutcome(done, items.Select(i => i.Id).ToList(), true, "令牌过期");
-
-                if (res.IsSuccessStatusCode)
-                    foreach (var it in chunk) done.Add(it.Id);
-                else
-                {
-                    lastError = Describe(text, $"entries {(int)res.StatusCode} 提交失败");
-                    foreach (var it in chunk) failed.Add(it.Id);
-                }
-            }
-            catch (Exception ex)
-            {
-                lastError = ex.Message;
-                foreach (var it in chunk) failed.Add(it.Id);
-            }
+            await PushEntriesAsync(chunk, tally, allowSplit: true, ct);
+            if (tally.AuthExpired) break;
         }
 
-        return new PushOutcome(done, failed, false, lastError);
+        return new PushOutcome(tally.Done, tally.Failed, tally.AuthExpired, tally.LastError)
+        {
+            Dropped = tally.Dropped,
+        };
     }
 
-    private async Task<(bool Ok, bool AuthExpired, string? Error)> PushEntityAsync(OutboxItem item, CancellationToken ct)
+    /// <summary>一批流水。失败时按"会不会自己好"分开处理，永久失败的二分下去定位到那一条。</summary>
+    private async Task PushEntriesAsync(List<OutboxItem> chunk, PushTally tally, bool allowSplit, CancellationToken ct)
+    {
+        if (tally.AuthExpired || chunk.Count == 0) return;
+
+        var (ok, verdict, code, error) = await PostEntriesAsync(chunk, ct);
+
+        if (ok)
+        {
+            foreach (var it in chunk) tally.Done.Add(it.Id);
+            return;
+        }
+
+        if (verdict == PushVerdict.Auth)
+        {
+            tally.AuthExpired = true;
+            tally.LastError = error;
+            foreach (var it in chunk) tally.Failed.Add(it.Id);
+            return;
+        }
+
+        if (verdict == PushVerdict.Retry)
+        {
+            tally.LastError = error;
+            foreach (var it in chunk) tally.Failed.Add(it.Id);
+            return;
+        }
+
+        // 永久拒收：整批被拒不代表每条都有问题，二分下去把坏的那条单独拎出来
+        if (allowSplit && chunk.Count > 1)
+        {
+            var half = chunk.Count / 2;
+            await PushEntriesAsync(chunk.GetRange(0, half), tally, true, ct);
+            await PushEntriesAsync(chunk.GetRange(half, chunk.Count - half), tally, true, ct);
+            return;
+        }
+
+        tally.Dropped.Add(chunk[0].Id);
+        tally.LastError = error is null ? "云端拒收了一条记录，已从待推送里移出" : $"云端拒收：{error}";
+    }
+
+    private async Task<(bool Ok, PushVerdict Verdict, string? Code, string? Error)> PostEntriesAsync(
+        List<OutboxItem> chunk, CancellationToken ct)
+    {
+        var payload = new JsonObject { ["entries"] = new JsonArray(chunk.Select(EntryNode).ToArray()) };
+        try
+        {
+            using var res = await _http.PostAsync($"{BaseUrl}/api/v1/entries",
+                new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json"), ct);
+            var text = await res.Content.ReadAsStringAsync(ct);
+
+            if (res.IsSuccessStatusCode) return (true, PushVerdict.Retry, null, null);
+
+            var code = ErrorCode(text);
+            var message = Describe(text, $"entries {(int)res.StatusCode} 提交失败");
+            return (false, PushVerdicts.Classify((int)res.StatusCode, code), code, message);
+        }
+        catch (Exception ex)
+        {
+            return (false, PushVerdict.Retry, null, ex.Message);
+        }
+    }
+
+    private async Task<(bool Ok, PushVerdict Verdict, string? Error)> PushEntityAsync(OutboxItem item, CancellationToken ct)
     {
         var (path, body) = Route(item);
-        if (path is null) return (true, false, null); // 不认识的 kind：丢，别卡队列
+        if (path is null) return (true, PushVerdict.Drop, null); // 不认识的 kind：丢，别卡队列
         Trace("POST " + path);
 
         try
@@ -235,25 +297,17 @@ public sealed class SyncClient : IDisposable
             var status = (int)res.StatusCode;
 
             Trace($"<- {status}");
-            if (res.StatusCode == HttpStatusCode.Unauthorized) return (false, true, "令牌过期");
-            if (res.IsSuccessStatusCode) return (true, false, null);
+            if (res.IsSuccessStatusCode) return (true, PushVerdict.Retry, null);
 
-            // 423 是"正在重置周期"，过几十秒再来；其余 4xx 是这条记录本身有问题，重试一万次也一样。
-            if (status == 423 || status >= 500)
-                return (false, false, $"{path} {status} {(string.IsNullOrWhiteSpace(text) ? "" : text.Trim())}".Trim());
-
-            // 403 单独处理：它不代表"这条记录有问题"，而是"这台机器现在是班委身份"。
-            // 直接丢掉的话，老师在界面上做的改动会静默消失 —— 本地还有，云端永远没有，
-            // 另一台设备上也看不到。所以留在队列里退避，等换回班主任/班长身份再补推。
-            if (status == 403)
-                return (false, false, Describe(text, "当前身份没有这个权限，这条改动还没同步到云端"));
-
-            return (true, false, null);
+            // 403 不要当"这条记录有问题"：它的意思是"这台机器现在不是班主任身份"，
+            // 直接丢掉的话老师在界面上做的改动会静默消失。分类器把它归到"等一等会好"。
+            var message = Describe(text, $"{path} {status} 提交失败");
+            return (false, PushVerdicts.Classify(status, ErrorCode(text)), message);
         }
         catch (Exception ex)
         {
             Trace("!! " + ex.GetType().Name + ": " + ex.Message);
-            return (false, false, ex.Message);
+            return (false, PushVerdict.Retry, ex.Message);
         }
     }
 
@@ -277,6 +331,30 @@ public sealed class SyncClient : IDisposable
             // 不是 JSON 就原样带出去
         }
         return $"{fallback}（{body.Trim()}）";
+    }
+
+    /// <summary>服务端错误体的机器可读代码（`{"error":"delta_too_large"}`），用来判断该不该重试。</summary>
+    private static string? ErrorCode(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return null;
+        try
+        {
+            return (JsonNode.Parse(body) as JsonObject)?["error"]?.GetValue<string>();
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>一轮推送的流水账。用可变对象而不是一堆 out 参数：推送是递归二分的，状态得共享。</summary>
+    private sealed class PushTally
+    {
+        public List<string> Done { get; } = [];
+        public List<string> Failed { get; } = [];
+        public List<string> Dropped { get; } = [];
+        public string? LastError { get; set; }
+        public bool AuthExpired { get; set; }
     }
 
     /// <summary>
