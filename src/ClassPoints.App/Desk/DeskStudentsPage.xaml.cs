@@ -572,7 +572,7 @@ public sealed partial class DeskStudentsPage : Page
         if (permission == ReversePermission.NeedsPassword)
         {
             if (Shell is not { } shell) return false;
-            if (!await shell.AskPinAsync("撤销别人的记录", "需要管理密码", requireManager: true)) return false;
+            if (!await shell.AskPinAsync("撤销记录", $"{entry.StudentName} · {entry.RuleLabel}，需要管理密码", requireManager: true)) return false;
             Services.Session.EnterAdmin();
         }
 

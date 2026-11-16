@@ -242,7 +242,7 @@ public sealed partial class BoardEntriesPage : Page
         {
             var shell = App.Host;
             if (shell is null) return;
-            var ok = await shell.AskPinAsync("撤销别人的记录", "需要管理密码", requireManager: true);
+            var ok = await shell.AskPinAsync("撤销记录", $"{entry.StudentName} · {entry.RuleLabel}，需要管理密码", requireManager: true);
             if (!ok) return;
             session.EnterAdmin();
         }
