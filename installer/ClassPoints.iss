@@ -125,18 +125,23 @@ end;
 // 机器上插着它（枚举表里有 VID_1A86&PID_7523）但驱动没装时，装完顺手把驱动装上：
 // 安装程序本身就是提权的，不再弹 UAC；设备不在就什么都不做，不给没读卡器的老师装东西。
 // 装了之后驱动会留在系统驱动仓库里，卸载本程序不回收 —— 别的程序可能也在用它。
+//
+// 【写法约束】整段 Pascal 里**不能出现以 [ 开头的行**：
+// Inno 的行式分区解析把"行首是 [ "当成新的 section 头，而 Format 的数组参数
+// 换行后正好长这样 —— 于是编译直接报 "Invalid section tag."（v1.3 发布就是这么挂的）。
+// 参数多的调用先拼成字符串变量，或者让数组和函数留在同一行。
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Rc: Integer;
+  Params: String;
 begin
   if CurStep <> ssPostInstall then Exit;
   if not RegKeyExists(HKEY_LOCAL_MACHINE,
       'SYSTEM\CurrentControlSet\Enum\USB\VID_1A86&PID_7523') then Exit;
 
-  Exec(ExpandConstant('{cmd}'),
-    Format('/C pnputil /add-driver "%s\drivers\CH341SER\ch341ser.inf" /install & pnputil /scan-devices',
-      [ExpandConstant('{app}')]),
-    '', SW_HIDE, ewWaitUntilTerminated, Rc);
+  Params := Format('/C pnputil /add-driver "%s\drivers\CH341SER\ch341ser.inf" /install', [ExpandConstant('{app}')])
+    + ' & pnputil /scan-devices';
+  Exec(ExpandConstant('{cmd}'), Params, '', SW_HIDE, ewWaitUntilTerminated, Rc);
   if Rc = 0 then
     Log('CH340 driver installed for existing device')
   else

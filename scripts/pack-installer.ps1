@@ -161,6 +161,20 @@ if (Test-Path $target) {
 }
 
 Write-Host "==> 编译安装包（版本 $Version）" -ForegroundColor Cyan
+
+# Inno 的分区解析是**按行**的：行首（允许缩进）是 `[` 就当新的 section 头。
+# [Code] 里把 Format 的数组参数换行后正好长这样，编译直接报 "Invalid section tag."
+# —— 这不是 Pascal 语法错，光看代码看不出问题，而且只有编译安装包这一步才暴露。
+# v1.3.2 的正式版发布就是这么挂的（CI 跑完 publish 才在这里失败）。先自己扫一遍。
+$issLines = @(Get-Content $iss)
+for ($i = 0; $i -lt $issLines.Count; $i++) {
+    if ($issLines[$i] -match '^\s+\[') {
+        $lineNo = $i + 1
+        $text = $issLines[$i].Trim()
+        throw "installer/ClassPoints.iss 第 $lineNo 行缩进后以 [ 开头，Inno 会把它当成 section 头（Invalid section tag）：`n    $text"
+    }
+}
+
 & $isccPath `
     "/DMyVersion=$Version" `
     "/DMySourceDir=$SourceDir" `
