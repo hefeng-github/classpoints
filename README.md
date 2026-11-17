@@ -558,15 +558,15 @@ scripts/prune-cnb-releases.sh    清理 CNB 旧版本（保留 stable）
 ## 七、测试
 
 ```bash
-# 1) Core + Data + 更新单测 225 项（纯内存，无需任何服务）
+# 1) Core + Data + 更新单测 449 项（纯内存，无需任何服务）
 dotnet run --project tools/tests
 
-# 2) Worker 接口契约 92 项 + 设备白名单 43 项（需要本地 wrangler dev 在 8787）
+# 2) Worker 接口契约 109 项 + 设备白名单 43 项（需要本地 wrangler dev 在 8787）
 cd worker && npx wrangler dev --port 8787 --local
 node test/smoke.mjs
 node test/grants.mjs
 
-# 3) 端到端同步 26 项（C# 客户端真连 Worker，两台设备互推互拉）
+# 3) 端到端同步 39 项（C# 客户端真连 Worker，两台设备互推互拉）
 dotnet run --project tools/tests -- --sync http://127.0.0.1:8787
 
 # 4) 可选：真连一个更新源，确认清单与安装包能匿名下载、哈希对得上
@@ -575,11 +575,21 @@ dotnet run --project tools/tests -- --sync http://127.0.0.1:8787
 dotnet run --project tools/tests -- --update-feed http://127.0.0.1:8892/demo/dist
 ```
 
-合计 **386 项断言**（第 4 项另加 3 项，用于发布前核对真实产物）。
+合计 **640 项断言**（第 4 项另加 3 项，用于发布前核对真实产物）。
 
-Worker 那 92 项里有 17 项专打多班隔离：两个班同时存在，学号 `01` 各算各的，
+Worker 那 109 项里有 17 项专打多班隔离：两个班同时存在，学号 `01` 各算各的，
 B 拉到 A 的学生/流水/周期/考试都是 0 条，B 删 A 的行返回 200 但不改一行，
 B 抢 A 的主键被 `ON CONFLICT` 里的 `class_id` 守卫挡掉，B 撤 A 的批次、改 A 的权重都是 404。
+
+**表格认错了列，先把格子摊开看。** 老师的成绩单格式千奇百怪（合并表头、标题行、
+"行政班"、"赋分/原始分"），界面上只会说"分数无法识别"。这时用排障命令：
+
+```bash
+dotnet run --project tools/tests -- --dump-sheet="G:/某个/成绩表.xlsx"
+```
+
+它会打印前 12 行格子、认出来的表头行 / 班级列 / 姓名列 / 科目列，以及
+「第一个班 × 第一科」投影出来的前 5 个分数 —— 该改哪条判定，一眼就看出来了。
 
 那 225 项里有 29 项是事件计数（加减、改准确值、撤销、周期隔离、归档、图标迁移幂等），
 有 17 项是 Excel 往返（ClosedXML 写 → NPOI 读，`.xlsx` 和 `.xls` 各来一遍），

@@ -25,6 +25,8 @@ public sealed class NumberInput : StackPanel
     private readonly Button _minus;
     private readonly Button _plus;
     private bool _enabled = true;
+    private double _minimum = double.MinValue;
+    private double _maximum = double.MaxValue;
 
     public NumberInput()
     {
@@ -84,9 +86,28 @@ public sealed class NumberInput : StackPanel
         }
     }
 
-    public double Minimum { get; set; } = double.MinValue;
+    public double Minimum
+    {
+        get => _minimum;
+        set
+        {
+            _minimum = value;
+            // 初始化器里 "Value = x, Maximum = y" 是按书写顺序执行的：
+            // 先赋值、后设上限时，超范围的值会留在框里（现场见过"满分 2147483647"）。
+            // 设完范围重新夹一次，把框里的显示也刷新。
+            Value = _value;
+        }
+    }
 
-    public double Maximum { get; set; } = double.MaxValue;
+    public double Maximum
+    {
+        get => _maximum;
+        set
+        {
+            _maximum = value;
+            Value = _value;
+        }
+    }
 
     /// <summary>加减一次的幅度。</summary>
     public double Step { get; set; } = 1;
@@ -164,13 +185,16 @@ public sealed class NumberInput : StackPanel
 
     private double Clamp(double v)
     {
-        if (double.IsNaN(v)) return _value;
-        v = System.Math.Clamp(v, Minimum, Maximum);
+        // 无穷大（"1e999"、除以 0 之类）不能留：强转整数会饱和成 2147483647
+        if (!double.IsFinite(v)) return _value;
+        v = System.Math.Clamp(v, _minimum, _maximum);
         return Decimals <= 0 ? System.Math.Round(v) : System.Math.Round(v, Decimals);
     }
 
     private string Format(double v) =>
-        Decimals <= 0 ? ((int)System.Math.Round(v)).ToString() : v.ToString("0." + new string('#', Decimals));
+        Decimals <= 0
+            ? v.ToString("0", System.Globalization.CultureInfo.InvariantCulture)
+            : v.ToString("0." + new string('#', Decimals), System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>焦点回到输入框（校验失败时把光标放回去）。</summary>
     public void FocusBox() => _box.Focus(FocusState.Programmatic);

@@ -566,7 +566,9 @@ public sealed partial class DeskExamsPage : Page
         }
         RenderRows();
 
-        var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        // 两行排：挑班挑科一行、考试本身的信息一行。
+        // 以前全塞一行横向 StackPanel，窗口一窄就把「考试日期」挤出对话框右边。
+        var header = new StackPanel { Spacing = 10 };
 
         if (grade is not null)
         {
@@ -601,25 +603,87 @@ public sealed partial class DeskExamsPage : Page
             classBox.SelectionChanged += (_, _) => Reparse();
             subjectBox.SelectionChanged += (_, _) => Reparse();
 
-            header.Children.Add(classBox);
-            header.Children.Add(subjectBox);
+            var pickers = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+            pickers.Children.Add(classBox);
+            pickers.Children.Add(subjectBox);
+
+            // 认出了好几门课时让老师自己确认一下认的是哪一列 —— 表头写成
+            // "期末成绩(百分制)"这种，猜错一列就是整场分数白导
+            var shown = new TextBlock
+            {
+                Style = Styled("DeskSecondaryText"),
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Margin = new Thickness(4, 0, 0, 6),
+                Text = $"{grade.Classes.Count} 个班 · {grade.Subjects.Count} 科",
+            };
+            pickers.Children.Add(shown);
+
+            header.Children.Add(pickers);
+        }
+        else
+        {
+            // 普通成绩单（没有班级列）：列是猜出来的，猜错了要能当场纠正。
+            // 以前只能重新做一份"姓名/分数"两列的表，或者干脆放弃导入。
+            var layout = parsed.Layout;
+            var nameColBox = new ComboBox
+            {
+                Header = "姓名列",
+                Width = 190,
+                ItemsSource = layout.Columns,
+                DisplayMemberPath = nameof(ColumnOption.Display),
+                SelectedIndex = System.Math.Max(0, layout.NameColumn),
+            };
+            var scoreColBox = new ComboBox
+            {
+                Header = "分数列",
+                Width = 190,
+                ItemsSource = layout.Columns,
+                DisplayMemberPath = nameof(ColumnOption.Display),
+                SelectedIndex = System.Math.Max(0, layout.ScoreColumn),
+            };
+
+            void Recolumn()
+            {
+                if (nameColBox.SelectedIndex < 0 || scoreColBox.SelectedIndex < 0) return;
+                if (nameColBox.SelectedIndex == scoreColBox.SelectedIndex) return;
+
+                parsed = ScoreSheetParser.Parse(grid, _students,
+                    new ScoreSheetLayout(layout.HeaderRow, nameColBox.SelectedIndex, scoreColBox.SelectedIndex, layout.Columns));
+                summary.Text = parsed.SummaryText;
+                fullBox.Value = GuessFullScore(PeakOf(parsed));
+                RenderRows();
+            }
+
+            nameColBox.SelectionChanged += (_, _) => Recolumn();
+            scoreColBox.SelectionChanged += (_, _) => Recolumn();
+
+            var pickers = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+            pickers.Children.Add(nameColBox);
+            pickers.Children.Add(scoreColBox);
+            header.Children.Add(pickers);
         }
 
+        // 考试名称单独一行：文件名常常很长，和满分、日期挤一行会把日期顶出对话框。
         header.Children.Add(nameBox);
-        header.Children.Add(fullBox);
-        header.Children.Add(dateBox);
+
+        var basics = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        basics.Children.Add(fullBox);
+        basics.Children.Add(dateBox);
+        header.Children.Add(basics);
 
         var note = new TextBlock
         {
             Style = Styled("DeskSecondaryText"),
             TextWrapping = TextWrapping.Wrap,
-            MaxWidth = 620,
+            MaxWidth = 460,
             Text = grade is null
                 ? "按姓名匹配，同名与汇总行跳过。"
                 : "这是一张全校成绩表：先选班级和科目，导入只取该班该科那一列分数（名次列不参与）。",
         };
 
-        var panel = new StackPanel { Spacing = 12, Width = 640 };
+        // 宽度卡在 460：ContentDialog 的内容区默认只有 548 左右，写 640 的话
+        // 右边一截会被裁掉（"考试日期"只剩半个框，就是老师说的"出框"）。
+        var panel = new StackPanel { Spacing = 12, Width = 460 };
         panel.Children.Add(header);
         panel.Children.Add(summary);
         panel.Children.Add(note);
@@ -692,6 +756,11 @@ public sealed partial class DeskExamsPage : Page
     private static double GuessFullScore(double peak)
     {
         if (double.IsNaN(peak) || peak <= 0) return 100;
+
+        // 认错了列（把考号当成分数）时 peak 会是几亿 —— 那不是分数。
+        // 高考总分再高也到不了 1000，超过 2000 一律当作没猜出来。
+        if (peak > 2000) return 100;
+
         foreach (var common in new double[] { 100, 120, 150, 200, 300, 750 })
             if (peak <= common) return common;
         return System.Math.Ceiling(peak / 50) * 50;

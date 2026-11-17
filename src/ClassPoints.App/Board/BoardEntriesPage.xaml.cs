@@ -59,7 +59,11 @@ public sealed partial class BoardEntriesPage : Page
     private void Render()
     {
         var period = Services.CurrentPeriod;
-        var showOperator = Services.Session.CanWrite;
+
+        // 办公室里这台不是公开屏幕：操作人一直显示 —— 不然为了看一眼"谁扣的分"，
+        // 得先认一遍人（电脑端虽然免 PIN，但那一步本身就是门槛）。
+        // 大屏仍然是认人才显示：那一列挂在教室墙上，谁路过都能看见。
+        var showOperator = Services.Session.CanWrite || App.Mode == AppMode.Desk;
 
         // 教室里是公开屏幕：谁扣的分不能随便露。未认人（看板/查分状态）时，
         // 操作人列连宽度一起收掉，不是只把文字变透明。
@@ -171,7 +175,7 @@ public sealed partial class BoardEntriesPage : Page
 
         var op = new TextBlock
         {
-            Text = entry.OperatorName,
+            Text = string.IsNullOrEmpty(entry.OperatorName) ? "—" : entry.OperatorName,
             FontSize = 15,
             Foreground = Secondary,
             VerticalAlignment = VerticalAlignment.Center,

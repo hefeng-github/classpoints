@@ -32,6 +32,15 @@ internal static class Program
             else if (args[i].StartsWith("--update-feed=", StringComparison.Ordinal)) updateFeed = args[i]["--update-feed=".Length..];
         }
 
+        // 排障用：把一份表格读成网格打出来，并说明识别器认成了什么。
+        // 老师的成绩单格式千奇百怪，光看"分数无法识别"四个字什么都定不了，得看到原始格子。
+        var dumpSheet = args.FirstOrDefault(a => a.StartsWith("--dump-sheet=", StringComparison.Ordinal));
+        if (dumpSheet is not null)
+        {
+            DumpSheet(dumpSheet["--dump-sheet=".Length..]);
+            return 0;
+        }
+
         Section("封顶");
         CapTests();
         Section("权重与口径");
@@ -139,6 +148,59 @@ internal static class Program
         Console.WriteLine($"❌ 通过 {_pass} 项，失败 {Failures.Count} 项");
         foreach (var f in Failures) Console.WriteLine("   - " + f);
         return 1;
+    }
+
+    /// <summary>
+    /// 把一份 Excel / CSV 原样打成网格，并说明两个识别器各自认成了什么。
+    ///
+    /// 存在的理由：老师在界面上只会看到「分数无法识别」「名单里没有这个人」，
+    /// 这类现象九成是表头行 / 姓名列 / 分数列挑错了，而光看现象无从判断。
+    /// 这里把前十几行格子直接摊开，一眼就能看出该改哪条判定。
+    /// </summary>
+    private static void DumpSheet(string path)
+    {
+        var grid = path.EndsWith(".csv", StringComparison.OrdinalIgnoreCase)
+            ? CsvFile.Read(path)
+            : ExcelReader.Read(path);
+
+        Console.WriteLine($"{Path.GetFileName(path)} · {grid.RowCount} 行 × {grid.ColumnCount} 列");
+
+        var cols = System.Math.Min(grid.ColumnCount, 30);
+        for (var r = 0; r < System.Math.Min(grid.RowCount, 12); r++)
+        {
+            var cells = new List<string>();
+            for (var c = 0; c < cols; c++)
+            {
+                var v = grid.Cell(r, c).Trim().Replace("\r", " ").Replace("\n", " ");
+                if (v.Length > 16) v = v[..16] + "…";
+                cells.Add(v);
+            }
+            Console.WriteLine($"  行{r,2}: " + string.Join(" | ", cells));
+        }
+
+        Console.WriteLine();
+        if (GradeSheet.TryParse(grid, out var grade) && grade is not null)
+        {
+            Console.WriteLine($"GradeSheet: 表头行 {grade.HeaderRow}，班级列 {grade.ClassColumn}，"
+                            + $"姓名列 {grade.NameColumn}，考号列 {grade.NoColumn}，首数据行 {grade.FirstDataRow}");
+            Console.WriteLine($"  班级 {grade.Classes.Count} 个：{string.Join(" / ", grade.Classes.Take(12))}");
+            Console.WriteLine($"  科目 {grade.Subjects.Count} 个：{string.Join(" / ", grade.Subjects.Take(12).Select(x => x.Label))}");
+
+            // 真投影一次：认对了列的话，这里看到的就是老师会看到的分数
+            var first = grade.Subjects[0];
+            Console.WriteLine($"  投影「{grade.Classes[0]} · {first.Label}」前 5 行：");
+            foreach (var r in grade.DataRows(grade.Classes[0]).Take(5))
+                Console.WriteLine($"    {grade.NameOf(r)} = {grade.ScoreOf(r, first)}");
+        }
+        else
+        {
+            Console.WriteLine("GradeSheet: 没认出全校大表");
+        }
+
+        var layout = ScoreSheetParser.DetectLayout(grid);
+        Console.WriteLine($"ScoreSheetLayout: 表头行 {layout.HeaderRow}，姓名列 {layout.NameColumn}，分数列 {layout.ScoreColumn}");
+        Console.WriteLine("  表头：" + string.Join(" | ",
+            Enumerable.Range(0, cols).Select(c => grid.Cell(layout.HeaderRow, c).Trim()).Where(x => x.Length > 0)));
     }
 
     private static void Section(string name)

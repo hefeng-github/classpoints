@@ -121,16 +121,37 @@ public static class ScoreSheetParser
         ("成绩", 1), ("分数", 1), ("得分", 1),
     };
 
+    /// <summary>
+    /// 姓名表头判定。**不能用 Contains**：全校大表的标题行
+    /// 「学生选科组合排名(赋分-物理类)」里就有"学生"两个字，按包含匹配会把标题行
+    /// 当成表头行，于是姓名列取到第 0 列（"学校"）、分数列取到后面的考号列 ——
+    /// 现场表现就是预览里一排「学校 / 考号 / 分数无法识别」。
+    /// </summary>
+    private static bool IsNameHeader(string key)
+    {
+        if (key.Length == 0 || key.Length > 8) return false;
+        return NameHeaders.Any(h => key == h || key.StartsWith(h) || key.EndsWith(h));
+    }
+
+    /// <summary>标题行：整行只有一两个格子（合并单元格的大标题），不可能是表头。</summary>
+    private static bool LooksLikeTitleRow(SheetGrid grid, int row)
+    {
+        var filled = 0;
+        for (var c = 0; c < grid.ColumnCount; c++)
+            if (grid.Cell(row, c).Trim().Length > 0) filled++;
+        return filled <= 2;
+    }
+
     public static int DetectHeaderRow(SheetGrid grid, int scan = 10)
     {
         var limited = System.Math.Min(scan, grid.RowCount);
         for (var r = 0; r < limited; r++)
         {
+            if (LooksLikeTitleRow(grid, r)) continue;
             var cols = grid.ColumnCount;
             for (var c = 0; c < cols; c++)
             {
-                var k = NameNormalizer.NormalizeKey(grid.Cell(r, c));
-                if (NameHeaders.Any(h => k.Contains(h))) return r;
+                if (IsNameHeader(NameNormalizer.NormalizeKey(grid.Cell(r, c)))) return r;
             }
         }
         return 0;
@@ -148,7 +169,7 @@ public static class ScoreSheetParser
         for (var c = 0; c < cols; c++)
         {
             var k = NameNormalizer.NormalizeKey(grid.Cell(headerRow, c));
-            if (nameCol < 0 && NameHeaders.Any(k.Contains))
+            if (nameCol < 0 && IsNameHeader(k))
                 nameCol = c;
 
             foreach (var (key, pri) in ScoreHeaders)
