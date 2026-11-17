@@ -102,7 +102,8 @@ public sealed partial class MainWindow : Window
 
         AppWindow.Title = Title;
 
-        // 每天首次启动自动备份。设置页、侧栏和说明文件都写着这一条，之前却没有任何调用点 ——
+        // 每天一份自动备份（启动时，或当天记满 50 人次时补一份；见 AppServices.TryAutoBackup）。
+        // 设置页、侧栏和说明文件都写着这一条，之前却没有任何调用点 ——
         // 只有「向导完成」和「每 50 条入账」会触发，「上次备份」于是可以永远停在几个月前。
         // 后台跑：VACUUM INTO 再快也不该挡住第一帧。
         if (Services.Settings.OnboardingDone &&

@@ -314,14 +314,25 @@ public sealed class AppServices
     public void LogError(string where, Exception ex) =>
         Log($"ERROR {where}: {ex.GetType().Name}: {ex.Message}{Environment.NewLine}{ex.StackTrace}");
 
-    /// <summary>每天首次启动 + 每 50 次入账各备份一次。失败不抛，界面只提示。</summary>
+    /// <summary>
+    /// 自动备份：一天最多做一份，失败不抛（界面只提示）。
+    ///
+    /// 以前是"每天首次启动一份 + 每记满 50 人次再一份"——一条午休前后的班，
+    /// 一节课就能记 50 人次，一天下来七八份，而它们之间只差几十条流水。
+    /// 备份在这里防的是**库文件损坏、误删名单、误重置**，不是防丢那几十笔记录
+    /// （流水写入即落库，崩溃不会丢）。所以改成：当天已经有一份就跳过。
+    ///
+    /// 关键操作前的那几份不走这里（周期重置、本机重置、手动、向导完成），
+    /// 那些是按事件必须留的，不受"一天一份"限制。
+    /// </summary>
     public string? TryAutoBackup(string reason)
     {
         try
         {
+            var periodic = reason is "startup" or "50 entries";
             var last = Settings.LastBackupAt;
             var lastDate = last <= 0 ? DateTime.MinValue : Clock.LocalDate(last).Date;
-            if (reason == "startup" && lastDate == DateTime.Today) return null;
+            if (periodic && lastDate == DateTime.Today) return null;
 
             var path = Backups.BackupNow(reason, null);
             Log($"自动备份完成 {path}");

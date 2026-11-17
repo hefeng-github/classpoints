@@ -1350,7 +1350,7 @@ public sealed partial class DeskSettingsPage : Page
 
     private void BuildBackupSection()
     {
-        var body = Section("备份与恢复", "每天首次启动自动备份，保留最近 7 天（至少留一份）。");
+        var body = Section("备份与恢复", "每天最多自动备份一次（启动时、或当天记满 50 人次时补一份）；重置或恢复前会另存一份。保留最近 7 天。");
 
         // 路径可能很长（数据在安装目录下时尤其长），所以给整行宽度，按钮另起一行；
         // 挤在一行时后半截会被截掉，正好截掉盘符之后最要紧的那段。
