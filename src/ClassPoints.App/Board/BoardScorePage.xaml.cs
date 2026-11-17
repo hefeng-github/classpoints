@@ -16,24 +16,22 @@ namespace ClassPoints.App.Board;
 
 /// <summary>
 /// 记分台。整章的手感都在这个文件里：
-/// 长按 400 ms 进框选、矩形实时预览、松手才并入选择、短按补选、边缘自动滚。
+/// 框选（触屏点「框选」按钮、鼠标按住拖）、矩形实时预览、松手才并入选择、短按补选、边缘自动滚。
 ///
 /// 三个容易写错的点，代码里都留了注释：
-/// 1) 400 ms 定时器要被"移动 12 DIP"取消，而不是被"抬手"取消；
+/// 1) **触屏不做长按框选**：手指按在 ScrollViewer 里时滚动容器会接管触点并给一个
+///    PointerCaptureLost，用定时器等"按住 400 ms"这条路在该环境里不可靠；
+///    要框选就点「框选」，按下即拉框（v1.3.6 起）；
 /// 2) 预览(_preview)与已选(_selected)必须是两个集合，否则矩形缩回去高亮不会消失；
-/// 3) 框选态必须拦掉 ContextRequested，不然长按会弹系统右键菜单。
+/// 3) 框选态必须拦掉 ContextRequested，不然按住拖久一点会弹系统右键菜单。
 /// </summary>
 public sealed partial class BoardScorePage : Page
 {
     private const double Gap = 10;
     private const double MinCardW = 210;
     private const double MinCardH = 120;
-    /// <summary>
-    /// 长按期间允许多大的抖动。12 太紧：教室一体机多是红外框，指腹按下去那一下
-    /// 上报的位置会飘十几像素，结果"按住不动"被判成"在划"，长按框选十次进不去九次。
-    /// </summary>
+    /// <summary>鼠标按住拖成框选前，要移动多少才认为"这是拖"而不是"手抖"。</summary>
     private const double MoveCancelThreshold = 22;
-    private const int HoldMs = 400;
     private const int ButtonHoldMs = 500;
 
     private static readonly SolidColorBrush Positive = Pal.Positive;
@@ -53,7 +51,6 @@ public sealed partial class BoardScorePage : Page
     private readonly HashSet<int> _preview = new();
     private readonly Dictionary<string, int> _indexById = new();
 
-    private readonly DispatcherTimer _holdTimer = new() { Interval = TimeSpan.FromMilliseconds(HoldMs) };
     private readonly DispatcherTimer _autoScroll = new() { Interval = TimeSpan.FromMilliseconds(16) };
     private readonly DispatcherTimer _resizeDebounce = new() { Interval = TimeSpan.FromMilliseconds(150) };
     private readonly DispatcherTimer _barTimer = new();
@@ -64,14 +61,7 @@ public sealed partial class BoardScorePage : Page
     private Point _downCanvas;
     private Point _lastPointer;
     private bool _pointerDown;
-    /// <summary>
-    /// 手指还按着、等长按到点。**和 <see cref="_pointerDown"/> 分开**：
-    /// 手指按在 ScrollViewer 里时，滚动容器会很快把触点接管过去并给我们一个
-    /// PointerCaptureLost —— 但手指其实一点没动。以前在 CaptureLost 里把计时一起停掉，
-    /// 表现就是"触屏长按框选永远进不去"（鼠标正常，因为鼠标不触发拖拽手势）。
-    /// </summary>
-    private bool _holdPending;
-    /// <summary>点了「框选」按钮之后的待命态：下一根手指按下就直接拉框，不用等长按。</summary>
+    /// <summary>点了「框选」按钮之后的待命态：下一根手指按下就直接拉框。</summary>
     private bool _lassoArmed;
     /// <summary>上一下压到的是一整只手掌（接触面积过大），紧接着那次 Tapped 要作废。</summary>
     private bool _palmRejected;
@@ -103,7 +93,6 @@ public sealed partial class BoardScorePage : Page
         Unloaded += OnUnloaded;
         Host.SizeChanged += OnHostSizeChanged;
 
-        _holdTimer.Tick += OnHoldElapsed;
         _autoScroll.Tick += OnAutoScrollTick;
         _resizeDebounce.Tick += (_, _) =>
         {
@@ -167,7 +156,6 @@ public sealed partial class BoardScorePage : Page
     {
         Session.Changed -= OnSessionChanged;
         _refreshTimer.Stop();
-        _holdTimer.Stop();
         _autoScroll.Stop();
         _barTimer.Stop();
     }
@@ -970,29 +958,28 @@ public sealed partial class BoardScorePage : Page
         _lastPointer = _downCanvas;
         _pointerDown = true;
 
-        // 每次按下都清掉上一次长按/框选留下的"吞掉下一次点击"标记：
-        // 长按后在别处松手不会产生 Tapped，标记会一直挂着。
+        // 每次按下都清掉上一次框选留下的"吞掉下一次点击"标记：
+        // 框选后在别处松手不会产生 Tapped，标记会一直挂着。
         _suppressClick = false;
 
         if (_lassoArmed)
         {
-            // 按过「框选」按钮了：这一下直接就是拉框的起点，不用再等长按
+            // 按过「框选」按钮了：这一下直接就是拉框的起点
             BeginLasso();
             return;
         }
 
-        if (e.Pointer.PointerDeviceType == PointerDeviceType.Mouse)
+        if (e.Pointer.PointerDeviceType != PointerDeviceType.Mouse)
         {
-            // 鼠标不需要"长按"：按住左键拖一片是桌面上最自然的框选。
-            // 但按下就立刻进框选会让"单击选一个人"变成只能加不能减 ——
-            // 所以先记下起点，真移动了（见 OnPointerMoved）才进框选。
+            // 触屏不再有"长按进框选"：按住不动本来就是给眼睛留的反应时间，
+            // 按着划就是滚屏。要框选就点底栏的「框选」——那里按下即拉框，不用等、也不会误触。
+            _pointerDown = false;
             return;
         }
 
-        // 触屏/触笔：只起计时，不抢 Capture，也不碰滚动 ——
-        // 400 ms 内一动没动，ScrollViewer 的拖拽阈值也还没突破
-        _holdPending = true;
-        _holdTimer.Start();
+        // 鼠标：按住左键拖一片是桌面上最自然的框选。
+        // 但按下就立刻进框选会让"单击选一个人"变成只能加不能减 ——
+        // 所以先记下起点，真移动了（见 OnPointerMoved）才进框选。
     }
 
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
@@ -1005,36 +992,19 @@ public sealed partial class BoardScorePage : Page
 
         if (!_lassoing)
         {
+            // 触屏拖 = 滚动，这里一概不接
+            if (e.Pointer.PointerDeviceType != PointerDeviceType.Mouse) return;
+
             var dx = point.Position.X - _downPoint.X;
             var dy = point.Position.Y - _downPoint.Y;
-            var dragged = System.Math.Abs(dx) > MoveCancelThreshold || System.Math.Abs(dy) > MoveCancelThreshold;
-            if (!dragged) return;
+            if (System.Math.Abs(dx) <= MoveCancelThreshold && System.Math.Abs(dy) <= MoveCancelThreshold) return;
 
-            if (e.Pointer.PointerDeviceType == PointerDeviceType.Mouse)
-            {
-                // 鼠标拖 = 框选（这一个分支以前缺失，所以"按住拖一片选人"只在触屏上能用）
-                BeginLasso();
-                UpdateLasso(point.Position, canvasPoint.Position);
-                return;
-            }
-
-            // 手指动了就说明用户想滚动，放弃这次长按。
-            // 阈值 22 DIP：一体机是红外框，手指按下去那一下的抖动常有十几像素，
-            // 卡在 12 上会把"按住不动"判成"在划"，长按几乎每次都进不去。
-            _holdPending = false;
-            _holdTimer.Stop();
-            _pointerDown = false;
+            BeginLasso();
+            UpdateLasso(point.Position, canvasPoint.Position);
             return;
         }
 
         UpdateLasso(point.Position, canvasPoint.Position);
-    }
-
-    private void OnHoldElapsed(object? sender, object e)
-    {
-        _holdTimer.Stop();
-        if (!_holdPending || _lassoing) return;
-        BeginLasso();
     }
 
     /// <summary>进入框选态：抢指针、停滚动、把按下的那一格先选上。</summary>
@@ -1063,9 +1033,6 @@ public sealed partial class BoardScorePage : Page
 
     private void OnPointerReleased(object sender, PointerRoutedEventArgs e)
     {
-        _holdTimer.Stop();
-        _holdPending = false;
-
         if (!_lassoing)
         {
             // 单击选中交给 OnCardTapped：这里只管收尾，不再判一次，
@@ -1079,7 +1046,7 @@ public sealed partial class BoardScorePage : Page
 
     /// <summary>
     /// 单击卡片 = 选中 / 取消。鼠标、手指、触笔都走这里。
-    /// 框选拖拽（_lassoing）和长按后的那次抬手不算点击。
+    /// 框选拖拽（_lassoing）和框选后的那次抬手不算点击。
     /// </summary>
     private void OnCardTapped(object sender, TappedRoutedEventArgs e)
     {
@@ -1108,16 +1075,14 @@ public sealed partial class BoardScorePage : Page
             return;
         }
 
-        // 触摸时 ScrollViewer 为滚动会接管触点，这里就会收到 CaptureLost ——
-        // 但手指还按在屏幕上，只是事件不再发给我们。**不能因此停掉长按计时**：
-        // 那正是"触屏长按框选用不了"的直接原因。真滑动的取消走 PointerMoved 的距离判定。
+        // 触摸时 ScrollViewer 为滚动会接管触点，这里就会收到 CaptureLost。
+        // 框选已经主动抢了指针，走到这里说明别处真的拿走了，收尾即可。
         _pointerDown = false;
     }
 
     private void EndLasso(PointerRoutedEventArgs args, bool commit)
     {
         _lassoing = false;
-        _holdPending = false;
         _pointerDown = false;
         _autoScroll.Stop();
 
@@ -1235,10 +1200,8 @@ public sealed partial class BoardScorePage : Page
 
     private void OnContextRequested(UIElement sender, ContextRequestedEventArgs args)
     {
-        // 长按会触发系统右键菜单，框选态必须拦掉。
-        // 手指还按着等长按（_holdPending）时也要拦：系统在某些机器上 250 ms 就弹菜单，
-        // 菜单一出来这轮长按就废了 —— 老师按的是卡片，本来也不需要右键菜单。
-        if (_lassoing || _holdPending) args.Handled = true;
+        // 框选时长按会触发系统右键菜单，必须拦掉（框选是按住拖，时间稍长就会弹）
+        if (_lassoing) args.Handled = true;
     }
 
     private void ToggleIndex(int index)
@@ -1401,9 +1364,9 @@ public sealed partial class BoardScorePage : Page
         // SyncEnabled 交给 SyncPump 按"这台机器有没有配对"统一写，别在这里猜。
 
         // 左上角只给一条手感提示：班级名、周期、身份都在外壳顶栏上，重复三遍反而更难扫。
-        // 文案要和实现一致：按住**不动** 0.4 秒才进框选，按着立刻划是滚动；
-        // 不想等长按就点底下的「框选」，那里按下即拉框。
-        WhoText.Text = "点一下选中 · 按住 0.4 秒再拖＝框选";
+        // 触屏上没有长按框选（按住不动是给眼睛留时间，按着划是滚屏），
+        // 要框选就点底栏的「框选」，那里按下即拉框。
+        WhoText.Text = "点一下选中 · 点「框选」再拖出一片";
     }
 
     private void Toast(string message, double seconds = 3) => ToastLayer.Show(message, seconds);
