@@ -19,7 +19,7 @@
                 <TextBlock x:Name="PeriodText" Style="{StaticResource SecondaryText}" Margin="0,4,0,0" />
             </StackPanel>
             <StackPanel HorizontalAlignment="Right" VerticalAlignment="Bottom">
-                <!-- 时钟归外壳顶部的常驻状态条管，这里只留"现在放的是哪种榜"，免得一屏两个时间 -->
+                <!-- 时钟归外壳顶部的常驻状态条管，这里只标一下"这是个人榜"（不是小组榜/班级榜） -->
                 <TextBlock x:Name="BoardModeText" Text="个人榜"
                            FontFamily="{StaticResource TextFont}" FontSize="20"
                            Foreground="{ThemeResource SelectStrokeBrush}"

@@ -165,12 +165,6 @@ public sealed class AppSettings(Database db)
         set => db.SetSetting("sound_on", value ? "1" : "0");
     }
 
-    public int BoardRotateSec
-    {
-        get => System.Math.Clamp(db.GetIntSetting("board_rotate_sec", 20), 8, 120);
-        set => db.SetSetting("board_rotate_sec", value.ToString());
-    }
-
     public bool OnboardingDone
     {
         get => db.GetBoolSetting("onboarding_done", false);

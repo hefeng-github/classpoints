@@ -13,7 +13,11 @@ using ClassPoints.App.Theme;
 namespace ClassPoints.App.Board;
 
 /// <summary>
-/// 看板：无人操作时的停留页。前 15 名 + 最近 8 条动态，按设置轮播「本周期 / 累计」两种口径。
+/// 看板：无人操作时的停留页。前 15 名 + 最近 8 条动态，**只算本周期**。
+///
+/// 以前这里按设置轮播「本周期 / 累计」两种口径。撤掉的原因：同一块榜在两种口径之间
+/// 自动切换，站在教室后面的人只会看到数字整体换了一套，却不知道自己看的是哪一个；
+/// 「累计」在「明细」和「考试」页里都能查到，不必占着这块最显眼的地方轮着播。
 /// 常驻界面不显示任何按钮，轻触才浮出两个出口。
 /// </summary>
 public sealed partial class BoardWallPage : Page
@@ -24,9 +28,7 @@ public sealed partial class BoardWallPage : Page
     private static readonly SolidColorBrush Negative = Pal.Negative;
     private static readonly SolidColorBrush Accent = Pal.Accent;
 
-    private readonly DispatcherTimer _rotate = new();
     private readonly DispatcherTimer _refresh = new() { Interval = TimeSpan.FromSeconds(15) };
-    private bool _showingCumulative;
 
     public BoardWallPage()
     {
@@ -48,11 +50,6 @@ public sealed partial class BoardWallPage : Page
             ? "轻触屏幕 · 或直接刷卡"
             : "点击任意处打开查分与记分入口";
 
-        _rotate.Interval = TimeSpan.FromSeconds(Services.Settings.BoardRotateSec);
-        _rotate.Tick -= OnRotateTick;
-        _rotate.Tick += OnRotateTick;
-        _rotate.Start();
-
         _refresh.Tick -= OnRefreshTick;
         _refresh.Tick += OnRefreshTick;
         _refresh.Start();
@@ -60,65 +57,9 @@ public sealed partial class BoardWallPage : Page
         Render();
     }
 
-    private void OnUnloaded(object sender, RoutedEventArgs e)
-    {
-        _rotate.Stop();
-        _refresh.Stop();
-    }
+    private void OnUnloaded(object sender, RoutedEventArgs e) => _refresh.Stop();
 
     private void OnRefreshTick(object? sender, object e) => Render();
-
-    private void OnRotateTick(object? sender, object e)
-    {
-        try
-        {
-            if (ActionLayer.Visibility == Visibility.Visible) return;
-            _showingCumulative = !_showingCumulative;
-            FadeSwap();
-        }
-        catch (Exception ex)
-        {
-            App.Services.LogError("wall-rotate", ex);
-        }
-    }
-
-    private void FadeSwap()
-    {
-        // 同一个 Storyboard 不能对同一元素的同一属性挂两个动画，所以拆成两段接力
-        var fadeOut = new Storyboard();
-        var outAnim = new DoubleAnimation
-        {
-            From = 1, To = 0, Duration = new Duration(TimeSpan.FromMilliseconds(180)),
-            EnableDependentAnimation = true,
-        };
-        Storyboard.SetTarget(outAnim, RankPanel);
-        Storyboard.SetTargetProperty(outAnim, "Opacity");
-        fadeOut.Children.Add(outAnim);
-
-        fadeOut.Completed += (_, _) =>
-        {
-            try
-            {
-                Render();
-                var fadeIn = new Storyboard();
-                var inAnim = new DoubleAnimation
-                {
-                    From = 0, To = 1, Duration = new Duration(TimeSpan.FromMilliseconds(220)),
-                    EnableDependentAnimation = true,
-                };
-                Storyboard.SetTarget(inAnim, RankPanel);
-                Storyboard.SetTargetProperty(inAnim, "Opacity");
-                fadeIn.Children.Add(inAnim);
-                fadeIn.Begin();
-            }
-            catch (Exception ex)
-            {
-                App.Services.LogError("wall-fade", ex);
-            }
-        };
-
-        fadeOut.Begin();
-    }
 
     public void Render()
     {
@@ -133,15 +74,11 @@ public sealed partial class BoardWallPage : Page
         }
         EmptyText.Visibility = Visibility.Collapsed;
 
-        var totals = _showingCumulative
-            ? Services.Entries.CumulativeTotals()
-            : Services.Entries.PeriodTotals(period.Id);
+        var totals = Services.Entries.PeriodTotals(period.Id);
 
-        BoardModeText.Text = _showingCumulative ? "累计" : "本周期";
-        ListHeader.Text = _showingCumulative ? "累计积分" : "积分榜";
-        ListSub.Text = _showingCumulative
-            ? "从第一个周期累加"
-            : $"{period.TitleText} · 共 {students.Count} 人";
+        BoardModeText.Text = "个人榜";
+        ListHeader.Text = "积分榜";
+        ListSub.Text = $"{period.TitleText} · 共 {students.Count} 人";
 
         RenderIndividuals(students, totals);
 

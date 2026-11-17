@@ -342,8 +342,6 @@ public sealed partial class DeskSettingsPage : Page
             () => s.LockTimeoutSec, v => s.LockTimeoutSec = (int)v, " 秒"));
         body.Children.Add(NumberField("查分页超时", "到时回看板并清屏", 10, 300, 10,
             () => s.LookupTimeoutSec, v => s.LookupTimeoutSec = (int)v, " 秒"));
-        body.Children.Add(NumberField("看板轮播", "榜单与动态的切换间隔", 8, 120, 4,
-            () => s.BoardRotateSec, v => s.BoardRotateSec = (int)v, " 秒"));
 
         var sound = new ToggleSwitch
         {
