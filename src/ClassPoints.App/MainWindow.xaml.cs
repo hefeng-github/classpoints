@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Windows.Graphics;
 using ClassPoints.App.Theme;
+using ClassPoints.Data;
 
 namespace ClassPoints.App;
 
@@ -118,6 +119,10 @@ public sealed partial class MainWindow : Window
                 DispatcherQueue.TryEnqueue(() => App.Host?.RefreshChrome());
             });
         }
+
+        // 数据目录退到用户目录这件事必须说一句：老师会以为"我的名单没了"。
+        if (Services.DataDirFallbackNotice is { Length: > 0 } notice)
+            DispatcherQueue.TryEnqueue(() => App.Host?.Toast(notice, 12));
 
         MaybeRunSnapshots();
     }
@@ -375,24 +380,75 @@ public sealed partial class MainWindow : Window
     public void ResetLocalAndRestart()
     {
         var dbPath = Services.Db.DbPath;
-        var removed = false;
+        var currentRoot = Path.GetDirectoryName(Path.GetFullPath(dbPath))!;
 
-        try
+        // 先把同步泵停掉：重置过程中正在跑的那一轮会把 sync.json 重新写回来，
+        // 重启后程序就又能自动接上云端，把名单和流水整份拉回来 —— 老师看到的就是
+        // "重置了，数据还在"。停泵要放在删文件之前。
+        try { Services.Pump.Stop(); }
+        catch (Exception ex) { Services.LogError("reset-local-pump", ex); }
+
+        try { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); }
+        catch (Exception ex) { Services.LogError("reset-local-pool", ex); }
+
+        // 要清的目录可能不止一个。
+        //
+        // 数据目录有三条来源（指针文件、程序目录\data、%LOCALAPPDATA%），而"搬家"一直是
+        // **复制、不删原件**：老用户的旧库还留在 AppData 里。只删当前这一份的话，
+        // 重启时 DataPaths.Resolve 发现程序目录没库、AppData 里有一份，会把它当成
+        // "老用户的旧数据"再搬回来 —— 这正是「本机重置好像没用」的根因：
+        // 删掉的是新库，打开的是几个月前那份旧库，名单一条不少。
+        var roots = new List<string> { currentRoot };
+
+        // 给了 --db 就只认那一个库：参数是明确的，别去动这台机器上别的副本。
+        if (string.IsNullOrWhiteSpace(App.Options.DbPath))
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            foreach (var suffix in new[] { "", "-wal", "-shm" })
+            roots.Add(DataPaths.PortableRoot(AppContext.BaseDirectory));
+            roots.Add(DataPaths.LocalRoot(DataPaths.LocalAppData));
+
+            foreach (var pointer in new[]
+                     {
+                         DataPaths.PointerFile(AppContext.BaseDirectory),
+                         DataPaths.LocalPointerFile(DataPaths.LocalAppData),
+                     })
             {
-                var path = dbPath + suffix;
-                if (File.Exists(path)) File.Delete(path);
+                try
+                {
+                    if (File.Exists(pointer))
+                    {
+                        var target = File.ReadAllText(pointer).Trim();
+                        if (target.Length > 0) roots.Add(target);
+                    }
+                }
+                catch (Exception) { /* 读不出就算了，另外两条路已经覆盖了绝大多数情况 */ }
             }
-            removed = true;
         }
-        catch (Exception ex)
+
+        var removed = false;
+        foreach (var root in roots
+                     .Where(r => !string.IsNullOrWhiteSpace(r))
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            // 文件被别的进程占着（同一份数据开了两个窗口、杀软正在扫）就删不掉，改名字一样会失败。
-            // 这时退一步：把库就地清空 —— 表全删、结构版本归零，下次启动重新建表 + 播种。
-            // 文件名还在，但对老师来说结果完全一样：打开就是刚装好的样子。
-            Services.LogError("reset-local", ex);
+            var ok = EraseDataAt(root);
+            if (string.Equals(root, currentRoot, StringComparison.OrdinalIgnoreCase)) removed = ok;
+        }
+
+        // 指针和"我搬过"的记录也一起清：留着它们，下次启动还会把旧目录认成自己的数据。
+        foreach (var marker in new[]
+                 {
+                     DataPaths.AdoptFile(DataPaths.LocalAppData),
+                     DataPaths.PointerFile(AppContext.BaseDirectory),
+                     DataPaths.LocalPointerFile(DataPaths.LocalAppData),
+                 })
+        {
+            try { if (File.Exists(marker)) File.Delete(marker); }
+            catch (Exception ex) { Services.LogError("reset-local-marker", ex); }
+        }
+
+        if (!removed)
+        {
+            // 当前库既删不掉也挪不动（同一份数据开了两个窗口、杀软正在扫）：就地清空。
+            // 表全删、结构版本归零，下次启动重新建表 + 播种 —— 对老师来说结果一样。
             try
             {
                 Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
@@ -405,13 +461,55 @@ public sealed partial class MainWindow : Window
             }
         }
 
-        // 库清干净了，旧配对也得断：否则新班级会顶着旧班级码去同步，
-        // 一启动就把云端的名单拉回来，"重置"看起来等于没重置。
+        // 库清干净了，旧配对也得断：否则新班级会顶着旧班级码去同步。
         try { Services.Sync.SignOut(); }
         catch (Exception ex) { Services.LogError("reset-local-sync", ex); }
 
-        Services.Log(removed ? "本机重置：库文件已删除" : "本机重置：库文件占用中，已就地清空");
+        Services.Log(removed
+            ? $"本机重置：已清空 {roots.Count} 个候选目录"
+            : "本机重置：库文件占用中，已就地清空");
         Relaunch();
+    }
+
+    /// <summary>
+    /// 把一个数据目录里"会让程序认为这里还有数据"的文件清掉。
+    ///
+    /// 删不掉就改名（加 .reset-时间戳）：判断依据是 `classpoints.db` 存不存在，
+    /// 改名之后 DataPaths 就不会再把这份旧库搬回来。改名也失败才返回 false。
+    /// </summary>
+    private static bool EraseDataAt(string root)
+    {
+        var names = new[]
+        {
+            DataPaths.DbName, DataPaths.DbName + "-wal", DataPaths.DbName + "-shm",
+            "sync.json", "session.bin", "recovery.bin",
+        };
+
+        var ok = true;
+        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+
+        foreach (var name in names)
+        {
+            var path = Path.Combine(root, name);
+            try
+            {
+                if (!File.Exists(path)) continue;
+                File.Delete(path);
+            }
+            catch (Exception)
+            {
+                try
+                {
+                    if (File.Exists(path)) File.Move(path, $"{path}.reset-{stamp}", overwrite: true);
+                }
+                catch (Exception)
+                {
+                    ok = false;
+                }
+            }
+        }
+
+        return ok;
     }
 
     private static void Relaunch()

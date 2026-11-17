@@ -115,6 +115,12 @@ public sealed class AppServices
     public Pn532Serial Reader { get; }
     public BoardSession Session { get; private set; } = null!;
 
+    /// <summary>
+    /// 原数据目录打不开、改用用户目录时的一句话。启动后由外壳提示一次 ——
+    /// 这条必须让人看见：数据换了地方，老师得知道去哪儿找、为什么。
+    /// </summary>
+    public string? DataDirFallbackNotice { get; private set; }
+
     public static AppServices Initialize(StartupOptions options)
     {
         // 先定数据目录：判断 + （必要时）把旧库搬过去 + 记下选择。
@@ -125,10 +131,30 @@ public sealed class AppServices
             : new DataPaths.Choice(Database.RootDir, "--db 指定");
         Database.UseRoot(location.Root);
 
-        var db = new Database(options.DbPath);
-        db.Initialize();
+        Database db;
+        string? fallbackNotice = null;
 
-        var services = new AppServices(db);
+        try
+        {
+            db = new Database(options.DbPath);
+            db.Initialize();
+        }
+        catch (Exception ex) when (options.DbPath is null && IsDataDirUnusable(ex))
+        {
+            // 选中的目录打不开（最常见：装在 Program Files 下、库又落在里面，
+            // 普通权限建不了文件）。这时**必须**自己退到用户目录：
+            // 报"数据库打不开"然后只给一个「退出」按钮，等于让老师彻底进不了程序。
+            var fallback = DataPaths.LocalRoot(DataPaths.LocalAppData);
+            Database.UseRoot(fallback);
+            db = new Database(null);
+            db.Initialize();
+
+            fallbackNotice = $"原数据目录不可写（{location.Root}），已改用 {fallback}。" +
+                             "这里的名单和积分是空的，旧数据还在原目录里，没有删。";
+            db.SetSetting("data_dir_fallback", fallback);
+        }
+
+        var services = new AppServices(db) { DataDirFallbackNotice = fallbackNotice };
         services.Session = new BoardSession(services.Members);
         // 启动时先把只读态摆好：sync.json 里记着"这台还在等通过"，
         // 界面第一帧就得是只读，不能先放人进去写两条再切回来。
@@ -156,6 +182,16 @@ public sealed class AppServices
                      $" schema={Sql.SchemaVersion} mode={services.Settings.AppMode?.ToDb() ?? "(未选)"}");
         return services;
     }
+
+    /// <summary>打开库失败里，哪些属于"这个目录不能用"，可以退到用户目录重试。</summary>
+    private static bool IsDataDirUnusable(Exception ex) => ex switch
+    {
+        UnauthorizedAccessException => true,
+        IOException => true,
+        // SQLITE_READONLY = 8、SQLITE_FULL = 13、SQLITE_CANTOPEN = 14
+        Microsoft.Data.Sqlite.SqliteException sqlite => sqlite.SqliteErrorCode is 8 or 13 or 14,
+        _ => false,
+    };
 
     // ---------------- 常用查询 ----------------
 

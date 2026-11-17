@@ -46,6 +46,29 @@ internal static class DataPathTests
                     DataPaths.SameDir(choice.Root, portable), choice.Root);
             }
 
+            // ①b 装在 Program Files 下（任何盘）：库里就算有数据也不能直接用。
+            // 那个库是管理员建出来的，普通权限写的时候要建 -wal、库被删了要新建，
+            // 都被目录权限挡住 —— 现场报的就是 SQLITE_CANTOPEN(14)，程序进不去。
+            {
+                var (_, _, local) = Make();
+                var programFilesExe = Path.Combine(@"E://Program Files", "ClassPoints");
+                var portable = Path.Combine(programFilesExe, DataPaths.PortableFolder);
+
+                var choice = DataPaths.Resolve(programFilesExe, local, null, system,
+                    hasDb: dir => DataPaths.SameDir(dir, portable));
+
+                check("Program Files 里的库要改放用户目录",
+                    DataPaths.SameDir(choice.Root, Old(local)), choice.Root + " · " + choice.Reason);
+                check("搬迁来源是 Program Files 里那个库",
+                    choice.AdoptFrom is not null && DataPaths.SameDir(choice.AdoptFrom, portable),
+                    choice.AdoptFrom ?? "null");
+            }
+
+            check("Program Files 下的目录一律判为不可写",
+                !DataPaths.CanCreate(Path.Combine(@"E://Program Files", "ClassPoints", "data")), "");
+            check("Windows 目录同理",
+                !DataPaths.CanCreate(Path.Combine(@"C://Windows", "System32", "ClassPoints", "data")), "");
+
             // ② 老库在 %LOCALAPPDATA%，程序装在非系统盘：搬过去，原件不删
             {
                 var (_, exe, local) = Make();

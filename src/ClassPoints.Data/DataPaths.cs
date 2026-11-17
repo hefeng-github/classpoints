@@ -116,6 +116,13 @@ public static class DataPaths
         // ② 程序目录里已经有库 —— 便携版、以及搬过一次的安装版都走这里。
         if (hasDb(portable))
         {
+            // 装在 Program Files 下（不管哪个盘）时，那个库是当年用管理员权限建出来的：
+            // 普通权限打开能读，但 SQLite 写的时候要建 -wal，或者库被删掉后要新建，
+            // 这两件事都要目录写权限 —— 报的就是 SQLITE_CANTOPEN(14)。
+            // 所以有库也搬去用户目录（复制、源不动），别把老师卡在"数据库打不开"上。
+            if (IsProtectedDir(portable))
+                return new(local, "程序目录在 Program Files 下，迁到用户目录", portable);
+
             var mine = !string.IsNullOrWhiteSpace(adopted) && SameDir(adopted, portable);
 
             // 同一台机器两个 Windows 账号共用一份安装（机房里很常见）：这份数据是
@@ -259,13 +266,46 @@ public static class DataPaths
     {
         try
         {
-            if (Directory.Exists(dir)) return true;
+            // 受保护目录一律算不可写。这些地方的权限是"时而宽松、时而严格"：
+            // 安装器用管理员建过目录、继承来的 ACL、UAC 虚拟化……探一次认为能写，
+            // 真到建库时又不行 —— 代价是老师看到"数据库打不开"，程序进不去。
+            if (IsProtectedDir(dir)) return false;
+
+            // 目录已经存在时也要试写！以前这里看见目录存在就 return true，
+            // 于是 Program Files\...\data 被当成可写目录，库落在里面，第一次写就炸。
+            if (Directory.Exists(dir)) return CanWriteIn(dir);
+
             var parent = Path.GetDirectoryName(dir.TrimEnd(Path.DirectorySeparatorChar));
-            return !string.IsNullOrEmpty(parent) && CanWriteIn(parent);
+            return !string.IsNullOrEmpty(parent) && !IsProtectedDir(parent) && CanWriteIn(parent);
         }
         catch (Exception)
         {
             return false;
+        }
+    }
+
+    /// <summary>
+    /// 这个路径在不在"普通用户写不进去"的系统位置里。
+    ///
+    /// 判的是**任何盘**上的 Program Files：E://Program Files 和 C://Program Files 一样受保护，
+    /// 以前只按"是不是系统盘"判断，装到 D/E 盘的机器就把数据放进了 Program Files。
+    /// </summary>
+    public static bool IsProtectedDir(string path)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar);
+            foreach (var segment in new[] { "Program Files", "Program Files (x86)", "Windows" })
+            {
+                if (full.EndsWith(Path.DirectorySeparatorChar + segment, StringComparison.OrdinalIgnoreCase)) return true;
+                if (full.Contains(Path.DirectorySeparatorChar + segment + Path.DirectorySeparatorChar,
+                        StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
+        }
+        catch (Exception)
+        {
+            return true;   // 连路径都解析不了，别往里放数据
         }
     }
 
