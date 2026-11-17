@@ -141,6 +141,21 @@ public static class ClassCodes
         return text.Length >= 4 && text.Contains("20", StringComparison.Ordinal) &&
                (text.Contains('-') || text.Length <= 8);
     }
+
+    /// <summary>
+    /// 云端已经确定了班级码（建班返回的、或配对时用的那个）之后，本机设置该改成什么。
+    /// 返回 <c>null</c> = 不用改：没给码，或者本来就一致。
+    ///
+    /// 为什么需要这一步：本机没连云端时也有一个班级码，那是懒生成的随机串，只作标识
+    /// （<c>AppSettings.ClassCode</c>）。建班时云端另发一个码写进 sync.json，两处从此各说
+    /// 各的 —— 老师照着「设置」念出来的码去配另一台机器，云端只回 class_not_found。
+    /// </summary>
+    public static string? Align(string? pairedCode, string? localCode)
+    {
+        var code = (pairedCode ?? "").Trim();
+        if (code.Length == 0) return null;
+        return string.Equals(code, (localCode ?? "").Trim(), StringComparison.Ordinal) ? null : code;
+    }
 }
 
 /// <summary>UUIDv7：带时间前缀，索引友好；同时充当同步的幂等键。</summary>

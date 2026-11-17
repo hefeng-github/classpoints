@@ -1,3 +1,4 @@
+using ClassPoints.Data;
 using ClassPoints.Data.Sync;
 
 namespace ClassPoints.Tests;
@@ -32,6 +33,20 @@ internal static class SyncStoreTests
             check("refresh 是密文落盘", !raw.Contains("refresh-1"), "");
             check("access 不落盘（只在内存里活 12 小时）", !raw.Contains("access-in-memory"), "");
             check("默认不是只读", loaded?.ReadOnly == false, loaded?.ReadOnly.ToString() ?? "null");
+
+            // ---------------- 班级码：云端认的那一个 ----------------
+            // 设置页要靠它把「本机班级码」对齐成云端发的那个，否则老师照着设置念出来的码
+            // 在另一台机器上配对只会得到 class_not_found。
+            var db = new Database(Path.Combine(dir, "cp.db"));
+            db.Initialize();
+            var service = new SyncService(db, new SyncOutbox(db), new SyncStore(path));
+            check("已配对时能读到云端认的班级码",
+                service.PairedClassCode == "ABC12345", service.PairedClassCode ?? "null");
+
+            var cold = new SyncService(db, new SyncOutbox(db),
+                new SyncStore(Path.Combine(dir, "absent.json")));
+            check("没配对时没有班级码（本机那个另算）", cold.PairedClassCode is null,
+                cold.PairedClassCode ?? "null");
 
             // ---------------- 自动重配用的口令 ----------------
             // 口令必须跟着凭据一起存活：凭据被云端换掉之后，能自己接上的前提是

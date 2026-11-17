@@ -178,6 +178,12 @@ public sealed class AppServices
 
         Instance = services;
 
+        // 已经配过对的机器：sync.json 里的班级码才是云端认的。老版本建班/配对只写了
+        // sync.json，本机设置里还留着建班之前懒生成的那个随机码 —— 设置页显示的、
+        // 老师念给另一台机器的那个码因此一直是错的。启动时对齐一次，把老机器也修好。
+        if (services.Sync.PairedClassCode is { } pairedCode)
+            services.AdoptClassCode(pairedCode);
+
         services.Log($"启动 db={db.DbPath} 数据目录={Database.RootDir}（{location.Reason}）" +
                      $" schema={Sql.SchemaVersion} mode={services.Settings.AppMode?.ToDb() ?? "(未选)"}");
         return services;
@@ -274,6 +280,25 @@ public sealed class AppServices
     }
 
     public int StudentCount => Students.ListActive().Count;
+
+    /// <summary>
+    /// 云端已经确定了班级码（建班返回的、或配对时用的那个），本机设置跟着改成同一个。
+    ///
+    /// 起因是一个现场问题：老师在这台电脑上建了班，提示「班级码 ABCD-1234」，
+    /// 可「设置 → 班级信息」里显示的还是另一个 —— 本机没连云端时懒生成的那个随机码。
+    /// 建班只写了 sync.json，没写 settings；于是照着设置页念给另一台机器，配对只会
+    /// 得到 class_not_found，而老师完全看不出这两个码为什么不是一回事。
+    ///
+    /// 配对同理：输进去的码才是云端认的，本机那份要跟上。
+    /// </summary>
+    public void AdoptClassCode(string? code)
+    {
+        var target = ClassCodes.Align(code, Settings.ClassCode);
+        if (target is null) return;
+
+        Log($"班级码对齐：本机 {Settings.ClassCode} → 云端 {target}");
+        Settings.ClassCode = target;
+    }
 
     /// <summary>
     /// 库里有没有任何一个能用来认人的东西（密码或卡）。

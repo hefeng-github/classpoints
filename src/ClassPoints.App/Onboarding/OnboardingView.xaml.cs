@@ -54,6 +54,9 @@ public sealed partial class OnboardingView : UserControl
 
     private readonly List<StepKind> _steps = [];
     private readonly List<string> _titles = [];
+
+    /// <summary>本次因为"已经就位"而没让老师再走一遍的步骤名，第 1 屏上说明一句。</summary>
+    private readonly List<string> _skipped = [];
     private readonly List<RuleDraft> _rules = [];
     private readonly List<Student> _previewStudents = [];
 
@@ -74,6 +77,19 @@ public sealed partial class OnboardingView : UserControl
 
     private string? _configPath;
     private string? _configApplied;
+
+    /// <summary>配置包口令：只是为了让老师返回上一屏时不用重输，不落盘。</summary>
+    private string _configPass = "";
+
+    /// <summary>当前这一屏上的两个输入框。返回上一步时从这里取值（见 <see cref="CaptureStep"/>）。</summary>
+    private TextBox? ConfigPathInput { get; set; }
+    private PasswordBox? ConfigPassInput { get; set; }
+
+    /// <summary>已经读进来看过的那份配置包。有它就画出"配置包里是"那张卡。</summary>
+    private ConfigBundle? _configPreview;
+
+    /// <summary>读配置包失败的那句话（路径写错、文件被改过）。有它就顶掉摘要行并标红。</summary>
+    private string? _configError;
 
     private int _awardedIndex = -1;
     private int _awardedDelta;
@@ -134,29 +150,99 @@ public sealed partial class OnboardingView : UserControl
 
     // ---------------- 步骤表 ----------------
 
+    /// <summary>
+    /// 按"这台机器已经有什么"决定还要问哪几步。
+    ///
+    /// 以前是固定七步：套用完配置包（或者已经跟云端配过对）之后，老师还要再点
+    /// 班级、名单、密码三屏，每一屏上写着的东西全是刚导进来的 —— 那不是确认，
+    /// 是在逼人点四下"下一步"。所以：已经就位的步骤直接摘掉，进度条也跟着变短。
+    ///
+    /// 保留当前所在的这一步（<c>anchor</c>）：套用配置包的那一屏还要让老师看见
+    /// "已套用…"的结果，把它自己在重算时摘掉会瞬间跳到自检，看起来很慌。
+    /// </summary>
     private void RebuildSteps()
     {
+        var anchor = _steps.Count == 0 ? (StepKind?)null : _steps[System.Math.Clamp(_step, 0, _steps.Count - 1)];
+
         _steps.Clear();
         _titles.Clear();
+        _skipped.Clear();
 
         // 形态这一步永远在：即使这次启动已经知道形态（预配置过、或从设置里重跑），
         // 也给得回一步 —— "1. 预配置"底下没有「上一步」按钮，看着像界面坏了。
         _steps.Add(StepKind.Mode);
         _titles.Add("这台电脑做什么");
 
-        _steps.Add(StepKind.Config);
-        _titles.Add("预配置");
-        _steps.Add(StepKind.Class);
-        _titles.Add("班级");
-        _steps.Add(StepKind.Names);
-        _titles.Add("名单");
-        _steps.Add(StepKind.Rules);
-        _titles.Add("加减分项");
-        _steps.Add(StepKind.Account);
-        _titles.Add("密码与恢复码");
+        foreach (var kind in new[] { StepKind.Config, StepKind.Class, StepKind.Names, StepKind.Rules, StepKind.Account })
+        {
+            if (kind != anchor && IsAlreadyDone(kind))
+            {
+                _skipped.Add(TitleOf(kind));
+                continue;
+            }
+
+            _steps.Add(kind);
+            _titles.Add(TitleOf(kind));
+        }
 
         _steps.Add(StepKind.SelfCheck);
         _titles.Add("自检");
+
+        if (anchor is { } kept)
+        {
+            var index = _steps.IndexOf(kept);
+            if (index >= 0) _step = index;
+        }
+    }
+
+    private static string TitleOf(StepKind kind) => kind switch
+    {
+        StepKind.Mode => "这台电脑做什么",
+        StepKind.Config => "预配置",
+        StepKind.Class => "班级",
+        StepKind.Names => "名单",
+        StepKind.Rules => "加减分项",
+        StepKind.Account => "密码与恢复码",
+        _ => "自检",
+    };
+
+    /// <summary>
+    /// 这一步要做的事是不是已经做过了。
+    ///
+    /// 加减分项永远算"没过"：库里出厂就带着几条常用项，拿"有没有规则"判断等于永远跳过，
+    /// 而老师确实需要看一眼默认分值是不是自己要的。
+    /// </summary>
+    private bool IsAlreadyDone(StepKind kind) => kind switch
+    {
+        // 配过对，或者既有班名又有名单 —— 预配置能给的东西都已经在本机了
+        StepKind.Config => Services.Sync.IsConfigured || (PersistedClassName && RosterCount > 0),
+        StepKind.Class => PersistedClassName,
+        StepKind.Names => RosterCount > 0,
+        StepKind.Account => Services.Members.Owner()?.PinHash is { Length: > 0 },
+        _ => false,
+    };
+
+    /// <summary>
+    /// 库里已经存了班级名（不是这一屏刚敲进去、还没落库的那个）。
+    ///
+    /// 只看<b>已落库</b>的值：拿草稿 `_className` 判断的话，老师在班级页敲个名字、
+    /// 点「上一步」看看形态，再点「下一步」—— 这一页就被判成"做过了"直接跳过，
+    /// 想回来改个字都回不来。
+    /// </summary>
+    private static bool PersistedClassName => !string.IsNullOrWhiteSpace(Services.Settings.ClassName);
+
+    private int RosterCount => Services.Students.ListActive().Count;
+
+    /// <summary>
+    /// 刚套完配置包 / 刚连上云端：重算步骤，并刷新标题与圆点。
+    ///
+    /// 不整页重画 —— 这一屏上正显示着「已套用…」的结果和拉了多少条，重画会把它擦掉。
+    /// </summary>
+    private void RefreshStepsInPlace()
+    {
+        RebuildSteps();
+        TitleText.Text = $"{_step + 1}. {_titles[_step]}";
+        RenderDots();
     }
 
     // ---------------- 步骤控制 ----------------
@@ -246,6 +332,12 @@ public sealed partial class OnboardingView : UserControl
 
     private void OnBack(object sender, RoutedEventArgs e)
     {
+        // 「上一步」不走 ValidateStep，所以这一步输入框里的东西得自己收进来。
+        // 以前不收：在名单页粘好一列姓名，回上一屏看一眼班级名，再点「下一步」——
+        // 名单空了（重画时用的是还没更新的 _names），老师以为程序把输入吞了。
+        CaptureStep();
+
+        RebuildSteps();
         ShowStep(_step - 1);
     }
 
@@ -259,7 +351,40 @@ public sealed partial class OnboardingView : UserControl
             return;
         }
 
+        // 这一屏可能刚把后面几步的事做完了（套用了配置包、连上了云端），
+        // 重算一次，下一步直接落到第一个还没做的步骤上。
+        RebuildSteps();
         ShowStep(_step + 1);
+    }
+
+    /// <summary>
+    /// 离开这一步时，把输入框里的值收回字段。
+    ///
+    /// 规则与密码是"边输边写"，名单和班级名则是"离开这一步才算数" ——
+    /// 两条路都得保证返回上一步再回来时，界面还是老师刚填的样子。
+    /// </summary>
+    private void CaptureStep()
+    {
+        if (_step < 0 || _step >= _steps.Count) return;
+
+        switch (_steps[_step])
+        {
+            case StepKind.Class:
+                var name = NameNormalizer.Clean(NameInput?.Text ?? "");
+                if (name.Length > 0) _className = name;
+                break;
+
+            case StepKind.Names:
+                CollectNames();
+                break;
+
+            case StepKind.Config:
+                // 路径可能是手打的（没点「选文件」），口令也留着免重输
+                if (ConfigPathInput is { } box && box.Text.Trim().Length > 0)
+                    _configPath = box.Text.Trim();
+                _configPass = ConfigPassInput?.Password ?? _configPass;
+                break;
+        }
     }
 
     // ---------------- 校验：红字 + 标红那一格 ----------------
@@ -349,7 +474,12 @@ public sealed partial class OnboardingView : UserControl
         return true;
     }
 
-    private void OnSkipAll(object sender, RoutedEventArgs e) => ShowStep(_titles.Count - 1);
+    private void OnSkipAll(object sender, RoutedEventArgs e)
+    {
+        // 「跳到自检」也是离开这一步，输入同样要收进来，否则粘好的名单白粘
+        CaptureStep();
+        ShowStep(_titles.Count - 1);
+    }
 
     // ---------------- 第 0 步：形态 ----------------
 
@@ -385,6 +515,19 @@ public sealed partial class OnboardingView : UserControl
             Text = "形态存在本机，之后可在「设置 → 这台电脑」里更换。",
             Style = Styled("SmallText"),
         });
+
+        // 已经配过对、或者本机既有班名又有名单：后面那几屏就不用再演一遍了。
+        // 说一句是必要的 —— 否则进度条忽然少了两格，老师会以为程序漏了步骤。
+        if (_skipped.Count > 0)
+        {
+            Body.Children.Add(new TextBlock
+            {
+                Text = $"{string.Join("、", _skipped)} 已经配好，这次直接跳过；要改这些请到「设置」里改。",
+                Style = Styled("SmallText"),
+                Foreground = Pal.Secondary,
+                TextWrapping = TextWrapping.Wrap,
+            });
+        }
     }
 
     private Button ModeCard(AppMode mode, string glyph, string title, string hint)
@@ -443,12 +586,21 @@ public sealed partial class OnboardingView : UserControl
     {
         _configPath ??= ConfigBundleFile.Discover();
 
+        // 自动发现的那个包也先摊开：U 盘里只有一个 .cpcfg 时，老师不该先点一遍「套用」
+        // 才知道里面是谁的班、几个人。
+        if (_configPath is { Length: > 0 } && _configPreview is null && _configError is null)
+            TryPreview();
+
         Body.Children.Add(new TextBlock
         {
             Text = "配置包（.cpcfg）里带着班级名、云端地址与名单，套用后本机能少填几项。没有就跳过。",
             Style = Styled("DeskBodyText"),
             TextWrapping = TextWrapping.Wrap,
         });
+
+        // 这一屏要回答的是"还缺什么"。只给一个路径框，老师得自己记住班级名和人数，
+        // 再回设置里核对 —— 所以先把这台机器现有的摊开：班级、名单、云端、管理密码。
+        Body.Children.Add(Section("这台机器现在", null, CurrentStateCard()));
 
         var pathBox = new TextBox
         {
@@ -457,6 +609,7 @@ public sealed partial class OnboardingView : UserControl
             PlaceholderText = @"例如 U:\班级.cpcfg，或本程序目录下的 classpoints.cpcfg",
             Width = 520,
         };
+        ConfigPathInput = pathBox;
 
         // 「选文件」贴着路径框、「套用」贴口令框 —— 按钮挨着它作用的那个输入框。
         var browse = new Button
@@ -476,13 +629,21 @@ public sealed partial class OnboardingView : UserControl
             PlaceholderText = "没设口令就留空",
             PasswordChar = "●",
             Width = 260,
+            Password = _configPass,
         };
+        ConfigPassInput = pass;
 
         var summary = new TextBlock
         {
             Style = Styled("SmallText"),
             TextWrapping = TextWrapping.Wrap,
-            Text = string.IsNullOrWhiteSpace(_configPath) ? "没找到配置包，可以手动选文件。" : "点「套用」先看一眼里面是什么。",
+            Foreground = _configError is null ? Pal.Secondary : Pal.Danger,
+            Text = _configError
+                ?? (string.IsNullOrWhiteSpace(_configPath)
+                    ? "没找到配置包，可以手动选文件。"
+                    : _configPreview is null
+                        ? "点「套用」先看一眼里面是什么。"
+                        : "这个包里是下面这些，确认无误就点「套用」。"),
         };
 
         var apply = new Button
@@ -500,6 +661,11 @@ public sealed partial class OnboardingView : UserControl
         Body.Children.Add(passRow);
         Body.Children.Add(summary);
 
+        // 包里装着什么，摊开给人看：班级、几个人、云端地址与班级码、带不带密码。
+        // 光一句"已套用"没人知道自己刚才把哪个班盖到了这台机器上。
+        if (_configPreview is not null)
+            Body.Children.Add(Section("配置包里是", null, BundleCard(_configPreview)));
+
         if (_configApplied is not null)
             summary.Text = "已套用：" + _configApplied + "。下一步会接着问还缺什么。";
 
@@ -507,9 +673,12 @@ public sealed partial class OnboardingView : UserControl
         {
             var picked = await PickConfigFileAsync();
             if (picked is null) return;
+
             _configPath = picked;
-            pathBox.Text = picked;
-            summary.Text = "已选中，点「套用」。";
+            _configPass = pass.Password;
+            TryPreview();
+            // 整页重画一次：摘要行与"配置包里是"那张卡都是按 _configPreview 画的
+            ShowStep(_step);
         };
 
         apply.Click += async (_, _) =>
@@ -532,7 +701,8 @@ public sealed partial class OnboardingView : UserControl
                 return;
             }
 
-            summary.Text = Services.Config.Describe(bundle);
+            _configError = null;
+            _configPreview = bundle;
 
             try
             {
@@ -551,7 +721,9 @@ public sealed partial class OnboardingView : UserControl
                                  (bundle.Sync is null ? "未连云端" : "已连云端");
                 _className = bundle.ClassName;
                 _classCode = Services.Settings.ClassCode;
+                _configPass = pass.Password;
 
+                // 包里带着管理密码时，密码这一步也就没东西可设了 —— 后面几步该跳就跳。
                 if (bundle.NeedsPassphrase && pass.Password.Length > 0)
                 {
                     var admin = bundle.RevealAdminPin(pass.Password);
@@ -563,10 +735,13 @@ public sealed partial class OnboardingView : UserControl
                     }
                 }
 
-                summary.Text = "已套用：" + _configApplied + (result.Pulled is null ? "" : "；" + result.Pulled);
-                HintText.Text = "班级名" + (bundle.Roster.Count > 0 ? "、名单" : "") +
-                                (_pinFromBundle ? "、管理密码" : "") + "都已就位。";
+                // 重画这一屏：摘要和卡片都按新状态画 ——「已套用」下面就是刚套进去的班级、
+                // 人数与云端地址，老师一眼能核对。重画会清掉提示条，所以提示放在它后面写。
+                ShowStep(_step);
+                HintText.Text = "已套用" + (result.Pulled is null ? "" : "；" + result.Pulled) +
+                                "。后面只问还缺的那几项。";
                 HintText.Foreground = Pal.Positive;
+                RefreshStepsInPlace();
             }
             catch (ConfigException ex)
             {
@@ -580,6 +755,117 @@ public sealed partial class OnboardingView : UserControl
         };
 
         Body.Children.Add(BuildClassCodeLink());
+    }
+
+    /// <summary>
+    /// 把配置包读进来做预览。读不了就记下原因、界面上红字说明 —— 这里不抛，
+    /// 因为"选错文件"是最常见的一步，不该中断整页。
+    /// </summary>
+    private void TryPreview()
+    {
+        _configError = null;
+        _configPreview = null;
+        if (string.IsNullOrWhiteSpace(_configPath)) return;
+
+        try
+        {
+            _configPreview = ConfigBundleFile.Load(_configPath);
+        }
+        catch (Exception ex) when (ex is ConfigException or IOException or UnauthorizedAccessException)
+        {
+            _configError = "读不了这个文件：" + ex.Message;
+        }
+        catch (Exception ex)
+        {
+            Services.LogError("wizard-preview", ex);
+            _configError = "读不了这个文件：" + ex.Message;
+        }
+    }
+
+    /// <summary>这台机器现有的东西：老师要靠它判断"还缺什么"。</summary>
+    private UIElement CurrentStateCard()
+    {
+        var settings = Services.Settings;
+        var creds = new SyncStore().Load();
+
+        return InfoRows(new List<(string, string)>
+        {
+            ("班级", string.IsNullOrWhiteSpace(settings.ClassName) ? "还没填" : settings.ClassName),
+            ("名单", RosterCount > 0 ? $"{RosterCount} 人" : "还没有学生"),
+            ("云端", creds is null
+                ? "未连接（纯本地，备份即同步）"
+                : $"{creds.BaseUrl} · 班级码 {creds.ClassCode}" + (creds.ReadOnly ? "（等班主任通过）" : "")),
+            ("管理密码", Services.HasManagerPin ? "已设" : "还没设"),
+        });
+    }
+
+    /// <summary>配置包里装着什么。这里只列元信息，不解密任何口令。</summary>
+    private static UIElement BundleCard(ConfigBundle bundle)
+    {
+        var roster = bundle.Roster.Count == 0
+            ? "不带名单"
+            : $"{bundle.Roster.Count} 人（{string.Join("、", bundle.Roster.Take(5).Select(x => x.Name))}" +
+              (bundle.Roster.Count > 5 ? " 等" : "") + "）";
+
+        var rows = new List<(string, string)>();
+        if (!string.IsNullOrWhiteSpace(bundle.Note)) rows.Add(("备注", bundle.Note));
+
+        rows.Add(("班级", string.IsNullOrWhiteSpace(bundle.ClassName) ? "没写班级名" : bundle.ClassName));
+        rows.Add(("名单", roster));
+        rows.Add(("座位", $"{bundle.SeatRows} 行 × {bundle.SeatCols} 列"));
+        rows.Add(("云端", bundle.Sync is null
+            ? "未连接云端（到校后再手动配对）"
+            : $"{bundle.Sync.BaseUrl} · 班级码 {bundle.Sync.ClassCode}"));
+        rows.Add(("密码", bundle.NeedsPassphrase ? "含配对口令 / 管理密码（口令加密）" : "不含密码"));
+        if (bundle.CreatedAt > 0)
+            rows.Add(("导出时间", Clock.ToLocal(bundle.CreatedAt).ToString("yyyy-MM-dd HH:mm")));
+
+        return InfoRows(rows);
+    }
+
+    /// <summary>
+    /// 两列的「标签：值」。设置页有 ValueRow，向导里没有那一套控件，
+    /// 但"摊开给人看"的需求一样，所以留一个轻量版。
+    /// </summary>
+    private static UIElement InfoRows(IReadOnlyList<(string Label, string Value)> rows)
+    {
+        var grid = new Grid
+        {
+            ColumnSpacing = 14,
+            RowSpacing = 6,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(76) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        for (var i = 0; i < rows.Count; i++)
+        {
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            var label = new TextBlock
+            {
+                Text = rows[i].Label,
+                Style = Styled("SmallText"),
+                VerticalAlignment = VerticalAlignment.Top,
+            };
+
+            var value = new TextBlock
+            {
+                Text = rows[i].Value,
+                Style = Styled("DeskBodyText"),
+                TextWrapping = TextWrapping.Wrap,
+                MaxWidth = 620,
+            };
+
+            Grid.SetRow(label, i);
+            Grid.SetColumn(label, 0);
+            Grid.SetRow(value, i);
+            Grid.SetColumn(value, 1);
+            grid.Children.Add(label);
+            grid.Children.Add(value);
+        }
+
+        return grid;
     }
 
     /// <summary>
@@ -653,7 +939,10 @@ public sealed partial class OnboardingView : UserControl
                 }
 
                 _classCode = code;
-                Services.Settings.ClassCode = code;
+                // 输进去的这个码才是云端认的；本机设置里那份（建班之前懒生成的随机码）
+                // 要一起换掉，否则同一台机器的「设置」和「同步」会各说一个码。
+                Services.AdoptClassCode(code);
+                _classCode = Services.Settings.ClassCode;
                 Services.Pump.Start();
 
                 var pull = await Services.Sync.RunOnceAsync();
@@ -673,6 +962,10 @@ public sealed partial class OnboardingView : UserControl
                     HintText.Text = "云端已接入这台机器。";
                     HintText.Foreground = Pal.Positive;
                 }
+
+                // 名单已经从云端拉下来了，后面那几屏（名单、密码）能跳就跳
+                RefreshStepsInPlace();
+                status.Text += "下面只问还缺的几项。";
             }
             catch (Exception ex)
             {
@@ -1049,13 +1342,20 @@ public sealed partial class OnboardingView : UserControl
 
         var codeRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 14 };
         codeRow.Children.Add(codeText);
-        codeRow.Children.Add(reroll);
+
+        // 已经连上云端：这个码是云端发的，本机改掉只会让两边对不上（另一台机器配对
+        // 会得到 class_not_found）。换班得先解除配对，所以这里干脆不给"换一个"。
+        var paired = Services.Sync.IsConfigured;
+        if (!paired) codeRow.Children.Add(reroll);
 
         Body.Children.Add(Section("班级码", null, codeRow));
         Body.Children.Add(new TextBlock
         {
-            Text = "两台设备配对时用它。未连云端时只是本机编号。",
+            Text = paired
+                ? "这是云端认的班级码，本机不能改。要换班请到「设置 → 同步与更新 → 同步」解除配对后重新建班。"
+                : "两台设备配对时用它。未连云端时只是本机编号，建班或配对之后会换成云端发的那个。",
             Style = Styled("SmallText"),
+            TextWrapping = TextWrapping.Wrap,
         });
 
         var pinLabel = new StackPanel { Spacing = 4, Width = 220 };

@@ -142,6 +142,22 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
 
     public bool IsConfigured => _store.Load() is not null;
 
+    /// <summary>
+    /// 已配对时 sync.json 里记的班级码 —— **云端认的那一个**。
+    ///
+    /// 它和「设置」里那份不是一回事：本机没连云端时先懒生成了一个随机码，
+    /// 建班或配对之后要把设置改成云端这个，否则老师照着设置念出来的码
+    /// 在另一台机器上配对只会得到 class_not_found。
+    /// </summary>
+    public string? PairedClassCode
+    {
+        get
+        {
+            var code = _store.Load()?.ClassCode;
+            return string.IsNullOrWhiteSpace(code) ? null : code;
+        }
+    }
+
     private bool? _readOnly;
 
     /// <summary>云端判定这台机器只能看时触发。界面据此切只读、通过后自动恢复。</summary>

@@ -169,7 +169,9 @@ public sealed partial class DeskSettingsPage : Page
         body.Children.Add(Labelled("班级名称", line));
 
         body.Children.Add(ValueRow("班级码", Services.Settings.ClassCode,
-            "另一台设备配对时要用它。没连云时只是个标识。"));
+            Services.Sync.IsConfigured
+                ? "云端认的就是这个码，另一台设备用它配对。"
+                : "另一台设备配对时要用它。还没连云端，所以它只是本机的标识 —— 建班或配对之后会换成云端发的那个。"));
 
         body.Children.Add(ValueRow("数据文件", Services.Db.DbPath,
             "名单、积分、成绩都在这一个文件里。备份用下面的「立即备份」，不要手动复制正在写的库。"));
@@ -2110,6 +2112,8 @@ public sealed partial class DeskSettingsPage : Page
                 }
 
                 var report = await sync.PairAsync(baseUrl, code, pin, "desk");
+                // 输进去的这个码才是云端认的：本机设置里那份可能还是建班之前懒生成的随机码。
+                Services.AdoptClassCode(code);
                 Services.Log($"同步配对成功 {baseUrl} readOnly={report.ReadOnly}");
                 Services.Pump.Start();
                 // 待审不算失败：连上了、能看，只是暂时写不了。话术里带特征码，
@@ -2145,7 +2149,11 @@ public sealed partial class DeskSettingsPage : Page
                 var report = await sync.CreateClassAsync(
                     baseUrl, Services.ClassName, Services.DeskOperator.DisplayName, pin,
                     Crypto.RandomHex(4).ToUpperInvariant(), "desk", bootstrapBox.Password);
-                Services.Log($"建班成功 {baseUrl}");
+
+                // 云端发的码要落到本机设置里：否则右下角提示一个码、上面「班级信息」显示另一个，
+                // 老师照着设置页念给大屏，配对必然 class_not_found。
+                Services.AdoptClassCode(report.CreatedCode);
+                Services.Log($"建班成功 {baseUrl} 班级码 {report.CreatedCode}");
                 Services.Pump.Start();
                 Shell?.Toast($"建班成功，班级码 {report.CreatedCode}（大屏配对要用它）", 10);
                 Reload();

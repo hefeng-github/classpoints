@@ -33,6 +33,16 @@ internal static class DomainTests
         C("老的带年份编号会被换掉",
             ClassCodes.LooksLikeOldScheme("C3-2026") && !ClassCodes.LooksLikeOldScheme(code));
 
+        // ---- 云端定了码之后，本机设置要跟着换 ----
+        // 现场问题：本机建班后提示一个码，「设置」里显示的是另一个（建班之前懒生成的随机码），
+        // 照着设置念给另一台机器必然配对失败。对齐规则钉死在这里。
+        check("配对/建班的码与本机不同时，以云端为准",
+            ClassCodes.Align("WXYZ-2345", "ABCD-6789") == "WXYZ-2345", "");
+        C("本来就一致就不用动", ClassCodes.Align("WXYZ-2345", "WXYZ-2345") is null);
+        C("两边只差空格也算一致", ClassCodes.Align(" WXYZ-2345 ", "WXYZ-2345") is null);
+        C("云端没给码（纯本地）时不许把本机的码清掉", ClassCodes.Align("", "ABCD-6789") is null);
+        C("云端给的是空白也不动", ClassCodes.Align("   ", "ABCD-6789") is null);
+
         // ---- 角色：班主任和班长都能管理，班委只能记分 ----
         C("班主任能管理", MemberRole.Owner.CanManage());
         C("班长能管理", MemberRole.CoOwner.CanManage());
