@@ -81,17 +81,10 @@
 
                     <TextBlock x:Name="ImpactText" Style="{StaticResource DeskSecondaryText}" />
 
-                    <StackPanel Spacing="8">
-                        <!-- 合计不再是常显的一行：权重只有不等于 100% 时才在右侧提醒一句，
-                             平时它不占地方，也不跟上面的平时/考试滑块抢注意力。 -->
-                        <Grid>
-                            <TextBlock Text="各场考试权重" Style="{StaticResource DeskColumnHeader}" />
-                            <TextBlock x:Name="WeightSumWarn" HorizontalAlignment="Right"
-                                       Visibility="Collapsed"
-                                       Style="{StaticResource DeskSecondaryText}" />
-                        </Grid>
-                        <StackPanel x:Name="WeightList" Spacing="6" />
-                    </StackPanel>
+                    <!-- 各场考试不再让人填百分比：底下这行说清现在是怎么分的。
+                         一场考试就是 100%，多场自动平分，老师没有任何要维护的数。 -->
+                    <TextBlock x:Name="ExamShareHint" Style="{StaticResource DeskSecondaryText}"
+                               TextWrapping="Wrap" MaxWidth="620" HorizontalAlignment="Left" />
 
                     <TextBlock x:Name="SchemeHint" Style="{StaticResource DeskSecondaryText}" />
                 </StackPanel>

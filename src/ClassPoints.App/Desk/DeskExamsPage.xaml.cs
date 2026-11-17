@@ -20,7 +20,6 @@ public sealed partial class DeskExamsPage : Page
 {
     private Scheme _scheme = new();
     private List<Exam> _exams = [];
-    private Dictionary<string, double> _weights = [];
     private RankingResult? _ranking;
     private RankingResult? _baseline;
     private List<Student> _students = [];
@@ -48,7 +47,6 @@ public sealed partial class DeskExamsPage : Page
             // 列全部场次：总评按"累计"算，开过新周期后旧考试仍然参与排名。
             _exams = Services.Exams.ListAllExams();
             _scheme = Services.Exams.ActiveScheme();
-            _weights = Services.Exams.Weights(_scheme.Id);
             _students = Services.Students.ListActive();
             _termPoints = Services.Entries.CumulativeTotals();
 
@@ -251,99 +249,33 @@ public sealed partial class DeskExamsPage : Page
         var examPercent = _scheme.ExamPercent;
         var dailyPercent = 100 - examPercent;
         // 滑块的值是"平时占比"，和左边那个标签同一个数。
-        // 用考试占比做值的话，填充段会一路长到考试那一侧，而它紧挨着的却是「平时 20%」——
-        // 这就是"平时和考试的位置反了"的来源。
         if (System.Math.Abs(WeightSlider.Value - dailyPercent) > 0.01) WeightSlider.Value = dailyPercent;
         DailyWeightLabel.Text = $"平时 {dailyPercent}%";
         ExamWeightLabel.Text = $"考试 {examPercent}%";
 
-        // 口径在设置页统一改；这里只留一句"现在是怎么算的"。总评形式已在上面那行公式里。
+        // 口径在设置页统一改；这里只留一句"现在是怎么算的"。
         SchemeHint.Text = PolicyLabel(Services.Settings.AbsencePolicy) +
                           "（在「设置 → 成绩口径」改）";
 
-        WeightList.Children.Clear();
-
-        if (_exams.Count == 0)
+        // 考试那部分不再让人一场一场填百分比：只有一场就是 100%，
+        // 多场自动平分 —— 这一行只负责把"现在怎么分"说出来，谁也改不了它。
+        ExamShareHint.Text = _exams.Count switch
         {
-            WeightList.Children.Add(new TextBlock
-            {
-                Text = "还没有考试，导入成绩后可逐场设置权重。",
-                Style = Styled("DeskSecondaryText"),
-            });
-            UpdateWeightState();
-            _loading = false;
-            UpdateImpact();
-            return;
-        }
-
-        foreach (var exam in _exams)
-        {
-            var value = _weights.TryGetValue(exam.Id, out var w) ? w : 0;
-
-            // 一行只有「考试名 + 权重数字」：滑块去掉之后，同名两项并排看也不挤，
-            // 而且和上面那根平时/考试的滑块不再长得一样（那根才是真正在调比例的东西）。
-            var row = new Grid { ColumnSpacing = 12 };
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(200) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-            row.Children.Add(new TextBlock
-            {
-                Text = exam.Name,
-                Style = Styled("DeskBodyText"),
-                VerticalAlignment = VerticalAlignment.Center,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-            });
-
-            var number = new NumberInput
-            {
-                Value = value * 100,
-                Minimum = 0,
-                Maximum = 100,
-                Step = 5,
-                BoxWidth = 48,
-                VerticalAlignment = VerticalAlignment.Center,
-            };
-
-            var examId = exam.Id;
-            number.ValueChanged += percent =>
-            {
-                if (_loading) return;
-                _weights[examId] = percent / 100;
-                UpdateWeightState();
-                DebouncedRecompute();
-            };
-
-            Grid.SetColumn(number, 1);
-            row.Children.Add(number);
-
-            WeightList.Children.Add(row);
-        }
+            0 => "还没有考试。导入成绩后，考试成绩那部分才会算进总评。",
+            1 => $"只有 1 场考试：考试部分 100% 计入「{_exams[0].Name}」。",
+            _ => $"共 {_exams.Count} 场考试：考试部分按场次平均计入（每场 {100.0 / _exams.Count:0.#}%）。",
+        };
 
         _loading = false;
         UpdateWeightState();
         UpdateImpact();
     }
 
-    private double WeightSum => _weights.Values.Sum();
-
     /// <summary>
-    /// 权重"配没配平"这件事，只剩两个用处：决定导出键能不能按，以及在不平时提醒一句。
-    ///
-    /// 以前这里是一行常显的「合计 100%」加一个「自动配平」按钮。只有一场考试时
-    /// 权重恒为 100%，那一行和一个能点的按钮都只是噪音；多场时才需要合计，
-    /// 而"合计不等于 100%"本来就是个要修的错，用一句话写在标题右边比常驻一行更省地方。
+    /// 权重合不合法这件事已经不存在了：考试部分恒由各场平分（BuildExamWeights 归一化到 100%），
+    /// 所以导出键永远是可按的。这里保留成一处"能按"，免得哪天再加约束要满世界找。
     /// </summary>
-    private void UpdateWeightState()
-    {
-        var sum = WeightSum * 100;
-        var ok = _exams.Count == 0 || System.Math.Abs(sum - 100) < 0.5;
-
-        ExportButton.IsEnabled = ok;
-
-        WeightSumWarn.Text = ok ? "" : $"合计 {sum:0.#}%，导出前要凑到 100%";
-        WeightSumWarn.Foreground = Pal.Negative;
-        WeightSumWarn.Visibility = ok ? Visibility.Collapsed : Visibility.Visible;
-    }
+    private void UpdateWeightState() => ExportButton.IsEnabled = true;
 
     private void UpdateImpact()
     {
@@ -383,23 +315,6 @@ public sealed partial class DeskExamsPage : Page
         DebouncedRecompute();
     }
 
-    /// <summary>
-    /// 从没设过权重时按场次均分。
-    ///
-    /// 默认全 0 的话，导入完第一场考试，总评就只剩平时分（权重合计 0，导出也按不了）——
-    /// 老师的理解是"算错了"，而不是"这里要我自己填"。导入之后就把这一步做掉。
-    /// </summary>
-    private bool EnsureWeightsInitialized()
-    {
-        if (_exams.Count == 0) return false;
-        if (Services.Exams.Weights(_scheme.Id).Count > 0) return false;
-
-        var even = 1.0 / _exams.Count;
-        Services.Exams.SetWeights(_scheme.Id, _exams.ToDictionary(x => x.Id, _ => even));
-        _weights = Services.Exams.Weights(_scheme.Id);
-        return true;
-    }
-
     private void DebouncedRecompute()
     {
         _debounce ??= DispatcherQueue.CreateTimer();
@@ -413,7 +328,6 @@ public sealed partial class DeskExamsPage : Page
     private void OnDebounceTick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
     {
         sender.Stop();
-        Services.Exams.SetWeights(_scheme.Id, _weights);
         Recompute(resetBaseline: false);
     }
 
@@ -764,13 +678,8 @@ public sealed partial class DeskExamsPage : Page
 
         Reload();
 
-        // 第一次导入结束后把权重均分掉：默认全 0 的话，总评只剩平时分，
-        // 「合计 0%」还标成红字，看着像算错了。
-        if (EnsureWeightsInitialized())
-        {
-            RenderWeights();
-            Recompute(resetBaseline: false);
-        }
+        RenderWeights();
+        Recompute(resetBaseline: false);
 
         Shell?.Toast($"已导入 {examName}：{result.Written} 人" +
                      (result.Absent > 0 ? $"，缺考 {result.Absent} 人" : ""), 5);
@@ -833,10 +742,6 @@ public sealed partial class DeskExamsPage : Page
 
         if (_students.Count == 0) issues.Add("名单是空的，导出的表只有表头。");
         if (_exams.Count == 0) issues.Add("没有导入任何考试成绩，总评等于平时分。");
-
-        var sum = WeightSum * 100;
-        if (_exams.Count > 0 && System.Math.Abs(sum - 100) >= 0.5)
-            issues.Add($"各场考试权重合计 {sum:0.#}%，不等于 100%。");
 
         var missing = _exams.Sum(e =>
         {

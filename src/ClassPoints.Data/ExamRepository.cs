@@ -287,6 +287,10 @@ public sealed class ExamRepository(Database db)
         s.IsActive = true;
     }
 
+    /// <summary>
+    /// 读本地 scheme_weights。**1.3.3 起不再影响计算**：各场考试按场次平分，
+    /// 这里留着只为诊断与旧库兼容（另一台老设备推上来的值仍会落表，但不再被读）。
+    /// </summary>
     public Dictionary<string, double> Weights(string schemeId)
     {
         using var conn = db.Open();
@@ -297,27 +301,6 @@ public sealed class ExamRepository(Database db)
         var map = new Dictionary<string, double>();
         while (r.Read()) map[r.GetString(0)] = r.GetDouble(1);
         return map;
-    }
-
-    public void SetWeights(string schemeId, IReadOnlyDictionary<string, double> weights)
-    {
-        using var conn = db.Open();
-        using var tx = conn.BeginTransaction();
-        foreach (var (examId, w) in weights)
-        {
-            if (w <= 0)
-            {
-                Database.Exec(conn, tx, "DELETE FROM scheme_weights WHERE scheme_id = $s AND exam_id = $e",
-                    ("$s", schemeId), ("$e", examId));
-                continue;
-            }
-            Database.Exec(conn, tx, """
-                INSERT INTO scheme_weights (scheme_id, exam_id, weight) VALUES ($s, $e, $w)
-                ON CONFLICT(scheme_id, exam_id) DO UPDATE SET weight = excluded.weight
-                """, ("$s", schemeId), ("$e", examId), ("$w", w));
-        }
-        SyncOutbox.Enqueue(conn, tx, $"schemes:{schemeId}", "scheme", new { action = "weights", schemeId, weights });
-        tx.Commit();
     }
 
     public static AbsencePolicy ParsePolicy(string? raw) => raw switch
@@ -358,8 +341,12 @@ public sealed class ExamRepository(Database db)
     {
         var scope = exams ?? LoadExamsAscending();
         var scores = ScoresForTerm(null, scope.Select(e => e.Id).ToList());
-        var weights = Weights(scheme.Id);
-        return RankingCalculator.Compute(students, cumulativePoints, scope, scores, weights, scheme, policy);
+
+        // 各场考试不再有"手填百分比"这回事：BuildExamWeights 拿到空表就会按场次平分
+        // 并归一到 100%。以前这里读 scheme_weights，删掉界面之后旧库里的值会变成
+        // "看不见但仍在生效"的暗状态，那比不让人填更糟，所以整条链路都不再读它。
+        return RankingCalculator.Compute(students, cumulativePoints, scope, scores,
+            new Dictionary<string, double>(), scheme, policy);
     }
 
     private List<Exam> LoadExamsAscending()

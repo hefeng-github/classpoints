@@ -285,7 +285,8 @@ public sealed class AppServices
             usePolicy,
             period.TermKey,
             students,
-            Exams.Weights(scheme.Id),
+            // 各场考试权重恒为均分（见 ExamRepository.BuildRanking 的注释）
+            new Dictionary<string, double>(),
             DeskOperator.DisplayName,
             DateTime.Now,
             warnings);

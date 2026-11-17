@@ -225,7 +225,7 @@ public sealed partial class DeskPeriodsPage : Page
                 Services.Exams.ScoresForTerm(null, exams.Select(e => e.Id).ToList()),
                 Services.Entries.Entries(period.Id, 100_000),
                 scheme, period, Services.Settings.AbsencePolicy, period.TermKey,
-                students, Services.Exams.Weights(scheme.Id),
+                students, new Dictionary<string, double>(),
                 Services.DeskOperator.DisplayName, DateTime.Now,
                 new[] { "这是历史周期「" + period.TitleText + "」的导出，不含当前周期的数据。" });
 
