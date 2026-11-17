@@ -28,7 +28,11 @@ public sealed partial class BoardScorePage : Page
     private const double Gap = 10;
     private const double MinCardW = 210;
     private const double MinCardH = 120;
-    private const double MoveCancelThreshold = 12;
+    /// <summary>
+    /// 长按期间允许多大的抖动。12 太紧：教室一体机多是红外框，指腹按下去那一下
+    /// 上报的位置会飘十几像素，结果"按住不动"被判成"在划"，长按框选十次进不去九次。
+    /// </summary>
+    private const double MoveCancelThreshold = 22;
     private const int HoldMs = 400;
     private const int ButtonHoldMs = 500;
 
@@ -60,6 +64,15 @@ public sealed partial class BoardScorePage : Page
     private Point _downCanvas;
     private Point _lastPointer;
     private bool _pointerDown;
+    /// <summary>
+    /// 手指还按着、等长按到点。**和 <see cref="_pointerDown"/> 分开**：
+    /// 手指按在 ScrollViewer 里时，滚动容器会很快把触点接管过去并给我们一个
+    /// PointerCaptureLost —— 但手指其实一点没动。以前在 CaptureLost 里把计时一起停掉，
+    /// 表现就是"触屏长按框选永远进不去"（鼠标正常，因为鼠标不触发拖拽手势）。
+    /// </summary>
+    private bool _holdPending;
+    /// <summary>点了「框选」按钮之后的待命态：下一根手指按下就直接拉框，不用等长按。</summary>
+    private bool _lassoArmed;
     /// <summary>上一下压到的是一整只手掌（接触面积过大），紧接着那次 Tapped 要作废。</summary>
     private bool _palmRejected;
     private bool _lassoing;
@@ -110,10 +123,15 @@ public sealed partial class BoardScorePage : Page
         };
 
         CardGrid.PointerPressed += OnPointerPressed;
-        CardGrid.PointerMoved += OnPointerMoved;
-        CardGrid.PointerReleased += OnPointerReleased;
-        CardGrid.PointerCanceled += OnPointerReleased;
-        CardGrid.PointerCaptureLost += OnPointerCaptureLost;
+
+        // 拖动和抬手挂在本页、并且接收"已被处理"的事件。
+        // 原因：手指按在 ScrollViewer 里时，滚动容器会接管触点，后续 PointerMoved
+        // 的目标变成 ScrollViewer 而不是 CardGrid（这也是以前"触屏单击选不中"的同一个坑）。
+        // 只有 handledEventsToo 的监听还能收到这些事件 —— 不然框选矩形画得出来却拖不动。
+        AddHandler(PointerMovedEvent, new PointerEventHandler(OnPointerMoved), true);
+        AddHandler(PointerReleasedEvent, new PointerEventHandler(OnPointerReleased), true);
+        AddHandler(PointerCanceledEvent, new PointerEventHandler(OnPointerReleased), true);
+        AddHandler(PointerCaptureLostEvent, new PointerEventHandler(OnPointerCaptureLost), true);
         CardGrid.ContextRequested += OnContextRequested;
         // 「点一下选中」走 Tapped，不走 PointerReleased：
         // 手指按在 ScrollViewer 里时，指针常常被滚动手势抢走，PointerReleased 收不到，
@@ -956,6 +974,13 @@ public sealed partial class BoardScorePage : Page
         // 长按后在别处松手不会产生 Tapped，标记会一直挂着。
         _suppressClick = false;
 
+        if (_lassoArmed)
+        {
+            // 按过「框选」按钮了：这一下直接就是拉框的起点，不用再等长按
+            BeginLasso();
+            return;
+        }
+
         if (e.Pointer.PointerDeviceType == PointerDeviceType.Mouse)
         {
             // 鼠标不需要"长按"：按住左键拖一片是桌面上最自然的框选。
@@ -966,12 +991,13 @@ public sealed partial class BoardScorePage : Page
 
         // 触屏/触笔：只起计时，不抢 Capture，也不碰滚动 ——
         // 400 ms 内一动没动，ScrollViewer 的拖拽阈值也还没突破
+        _holdPending = true;
         _holdTimer.Start();
     }
 
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
     {
-        if (!_pointerDown) return;
+        if (!_pointerDown && !_lassoing) return;
 
         var point = e.GetCurrentPoint(CardGrid);
         var canvasPoint = e.GetCurrentPoint(LassoCanvas);
@@ -992,7 +1018,10 @@ public sealed partial class BoardScorePage : Page
                 return;
             }
 
-            // 手指动了就说明用户想滚动，放弃这次长按（阈值 12 DIP，介于抖动和真实拖动之间）
+            // 手指动了就说明用户想滚动，放弃这次长按。
+            // 阈值 22 DIP：一体机是红外框，手指按下去那一下的抖动常有十几像素，
+            // 卡在 12 上会把"按住不动"判成"在划"，长按几乎每次都进不去。
+            _holdPending = false;
             _holdTimer.Stop();
             _pointerDown = false;
             return;
@@ -1004,19 +1033,21 @@ public sealed partial class BoardScorePage : Page
     private void OnHoldElapsed(object? sender, object e)
     {
         _holdTimer.Stop();
-        if (!_pointerDown) return;
+        if (!_holdPending || _lassoing) return;
         BeginLasso();
     }
 
     /// <summary>进入框选态：抢指针、停滚动、把按下的那一格先选上。</summary>
     private void BeginLasso()
     {
-        if (_lassoing || !_pointerDown) return;
+        if (_lassoing) return;
 
         _lassoing = true;
         _suppressClick = true;
         Session.Interaction = InteractionState.Scoring;
 
+        // 主动再抢一次指针。ScrollViewer 为滚动会先接管触点（并给我们一个 CaptureLost），
+        // 这里抢回来之后 PointerMoved 才会继续送到本页 —— 否则矩形画得出来，却拖不动。
         try { if (_downArgs is not null) CardGrid.CapturePointer(_downArgs.Pointer); } catch (Exception) { }
         Scroll.VerticalScrollMode = ScrollMode.Disabled;
         Scroll.HorizontalScrollMode = ScrollMode.Disabled;
@@ -1033,6 +1064,7 @@ public sealed partial class BoardScorePage : Page
     private void OnPointerReleased(object sender, PointerRoutedEventArgs e)
     {
         _holdTimer.Stop();
+        _holdPending = false;
 
         if (!_lassoing)
         {
@@ -1070,14 +1102,23 @@ public sealed partial class BoardScorePage : Page
 
     private void OnPointerCaptureLost(object sender, PointerRoutedEventArgs e)
     {
-        if (_lassoing) EndLasso(e, commit: true);
+        if (_lassoing)
+        {
+            EndLasso(e, commit: true);
+            return;
+        }
+
+        // 触摸时 ScrollViewer 为滚动会接管触点，这里就会收到 CaptureLost ——
+        // 但手指还按在屏幕上，只是事件不再发给我们。**不能因此停掉长按计时**：
+        // 那正是"触屏长按框选用不了"的直接原因。真滑动的取消走 PointerMoved 的距离判定。
         _pointerDown = false;
-        _holdTimer.Stop();
     }
 
     private void EndLasso(PointerRoutedEventArgs args, bool commit)
     {
         _lassoing = false;
+        _holdPending = false;
+        _pointerDown = false;
         _autoScroll.Stop();
 
         if (commit) _selected.UnionWith(_preview);   // 松手才并入，拖错可以缩回去
@@ -1093,6 +1134,26 @@ public sealed partial class BoardScorePage : Page
         RefreshVisual();
         Session.Interaction = _selected.Count > 0 ? InteractionState.Scoring : InteractionState.Idle;
         Session.Touch();
+        DisarmLasso();
+    }
+
+    /// <summary>「框选」按钮的待命态：点一次进、框完一次自动退出，不会一直卡着。</summary>
+    private void ArmLasso()
+    {
+        _lassoArmed = true;
+        LassoButton.Content = "取消框选";
+        if (Application.Current.Resources["TouchPrimaryButton"] is Style primary)
+            LassoButton.Style = primary;
+        Toast("在卡片上拖出一片就行");
+    }
+
+    private void DisarmLasso()
+    {
+        if (!_lassoArmed) return;
+        _lassoArmed = false;
+        LassoButton.Content = "框选";
+        if (Application.Current.Resources["TouchSecondaryButton"] is Style secondary)
+            LassoButton.Style = secondary;
     }
 
     private void UpdateLasso(Point gridPoint, Point canvasPoint)
@@ -1174,8 +1235,10 @@ public sealed partial class BoardScorePage : Page
 
     private void OnContextRequested(UIElement sender, ContextRequestedEventArgs args)
     {
-        // 长按会触发系统右键菜单，框选态必须拦掉
-        if (_lassoing) args.Handled = true;
+        // 长按会触发系统右键菜单，框选态必须拦掉。
+        // 手指还按着等长按（_holdPending）时也要拦：系统在某些机器上 250 ms 就弹菜单，
+        // 菜单一出来这轮长按就废了 —— 老师按的是卡片，本来也不需要右键菜单。
+        if (_lassoing || _holdPending) args.Handled = true;
     }
 
     private void ToggleIndex(int index)
@@ -1201,9 +1264,16 @@ public sealed partial class BoardScorePage : Page
 
     private void OnLassoButtonClick(object sender, RoutedEventArgs e)
     {
-        // 给"我就想框一片"的人：直接进框选态，一个都不选
-        Toast("按住 0.4 秒再拖是框选");
-        Session.Interaction = _selected.Count > 0 ? InteractionState.Scoring : InteractionState.Idle;
+        // 这个按钮以前只弹一句"按住 0.4 秒再拖是框选" —— 点了什么也没发生，
+        // 而触屏上恰恰是它最容易点。现在它真的进框选待命：下一根手指按下就开始拉框。
+        if (_lassoArmed)
+        {
+            DisarmLasso();
+            Toast("已退出框选");
+            return;
+        }
+
+        ArmLasso();
     }
 
     private void OnSelectAllClick(object sender, RoutedEventArgs e)
@@ -1331,7 +1401,9 @@ public sealed partial class BoardScorePage : Page
         // SyncEnabled 交给 SyncPump 按"这台机器有没有配对"统一写，别在这里猜。
 
         // 左上角只给一条手感提示：班级名、周期、身份都在外壳顶栏上，重复三遍反而更难扫。
-        WhoText.Text = "点一下选中，按住拖一片是框选";
+        // 文案要和实现一致：按住**不动** 0.4 秒才进框选，按着立刻划是滚动；
+        // 不想等长按就点底下的「框选」，那里按下即拉框。
+        WhoText.Text = "点一下选中 · 按住 0.4 秒再拖＝框选";
     }
 
     private void Toast(string message, double seconds = 3) => ToastLayer.Show(message, seconds);
