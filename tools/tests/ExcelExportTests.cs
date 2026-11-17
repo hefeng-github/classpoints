@@ -42,8 +42,9 @@ internal static class ExcelExportTests
 
             var absentText = rank.Cell(9, 7).GetFormattedString();
             var absentWidth = rank.Column(7).Width;
-            Check("缺考列放得下缺考说明", absentWidth >= 12 && absentText.Length > 0,
-                $"{absentText} / 宽 {absentWidth:0.0}");
+            Check("缺考那一栏叫「备注」，且放得下缺考说明",
+                rank.Cell(1, 7).GetFormattedString() == "备注" && absentWidth >= 12 && absentText.Length > 0,
+                $"{rank.Cell(1, 7).GetFormattedString()} / {absentText} / 宽 {absentWidth:0.0}");
 
             var totalWidth = rank.Column(6).Width;
             Check("总评列没被长表头撑成巨宽", totalWidth is >= 12 and <= 26, totalWidth.ToString("0.0"));
@@ -66,10 +67,34 @@ internal static class ExcelExportTests
             Check("各场成绩列按统一宽度", System.Math.Abs(detail.Column(2).Width - 20) < 0.1,
                 detail.Column(2).Width.ToString("0.0"));
 
+            // 「备注」只写给真缺考的那一行，其他人留空
+            var absentNote = detail.Cell(9, 6).GetFormattedString();
+            Check("成绩明细的备注只写在缺考那一行",
+                absentNote.Contains("缺考 · 期中", StringComparison.Ordinal) && detail.Cell(2, 6).GetFormattedString().Length == 0,
+                absentNote);
+
             // ---- 参数说明：口径注还在这里 ----
             var info = wb.Worksheet("参数说明");
             var infoText = string.Join("|", info.CellsUsed().Select(c => c.GetFormattedString()));
             Check("参数说明页仍保留口径那一句", infoText.Contains("不可与考试成绩直接比较", StringComparison.Ordinal));
+
+            // ---- 全班没人缺考：两页都不该留一列空的「备注」----
+            var cleanPath = Path.Combine(dir, "成绩-无缺考.xlsx");
+            File.WriteAllBytes(cleanPath, WorkbookBuilder.Build(BuildBundle(absent: false)));
+            using (var clean = new ClosedXML.Excel.XLWorkbook(cleanPath))
+            {
+                static List<string> Heads(ClosedXML.Excel.IXLWorksheet ws) => Enumerable
+                    .Range(1, 12)
+                    .Select(c => ws.Cell(1, c).GetFormattedString())
+                    .Where(s => s.Length > 0)
+                    .ToList();
+
+                var rankHeads = Heads(clean.Worksheet("总排名"));
+                Check("没人缺考时总排名不出「备注」列", !rankHeads.Contains("备注"), string.Join("|", rankHeads));
+
+                var detailHeads = Heads(clean.Worksheet("成绩明细"));
+                Check("没人缺考时成绩明细也不出「备注」列", !detailHeads.Contains("备注"), string.Join("|", detailHeads));
+            }
         }
         finally
         {
@@ -85,8 +110,9 @@ internal static class ExcelExportTests
         File.WriteAllBytes(path, WorkbookBuilder.Build(BuildBundle()));
     }
 
-    /// <summary>8 个学生、1 场考试、1 个缺考 —— 和老师报上来的那张截图同形。</summary>
-    private static ExportBundle BuildBundle()
+    /// <summary>8 个学生、1 场考试、1 个缺考 —— 和老师报上来的那张截图同形。
+    /// <paramref name="absent"/> 传 false 就是"全班都考了"的普通表，用来钉住"没缺考不出备注列"。</summary>
+    private static ExportBundle BuildBundle(bool absent = true)
     {
         var names = new[] { "陈一", "孙二", "林三", "周四", "何五", "吴六", "钱七", "赵四" };
         var students = names.Select((n, i) => new Student
@@ -111,7 +137,9 @@ internal static class ExcelExportTests
         var raw = new[] { 95.0, 91, 88, 83, 76, 58, 64 };
         var scores = raw.Select((v, i) => new ExamScore { ExamId = "e1", StudentId = "s" + (i + 1), Score = v })
                         .ToList();
-        scores.Add(new ExamScore { ExamId = "e1", StudentId = "s8", Absent = true });
+        scores.Add(absent
+            ? new ExamScore { ExamId = "e1", StudentId = "s8", Absent = true }
+            : new ExamScore { ExamId = "e1", StudentId = "s8", Score = 72 });
 
         var scheme = new Scheme { Id = "sc", ExamWeight = 0.7, DailyWeight = 0.3 };
         var ranking = RankingCalculator.Compute(students, points, exams, scores,

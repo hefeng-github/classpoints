@@ -136,13 +136,18 @@ public static class WorkbookBuilder
         var r = b.Ranking;
         var normalized = b.Scheme.Normalize;
 
-        string[] headers =
+        // 备注只在真有人缺考时才出这一列。平时导出的是一张发给家长看的表，
+        // 底下永远空着一列"缺考"，看着像表格做坏了，还得挨个解释这是什么。
+        var hasAbsent = r.Rows.Any(x => x.AbsentExams.Count > 0);
+
+        var headers = new List<string>
         {
             "名次", "姓名", "考试总分", normalized ? "考试百分制" : "考试总分（加权）",
-            "平时分（积分）", normalized ? "总评（百分制）" : "总评（加权和，非百分制）", "缺考",
+            "平时分（积分）", normalized ? "总评（百分制）" : "总评（加权和，非百分制）",
         };
+        if (hasAbsent) headers.Add("备注");
 
-        for (var c = 0; c < headers.Length; c++)
+        for (var c = 0; c < headers.Count; c++)
         {
             var cell = ws.Cell(1, c + 1);
             cell.Value = headers[c];
@@ -163,19 +168,25 @@ public static class WorkbookBuilder
             ws.Cell(row, 4).Value = System.Math.Round(item.ExamPercent, 1);
             ws.Cell(row, 5).Value = item.Points;
             ws.Cell(row, 6).Value = System.Math.Round(item.Total, 1);
-            ws.Cell(row, 7).Value = item.AbsentExams.Count == 0
-                ? ""
-                : $"缺考 · {string.Join("、", item.AbsentExams)}（{PolicyShort(b.Policy)}）";
+
+            if (hasAbsent)
+            {
+                ws.Cell(row, headers.Count).Value = item.AbsentExams.Count == 0
+                    ? ""
+                    : $"缺考 · {string.Join("、", item.AbsentExams)}（{PolicyShort(b.Policy)}）";
+            }
 
             if (item.AbsentExams.Count > 0)
-                ws.Range(row, 1, row, headers.Length).Style.Fill.BackgroundColor = WarnBg;
+                ws.Range(row, 1, row, headers.Count).Style.Fill.BackgroundColor = WarnBg;
 
             row++;
         }
 
         // 口径说明只留在「参数说明」页，总排名页保持"表头 + 数据"干干净净
         ws.SheetView.FreezeRows(1);
-        SheetFit.Columns(ws, headers.Length, new[] { 7, 10, 12, 16, 15, 15, 13 });
+        var widths = new List<int> { 8, 10, 12, 16, 15, 15 };
+        if (hasAbsent) widths.Add(13);
+        SheetFit.Columns(ws, headers.Count, widths);
         ws.RangeUsed()?.SetAutoFilter();
     }
 
@@ -192,7 +203,10 @@ public static class WorkbookBuilder
         headers.Add("考试总分（加权）");
         headers.Add("平时分（积分）");
         headers.Add("总评");
-        headers.Add("缺考处理");
+
+        // 和总排名页同一条规矩：没人缺考就不出「备注」这一列
+        var hasAbsent = b.Ranking.Rows.Any(x => x.AbsentExams.Count > 0);
+        if (hasAbsent) headers.Add("备注");
 
         for (var c = 0; c < headers.Count; c++)
         {
@@ -234,12 +248,16 @@ public static class WorkbookBuilder
             ws.Cell(row, col).Value = System.Math.Round(rank.ExamRaw, 1);
             ws.Cell(row, col + 1).Value = rank.Points;
             ws.Cell(row, col + 2).Value = System.Math.Round(rank.Total, 1);
-            ws.Cell(row, col + 3).Value = b.Policy switch
+
+            // 备注只给真缺考的人写。以前每行都抄一遍"缺考记 0 分"，
+            // 五十行全是同一句话，反而看不出到底是哪个人缺了哪一科。
+            if (hasAbsent)
             {
-                AbsencePolicy.Zero => "缺考记 0 分",
-                AbsencePolicy.ClassAverage => "缺考按全班均值",
-                _ => "权重再分配",
-            };
+                ws.Cell(row, col + 3).Value = rank.AbsentExams.Count == 0
+                    ? ""
+                    : $"缺考 · {string.Join("、", rank.AbsentExams)}（{PolicyShort(b.Policy)}）";
+            }
+
             row++;
         }
 
@@ -252,7 +270,7 @@ public static class WorkbookBuilder
         mins.Add(16);   // 考试总分（加权）
         mins.Add(16);   // 平时分（积分）
         mins.Add(12);   // 总评
-        mins.Add(15);   // 缺考处理
+        if (hasAbsent) mins.Add(15);   // 备注
         SheetFit.Columns(ws, headers.Count, mins);
         ws.RangeUsed()?.SetAutoFilter();
     }
@@ -312,7 +330,7 @@ public static class WorkbookBuilder
                 : "—（未归一）"),
             ("平时分口径", "累计积分（历次周期相加，不封顶、不保底，加分扣分都原样保留）"),
             ("考试权重合计", $"{weights.Values.Sum() * 100:0.#}%"),
-            ("缺考处理", PolicyLong(b.Policy)),
+            ("缺考政策", PolicyLong(b.Policy)),
             ("统计周期", $"{b.Period.TitleText}（{b.Period.RangeText}）"),
             ("归档键", b.TermKey),
             ("导出时间", b.ExportedAt.ToString("yyyy-MM-dd HH:mm")),
