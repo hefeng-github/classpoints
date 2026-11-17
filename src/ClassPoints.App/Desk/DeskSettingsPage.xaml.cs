@@ -22,10 +22,17 @@ namespace ClassPoints.App.Desk;
 public sealed partial class DeskSettingsPage : Page
 {
 
+    /// <summary>验收截图时用来压住 SelectorBar 自然触发的那一次重建。</summary>
+    private bool _suppressTab;
+
     public DeskSettingsPage()
     {
         InitializeComponent();
-        Loaded += (_, _) => Reload();
+        Loaded += (_, _) =>
+        {
+            ApplySnapshotTab();
+            Reload();
+        };
 
         // 读卡器那两个订阅和 2 秒一次的灯是挂在服务上的：页面离开后不停，
         // 旧页面就一直被 Reader 的事件钉在内存里（每进一次设置多一份）。
@@ -44,6 +51,46 @@ public sealed partial class DeskSettingsPage : Page
     private static string DataDir =>
         Path.GetDirectoryName(Services.Db.DbPath) ?? Database.RootDir;
 
+    /// <summary>当前选中的分类。XAML 里给每项写了 Tag，这里只认那个。</summary>
+    private string CurrentGroup =>
+        (Tabs.SelectedItem as SelectorBarItem)?.Tag as string ?? "common";
+
+    /// <summary>
+    /// 换分类：整页重建 + 回到顶部。
+    ///
+    /// 不缓存各组的控件是有意的 —— 这一页到处是"存下来再回读"的控件（密码、路径、开关），
+    /// 缓存起来就得处理"另一个页面改了、这里还是旧值"。重建一次几十毫秒，换来的是
+    /// 每次看到的都是库里的真值。
+    /// </summary>
+    private void OnTabChanged(SelectorBar sender, SelectorBarSelectionChangedEventArgs args)
+    {
+        // InitializeComponent 里 IsSelected="True" 会先触发一次，那时页面还没 Loaded
+        if (!IsLoaded || _suppressTab) return;
+
+        Reload();
+        ContentScroll.ChangeView(null, 0, null);
+    }
+
+    /// <summary>
+    /// 验收用：CP_SNAP_TAB=scoring / people / sync / data 时默认选中那一组，配合 CP_SNAP 逐组截图。
+    /// 和 CP_MODE / CP_FORCE_READONLY 一样只影响这一次运行，正常使用不会读它。
+    /// </summary>
+    private void ApplySnapshotTab()
+    {
+        var tag = Environment.GetEnvironmentVariable("CP_SNAP_TAB");
+        if (string.IsNullOrWhiteSpace(tag)) return;
+
+        foreach (var item in Tabs.Items.OfType<SelectorBarItem>())
+        {
+            if (!string.Equals(item.Tag as string, tag.Trim(), StringComparison.OrdinalIgnoreCase)) continue;
+
+            _suppressTab = true;
+            Tabs.SelectedItem = item;
+            _suppressTab = false;
+            return;
+        }
+    }
+
     private void Reload()
     {
         try
@@ -51,22 +98,42 @@ public sealed partial class DeskSettingsPage : Page
             SubText.Text = $"{Services.ClassName} · 班级码 {Services.Settings.ClassCode} · 数据在 {DataDir}";
 
             Sections.Children.Clear();
-            BuildClassSection();
-            BuildThisMachineSection();
-            BuildFeatureSection();
-            BuildAppearanceSection();
-            BuildOnScreenSection();
-            BuildSecuritySection();
-            BuildMemberSection();
-            BuildReaderSection();
-            BuildRuleSection();
-            BuildSchemeSection();
-            BuildBackupSection();
-            BuildLocalDataSection();
-            BuildProvisionSection();
-            BuildSyncSection();
-            BuildUpdateSection();
-            BuildAboutSection();
+
+            // 十六节分五组。每组几百像素，一屏多一点 —— 以前是一整页十几屏，
+            // 找「改数据目录」得从最上面一直滚到最下面。
+            switch (CurrentGroup)
+            {
+                case "scoring":
+                    BuildFeatureSection();    // 可选功能（座位等）
+                    BuildRuleSection();       // 加分与扣分项
+                    BuildReaderSection();     // 读卡器
+                    break;
+
+                case "people":
+                    BuildSecuritySection();   // 密码与恢复码
+                    BuildMemberSection();     // 成员与权限
+                    BuildSchemeSection();     // 成绩口径
+                    break;
+
+                case "sync":
+                    BuildSyncSection();
+                    BuildUpdateSection();
+                    BuildProvisionSection();  // 预配置（云端地址与名单打包）
+                    break;
+
+                case "data":
+                    BuildBackupSection();
+                    BuildLocalDataSection();
+                    BuildAboutSection();      // 其它：日志、库结构
+                    break;
+
+                default:
+                    BuildClassSection();
+                    BuildThisMachineSection();
+                    BuildAppearanceSection();
+                    BuildOnScreenSection();
+                    break;
+            }
         }
         catch (Exception ex)
         {

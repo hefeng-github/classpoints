@@ -5,16 +5,31 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:controls="using:ClassPoints.App.Controls">
 
-    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24,20,24,28">
-        <StackPanel Spacing="16">
-            <Grid>
-                <StackPanel Spacing="4">
-                    <TextBlock Text="设置" Style="{StaticResource DeskH1Text}" />
-                    <TextBlock x:Name="SubText" Style="{StaticResource DeskSecondaryText}" />
-                </StackPanel>
-            </Grid>
+    <!-- 分类条固定在上面（不跟着内容滚走）：设置页有十六节，滚到一半忘了自己在哪一组
+         是常事。下面只放当前这一组的卡片。 -->
+    <Grid Padding="24,20,24,0">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
 
-            <StackPanel x:Name="Sections" Spacing="14" />
+        <StackPanel Spacing="4">
+            <TextBlock Text="设置" Style="{StaticResource DeskH1Text}" />
+            <TextBlock x:Name="SubText" Style="{StaticResource DeskSecondaryText}" />
         </StackPanel>
-    </ScrollViewer>
+
+        <SelectorBar x:Name="Tabs" Grid.Row="1" Margin="0,12,0,0" SelectionChanged="OnTabChanged">
+            <SelectorBarItem Text="常用" Tag="common" IsSelected="True" />
+            <SelectorBarItem Text="记分" Tag="scoring" />
+            <SelectorBarItem Text="成员与成绩" Tag="people" />
+            <SelectorBarItem Text="同步与更新" Tag="sync" />
+            <SelectorBarItem Text="数据" Tag="data" />
+        </SelectorBar>
+
+        <ScrollViewer x:Name="ContentScroll" Grid.Row="2" VerticalScrollBarVisibility="Auto"
+                      Padding="0,14,0,28">
+            <StackPanel x:Name="Sections" Spacing="14" />
+        </ScrollViewer>
+    </Grid>
 </Page>
