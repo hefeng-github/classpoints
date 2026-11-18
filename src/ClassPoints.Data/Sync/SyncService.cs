@@ -398,7 +398,7 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
     }
 
     /// <summary>打点引用的 counter：本机换了号就改指本机那份，否则原样。</summary>
-    private static string CounterRef(JsonObject row, Dictionary<string, string> remap)
+    private static string? CounterRef(JsonObject row, Dictionary<string, string> remap)
     {
         var id = S(row, "counter_id");
         return id is not null && remap.TryGetValue(id, out var local) ? local : id;
