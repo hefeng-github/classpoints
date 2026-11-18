@@ -33,6 +33,8 @@ export const RULES: Record<string, Rule> = {
   refresh: { maxFails: 30, windowMs: 10 * 60_000, blockMs: 10 * 60_000 },
   // 网页管理台登录：只认班主任密码，和 /pair 同一级别，甚至更值得防
   admin: { maxFails: 6, windowMs: 5 * 60_000, blockMs: 15 * 60_000 },
+  // 平台管理员：一个口令能看所有班，被猜中的代价是整台部署，所以比 admin 更严
+  platform: { maxFails: 5, windowMs: 5 * 60_000, blockMs: 30 * 60_000 },
 };
 
 interface Row {

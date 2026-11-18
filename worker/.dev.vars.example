@@ -17,3 +17,6 @@ TOKEN_SECRET = "dev-only-change-me-please-32-bytes-min"
 
 # 可选：允许跨域读取的来源，逗号分隔。
 # ALLOWED_ORIGINS = "http://localhost:5173"
+
+# 可选：平台管理员口令（至少 8 位）。不配就是平台入口整块关闭（503）。
+# PLATFORM_PIN = ""

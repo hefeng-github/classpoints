@@ -114,6 +114,11 @@ export function assertWritable(claims: Claims): void {
  */
 export async function requireManager(env: Env, request: Request): Promise<Claims> {
   const claims = await verifyToken(env, bearer(request));
+  // 平台令牌不是班级身份：没有 cid，一旦从这里漏过去，管理员台的每个查询
+  // 都在拿空班号过滤 —— 看着"能用"，实际是在一条不存在的路上走。
+  if (claims.plat) {
+    throw new HttpError(403, 'platform_token_not_allowed', '平台管理员令牌不能用于班级接口，请用班级自己的口令配对');
+  }
   assertWritable(claims);
   if (!canManage(claims.role)) {
     throw new HttpError(403, 'forbidden_role', '当前身份是班委，只能记分；改名单请用班主任或班长的密码');

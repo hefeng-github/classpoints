@@ -139,6 +139,102 @@ export const ADMIN_HTML = `<!doctype html>
       <p class="hint" style="margin:12px 0 0">
         只认班主任密码和恢复码。班长、班委的口令进不来 —— 审批权只在班主任手里。
       </p>
+      <p class="hint" style="margin:6px 0 0">
+        管理多个班？<a href="#" id="toPlat" style="color:var(--brand)">平台管理员入口</a>
+      </p>
+    </div>
+  </div>
+
+  <div id="platLoginView" hidden>
+    <h1>平台管理员</h1>
+    <p class="sub">部署级视角：这台服务上的所有班级。</p>
+    <div class="card" style="max-width:420px">
+      <label for="platPin">平台管理员口令</label>
+      <input id="platPin" type="password" autocomplete="current-password" placeholder="服务端 PLATFORM_PIN">
+      <div class="err" id="platErr"></div>
+      <button class="primary" id="platBtn" style="width:100%">进入</button>
+      <p class="hint" style="margin:12px 0 0">
+        口令在服务端的环境变量 PLATFORM_PIN 里配；没配就是关闭状态，这个入口进不去。
+        平台视角只管班级行政（改名、清周期、吊销设备、注销/恢复），看不到名单和流水。
+      </p>
+      <p class="hint" style="margin:6px 0 0">
+        <a href="#" id="backToLogin" style="color:var(--brand)">返回班级登录</a>
+      </p>
+    </div>
+  </div>
+
+  <div id="platView" hidden>
+    <div class="row spread">
+      <div>
+        <h1>平台管理员</h1>
+        <p class="sub" id="platStats"></p>
+      </div>
+      <button class="ghost" id="platLogout">退出</button>
+    </div>
+
+    <div class="card">
+      <div class="grid" id="platTotals"></div>
+    </div>
+
+    <div class="card">
+      <div class="row spread">
+        <h2>所有班级</h2>
+        <div class="row">
+          <label class="switch" style="margin:0">
+            <input type="checkbox" id="platClosed">
+            <span>含已注销</span>
+          </label>
+          <input id="platQ" type="text" placeholder="搜班级码或班名" style="width:180px">
+          <button id="platRefresh">刷新</button>
+        </div>
+      </div>
+      <div id="platList"></div>
+      <div class="err" id="platListErr"></div>
+    </div>
+
+    <div class="card" id="platDetailCard" hidden>
+      <div class="row spread">
+        <h2 id="platDetailTitle">班级详情</h2>
+        <button class="ghost" id="platDetailHide">收起</button>
+      </div>
+      <div class="grid" id="platDetailGrid"></div>
+
+      <label for="platName">云端显示名</label>
+      <div class="row">
+        <input id="platName" type="text" style="flex:1 1 260px">
+        <button class="primary" id="platRename">保存</button>
+      </div>
+      <div class="err" id="platRenameErr"></div>
+
+      <div class="row spread" style="margin-top:14px">
+        <div class="grow">
+          <strong>周期留存</strong>
+          <div class="meta" id="platTrimHint">—</div>
+        </div>
+        <button id="platTrim">清理更早的周期</button>
+      </div>
+
+      <div class="row spread" style="margin-top:14px">
+        <div class="grow">
+          <strong>吊销全部设备</strong>
+          <div class="meta">比注销轻一档：设备当场断开，班级码和数据都留着，重新配对即可接上。</div>
+        </div>
+        <button id="platRevoke">吊销全部设备</button>
+      </div>
+
+      <div class="danger">
+        <strong>注销这个班</strong>
+        <div class="meta">
+          软删 + 立刻断开所有设备；班级码再也配不上对。业务数据留在库里，可从「含已注销」里恢复。
+          注销仍要重输班级码 —— 点错一次够老师折腾一天。
+        </div>
+        <div class="row" style="margin-top:10px">
+          <input id="platCloseCode" type="text" placeholder="重新输入班级码确认" style="flex:0 1 240px" autocomplete="off" spellcheck="false">
+          <button class="bad" id="platClose">注销</button>
+          <button class="good" id="platRestore" hidden>恢复这个班</button>
+        </div>
+        <div class="err" id="platCloseErr"></div>
+      </div>
     </div>
   </div>
 
@@ -636,6 +732,333 @@ export const ADMIN_HTML = `<!doctype html>
     });
   });
 
+  // ---------------- 平台管理员 ----------------
+
+  var PKEY = 'cp.plat.session';
+  var plat = { token: '', timer: null, busy: false, keep: 4, detailId: '', trimArmedAt: 0, revokeArmedAt: 0 };
+
+  function papi(path, options) {
+    options = options || {};
+    var headers = { 'content-type': 'application/json' };
+    if (plat.token) headers.authorization = 'Bearer ' + plat.token;
+    return fetch('/api/v1/platform' + path, {
+      method: options.method || 'GET',
+      headers: headers,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    }).then(function (res) {
+      return res.text().then(function (text) {
+        var data = null;
+        try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+        if (res.status === 401 && plat.token) {
+          platSignOut('登录已过期，请重新进入');
+          throw new Error('unauthorized');
+        }
+        if (!res.ok) throw new Error((data && data.message) || ('请求失败（' + res.status + '）'));
+        return data;
+      });
+    });
+  }
+
+  function showPlatLogin(message) {
+    $('appView').hidden = true;
+    $('loginView').hidden = true;
+    $('platView').hidden = true;
+    $('platLoginView').hidden = false;
+    $('platErr').textContent = message || '';
+    if (plat.timer) { clearInterval(plat.timer); plat.timer = null; }
+  }
+
+  function platSignOut(message) {
+    plat.token = '';
+    plat.detailId = '';
+    sessionStorage.removeItem(PKEY);
+    showPlatLogin(message || '');
+  }
+
+  function enterPlat(token) {
+    plat.token = token;
+    sessionStorage.setItem(PKEY, JSON.stringify({ token: token }));
+    $('loginView').hidden = true;
+    $('platLoginView').hidden = true;
+    $('platView').hidden = false;
+    if (plat.timer) clearInterval(plat.timer);
+    plat.timer = setInterval(function () {
+      if (!document.hidden && !plat.busy) loadPlat();
+    }, 20000);
+    loadPlat();
+  }
+
+  function platStat(label, value, note) {
+    var box = el('div', 'stat');
+    box.appendChild(el('b', null, String(value)));
+    box.appendChild(el('span', null, label));
+    if (note) box.appendChild(el('em', null, note));
+    return box;
+  }
+
+  // 一行一个班。详情点开下面那张卡，行本身保持瘦 —— 班多了也能一屏扫完。
+  function platRow(c) {
+    var item = el('div', 'item');
+    var left = el('div', 'grow');
+
+    var title = el('div');
+    title.appendChild(el('strong', null, c.name || '(未命名)'));
+    title.appendChild(document.createTextNode('  '));
+    title.appendChild(el('span', 'fp mono', c.code));
+    if (c.resetting) title.appendChild(el('span', 'badge b-pending', '重置中'));
+    if (c.closedAt) title.appendChild(el('span', 'badge b-blocked', '已注销'));
+    if (c.pending) title.appendChild(el('span', 'badge b-pending', c.pending + ' 台待审'));
+    left.appendChild(title);
+
+    var parts = [
+      '学生 ' + c.students,
+      '流水 ' + c.entries,
+      '考试 ' + c.exams,
+      '设备 ' + c.devices,
+      '最近记分 ' + ago(c.lastEntryAt || 0),
+    ];
+    left.appendChild(el('div', 'meta', parts.join(' · ')));
+
+    item.appendChild(left);
+
+    var box = el('div', 'actions');
+    var btn = el('button', c.closedAt ? 'good' : '', '详情');
+    btn.addEventListener('click', function () {
+      openPlatDetail(c.id);
+    });
+    box.appendChild(btn);
+    item.appendChild(box);
+    return item;
+  }
+
+  function loadPlat() {
+    plat.busy = true;
+    var q = encodeURIComponent($('platQ').value.trim());
+    var closed = $('platClosed').checked ? 1 : 0;
+    return papi('/classes?q=' + q + '&closed=' + closed).then(function (data) {
+      plat.keep = data.keepPeriods || 4;
+      var t = data.totals;
+      var grid = $('platTotals');
+      grid.textContent = '';
+      grid.appendChild(platStat('班级总数', t.classes, '在用 ' + t.open + ' 个'));
+      grid.appendChild(platStat('在册学生', t.students, ''));
+      grid.appendChild(platStat('累计流水', t.entries, ''));
+      grid.appendChild(platStat('在线设备', t.devices, ''));
+
+      var active = data.classes.filter(function (c) { return !c.closedAt; }).length;
+      $('platStats').textContent = '共 ' + t.classes + ' 个班，在用 ' + active + ' 个'
+        + (t.classes - active ? '，已注销 ' + (t.classes - active) + ' 个' : '');
+
+      var list = $('platList');
+      list.textContent = '';
+      if (!data.classes.length) {
+        list.appendChild(el('div', 'empty', '没有匹配的班级。勾选「含已注销」可以看到收掉的班。'));
+      }
+      data.classes.forEach(function (c) { list.appendChild(platRow(c)); });
+    }).catch(function (e) {
+      if (e.message !== 'unauthorized') $('platListErr').textContent = e.message || '刷新失败';
+    }).then(function () {
+      plat.busy = false;
+    });
+  }
+
+  function openPlatDetail(id) {
+    papi('/classes/' + encodeURIComponent(id)).then(function (data) {
+      var c = data.class, n = data.counts;
+      plat.detailId = id;
+
+      $('platDetailCard').hidden = false;
+      $('platDetailTitle').textContent = c.name + '（' + c.code + '）';
+      if (document.activeElement !== $('platName')) $('platName').value = c.name;
+
+      var grid = $('platDetailGrid');
+      grid.textContent = '';
+      grid.appendChild(platStat('在册学生', n.students, ''));
+      grid.appendChild(platStat('累计流水', n.entries, ''));
+      grid.appendChild(platStat('周期', n.periods, '云端留 ' + plat.keep + ' 个'));
+      grid.appendChild(platStat('考试', n.exams, ''));
+      grid.appendChild(platStat('在线设备', n.devices, n.pending ? n.pending + ' 台待审' : ''));
+      grid.appendChild(platStat('云端变更', n.changes, ''));
+
+      var clearable = Math.max(0, n.periods - plat.keep);
+      $('platTrimHint').textContent = n.periods + ' 个周期' + (clearable > 0
+        ? '，可清掉最早 ' + clearable + ' 个'
+        : '，还没到留存上限');
+      $('platTrim').disabled = clearable === 0;
+      $('platTrim').textContent = '清理更早的周期';
+      plat.trimArmedAt = 0;
+      plat.revokeArmedAt = 0;
+      $('platRevoke').textContent = '吊销全部设备';
+      $('platRevoke').disabled = n.devices === 0 && !c.closedAt;
+
+      var isClosed = c.closedAt !== null && c.closedAt !== undefined;
+      $('platCloseCode').hidden = isClosed;
+      $('platClose').hidden = isClosed;
+      $('platRestore').hidden = !isClosed;
+      $('platCloseErr').textContent = '';
+      $('platRenameErr').textContent = '';
+    }).catch(function (e) {
+      if (e.message !== 'unauthorized') toast(e.message || '打开详情失败');
+    });
+  }
+
+  $('toPlat').addEventListener('click', function (e) {
+    e.preventDefault();
+    showPlatLogin('');
+    $('platPin').focus();
+  });
+
+  $('backToLogin').addEventListener('click', function (e) {
+    e.preventDefault();
+    $('platLoginView').hidden = true;
+    $('platView').hidden = true;
+    $('appView').hidden = true;
+    $('loginView').hidden = false;
+    $('code').focus();
+  });
+
+  $('platBtn').addEventListener('click', function () {
+    var pin = $('platPin').value;
+    if (!pin) { $('platErr').textContent = '先填口令。'; return; }
+    $('platBtn').disabled = true;
+    $('platErr').textContent = '';
+    fetch('/api/v1/platform/session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pin: pin }),
+    }).then(function (res) {
+      return res.text().then(function (text) {
+        var data = null;
+        try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+        if (!res.ok) throw new Error((data && data.message) || '登录失败');
+        return data;
+      });
+    }).then(function (data) {
+      $('platPin').value = '';
+      enterPlat(data.access);
+    }).catch(function (e) {
+      $('platErr').textContent = e.message || '登录失败';
+    }).then(function () {
+      $('platBtn').disabled = false;
+    });
+  });
+
+  $('platPin').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') $('platBtn').click();
+  });
+
+  $('platLogout').addEventListener('click', function () { platSignOut(''); });
+
+  $('platRefresh').addEventListener('click', function () { loadPlat(); });
+  $('platClosed').addEventListener('change', function () { loadPlat(); });
+  // 回车才搜，别每敲一个字就打一次接口
+  $('platQ').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') loadPlat();
+  });
+
+  $('platDetailHide').addEventListener('click', function () {
+    $('platDetailCard').hidden = true;
+    plat.detailId = '';
+  });
+
+  $('platRename').addEventListener('click', function () {
+    var name = $('platName').value.trim();
+    if (!name || !plat.detailId) { $('platRenameErr').textContent = '班名不能为空。'; return; }
+    $('platRenameErr').textContent = '';
+    $('platRename').disabled = true;
+    papi('/classes/' + encodeURIComponent(plat.detailId), { method: 'PATCH', body: { name: name } })
+      .then(function () {
+        toast('已改为 ' + name);
+        return loadPlat();
+      })
+      .catch(function (e) { $('platRenameErr').textContent = e.message || '保存失败'; })
+      .then(function () { $('platRename').disabled = false; });
+  });
+
+  // 清理和吊销都不可逆（云端副本/设备当场断开），沿用两段式确认：点两下，不弹窗。
+  $('platTrim').addEventListener('click', function () {
+    var btn = $('platTrim');
+    if (!plat.detailId) return;
+    $('platCloseErr').textContent = '';
+
+    if (!plat.trimArmedAt) {
+      plat.trimArmedAt = Date.now();
+      btn.textContent = '再点一次确认';
+      setTimeout(function () {
+        if (plat.trimArmedAt) { plat.trimArmedAt = 0; btn.textContent = '清理更早的周期'; }
+      }, 5000);
+      return;
+    }
+
+    plat.trimArmedAt = 0;
+    btn.disabled = true;
+    btn.textContent = '清理中…';
+    papi('/classes/' + encodeURIComponent(plat.detailId) + '/trim', { method: 'POST' }).then(function (r) {
+      var entries = Math.max(0, (r.before.entries || 0) - (r.after.entries || 0));
+      toast(r.dropped
+        ? '清掉 ' + r.dropped + ' 个周期、' + entries + ' 条流水'
+        : '没有可清理的周期');
+      return openPlatDetail(plat.detailId);
+    }).catch(function (e) {
+      $('platCloseErr').textContent = e.message || '清理失败';
+      btn.textContent = '清理更早的周期';
+    });
+  });
+
+  $('platRevoke').addEventListener('click', function () {
+    var btn = $('platRevoke');
+    if (!plat.detailId) return;
+    $('platCloseErr').textContent = '';
+
+    if (!plat.revokeArmedAt) {
+      plat.revokeArmedAt = Date.now();
+      btn.textContent = '再点一次确认';
+      setTimeout(function () {
+        if (plat.revokeArmedAt) { plat.revokeArmedAt = 0; btn.textContent = '吊销全部设备'; }
+      }, 5000);
+      return;
+    }
+
+    plat.revokeArmedAt = 0;
+    btn.disabled = true;
+    btn.textContent = '吊销中…';
+    papi('/classes/' + encodeURIComponent(plat.detailId) + '/revoke', { method: 'POST' }).then(function (r) {
+      toast('已吊销 ' + (r.revoked || 0) + ' 台设备');
+      return openPlatDetail(plat.detailId);
+    }).catch(function (e) {
+      $('platCloseErr').textContent = e.message || '吊销失败';
+      btn.textContent = '吊销全部设备';
+    });
+  });
+
+  $('platClose').addEventListener('click', function () {
+    var code = $('platCloseCode').value.trim().toUpperCase();
+    if (!code) { $('platCloseErr').textContent = '先输入班级码。'; return; }
+    $('platCloseErr').textContent = '';
+    $('platClose').disabled = true;
+    papi('/classes/' + encodeURIComponent(plat.detailId) + '/close', { method: 'POST', body: { code: code } })
+      .then(function () {
+        toast('已注销');
+        $('platCloseCode').value = '';
+        return loadPlat();
+      })
+      .catch(function (e) { $('platCloseErr').textContent = e.message || '注销失败'; })
+      .then(function () { $('platClose').disabled = false; });
+  });
+
+  $('platRestore').addEventListener('click', function () {
+    if (!plat.detailId) return;
+    $('platCloseErr').textContent = '';
+    $('platRestore').disabled = true;
+    papi('/classes/' + encodeURIComponent(plat.detailId) + '/restore', { method: 'POST' })
+      .then(function () {
+        toast('已恢复。各设备重新配对即可接上。');
+        return loadPlat();
+      })
+      .catch(function (e) { $('platCloseErr').textContent = e.message || '恢复失败'; })
+      .then(function () { $('platRestore').disabled = false; });
+  });
+
   var saved = sessionStorage.getItem(KEY);
   if (saved) {
     try {
@@ -643,6 +1066,18 @@ export const ADMIN_HTML = `<!doctype html>
       if (parsed && parsed.token && parsed.info) enter(parsed.token, parsed.info);
     } catch (e) {
       sessionStorage.removeItem(KEY);
+    }
+  }
+
+  // 平台会话的恢复放在班级之后：两个都存着时，让班级视图赢（它 15 秒自刷，
+  // 平台视图 20 秒；先enterPlat再enter会把平台页顶掉，反之亦然，取"班主任优先"）。
+  var savedPlat = sessionStorage.getItem(PKEY);
+  if (savedPlat) {
+    try {
+      var parsedPlat = JSON.parse(savedPlat);
+      if (parsedPlat && parsedPlat.token && $('appView').hidden) enterPlat(parsedPlat.token);
+    } catch (e) {
+      sessionStorage.removeItem(PKEY);
     }
   }
 })();

@@ -11,6 +11,7 @@
     "db:reset": "node scripts/reset-local-db.mjs",
     "test:smoke": "node test/smoke.mjs",
     "test:grants": "node test/grants.mjs",
+    "test:platform": "node test/platform.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

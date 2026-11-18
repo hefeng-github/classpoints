@@ -29,6 +29,15 @@
  *   POST  /api/v1/admin/class/trim  手动清理更早的周期
  *   POST  /api/v1/admin/class/close 注销这个班（软删 + 撤销全部设备，要重输班级码）
  *   PATCH /api/v1/admin/settings    切 join_mode
+ * 平台管理员是第三摊（部署级，一个口令看所有班，要配 PLATFORM_PIN）：
+ *   POST  /api/v1/platform/session           平台口令 → plat 令牌
+ *   GET   /api/v1/platform/classes           所有班级一屏（?q= 搜、closed=1 含已注销）
+ *   GET   /api/v1/platform/classes/:id       单班详情
+ *   PATCH /api/v1/platform/classes/:id       改云端显示名
+ *   POST  /api/v1/platform/classes/:id/trim  清旧周期
+ *   POST  /api/v1/platform/classes/:id/revoke 吊销这个班的全部设备（不注销）
+ *   POST  /api/v1/platform/classes/:id/close 注销（要重输班级码）
+ *   POST  /api/v1/platform/classes/:id/restore 恢复已注销的班
  * 它存在的原因见 routes/grants.ts 开头：口令会传开，机器要单独放行。
  *
  * 权限分三档（见 auth.ts 的 assertWritable / requireManager / canManage）：
@@ -44,7 +53,7 @@
  */
 import type { Env } from './types';
 import { HttpError, fail, harden, json, preflight, readJson } from './util';
-import { assertWritable, requireAuth, requireManager } from './auth';
+import { assertWritable, requireAuth, requireManager, requirePlatform } from './auth';
 import { ADMIN_HTML } from './admin';
 import { ping, adminSession, createClass, pair, refresh, signOut } from './routes/classes';
 import { postEntries, reverseBatch } from './routes/entries';
@@ -56,6 +65,16 @@ import { addGrant, decideGrant, listGrants, removeGrant, setJoinMode } from './r
 import { classOverview, closeClass, renameClass, trimClass } from './routes/overview';
 import { assertNotResetting, pull } from './sync';
 import { purgeEntity } from './routes/purge';
+import {
+  classDetail,
+  closeAnyClass,
+  listClasses,
+  platformSession,
+  renameAnyClass,
+  restoreAnyClass,
+  revokeClassDevices,
+  trimAnyClass,
+} from './routes/platform';
 
 /**
  * 入口。这里只做三件事，然后全部交给 route：
@@ -146,6 +165,9 @@ async function route(request: Request, env: Env): Promise<Response> {
 
     case 'admin':
       return adminRoute(env, request, rest.slice(1));
+
+    case 'platform':
+      return platformRoute(env, request, rest.slice(1));
 
     case 'sync':
       if (method === 'GET') return pull(env, request);
@@ -315,4 +337,44 @@ async function adminRoute(env: Env, request: Request, rest: string[]): Promise<R
   }
 
   throw new HttpError(404, 'not_found', `管理台没有这个接口：${method} /${rest.join('/')}`);
+}
+
+/**
+ * 平台管理员的接口。除了登录，全部要 requirePlatform（plat 令牌）——
+ * 班级令牌在这里拿不到任何东西，平台令牌在班级接口上也拿不到任何东西，
+ * 两边互不越界（见 auth.ts 的 requireAuth / requireManager 各自的 plat 拦截）。
+ */
+async function platformRoute(env: Env, request: Request, rest: string[]): Promise<Response> {
+  const [head, id, action] = rest;
+  const method = request.method.toUpperCase();
+
+  if (head === 'session' && !id && method === 'POST') return platformSession(env, request);
+
+  await requirePlatform(env, request);
+
+  if (head !== 'classes') {
+    throw new HttpError(404, 'not_found', `平台管理员没有这个接口：${method} /${rest.join('/')}`);
+  }
+
+  if (!id) {
+    if (method === 'GET') return listClasses(env, request);
+    throw new HttpError(405, 'method_not_allowed', `classes 不支持 ${method}`);
+  }
+
+  const cid = decodeURIComponent(id);
+  if (!action) {
+    if (method === 'GET') return classDetail(env, cid);
+    if (method === 'PATCH') return renameAnyClass(env, request, cid);
+    throw new HttpError(405, 'method_not_allowed', `classes/${id} 不支持 ${method}`);
+  }
+
+  if (method === 'POST') {
+    if (action === 'trim') return trimAnyClass(env, cid);
+    if (action === 'revoke') return revokeClassDevices(env, cid);
+    if (action === 'close') return closeAnyClass(env, request, cid);
+    if (action === 'restore') return restoreAnyClass(env, cid);
+    throw new HttpError(404, 'not_found', `没有这个动作：${action}`);
+  }
+
+  throw new HttpError(405, 'method_not_allowed', `classes/${id}/${action} 不支持 ${method}`);
 }
