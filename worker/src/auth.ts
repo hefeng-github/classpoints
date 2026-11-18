@@ -65,7 +65,13 @@ export function bearer(request: Request): string {
 }
 
 export async function requireAuth(env: Env, request: Request): Promise<Claims> {
-  return verifyToken(env, bearer(request));
+  const claims = await verifyToken(env, bearer(request));
+  // 平台管理员的令牌是部署级的，不属于任何一个班。放它进来等于让"能看所有班"
+  // 顺带获得了某个班的写权限 —— 而中间的 cid 校验一旦有谁写漏，就是越权。
+  if (claims.plat) {
+    throw new HttpError(403, 'platform_token_not_allowed', '平台管理员令牌不能用于班级接口，请用班级自己的口令配对');
+  }
+  return claims;
 }
 
 // ---------------- 角色 ----------------
@@ -111,6 +117,20 @@ export async function requireManager(env: Env, request: Request): Promise<Claims
   assertWritable(claims);
   if (!canManage(claims.role)) {
     throw new HttpError(403, 'forbidden_role', '当前身份是班委，只能记分；改名单请用班主任或班长的密码');
+  }
+  return claims;
+}
+
+/**
+ * 平台管理员的闸门：只认 plat 令牌。
+ *
+ * 刻意不复用 requireManager —— 收藏在同一个判断里最容易出的事故是
+ * "哪天有人为了让某个接口好测，把 role 抬一下就顺带放开了平台权限"。
+ */
+export async function requirePlatform(env: Env, request: Request): Promise<Claims> {
+  const claims = await verifyToken(env, bearer(request));
+  if (!claims.plat) {
+    throw new HttpError(403, 'platform_required', '需要平台管理员口令');
   }
   return claims;
 }

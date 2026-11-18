@@ -58,6 +58,28 @@ internal static class StudentListTests
             Check("恢复后回到名单", students.ListAll().Count == 2);
             Check("恢复后不再算已删除",
                 !students.ListAll(includeDeleted: true).First(s => s.Id == b.Id).IsDeleted);
+
+            // 学号唯一只约束**在册**行：停用的人号能让给新人。旧索引（不看 deleted_at）
+            // 会让第二次 Insert 直接撞唯一约束 —— 导入整批中断，而且没人知道是为什么。
+            var withNo = students.Insert(new Student { Name = "赵一诺", StudentNo = "2026001", SeatNo = 3 });
+            students.SoftDelete(withNo.Id);
+            Student? reuser = null;
+            try
+            {
+                reuser = students.Insert(new Student { Name = "钱晓棠", StudentNo = "2026001", SeatNo = 4 });
+            }
+            catch (Exception)
+            {
+                Check("停用学生的学号可以让给新插入的学生", false, "插入抛了唯一约束");
+            }
+            Check("停用学生的学号可以让给新插入的学生", reuser is not null);
+
+            // 号被占了的人恢复回来，不能把恢复变成一次没有头没尾的失败：让出号，人回到名单。
+            students.Restore(withNo.Id);
+            var after = students.ListAll(includeDeleted: true);
+            Check("恢复时学号已被占用则自动让出",
+                after.First(s => s.Id == withNo.Id).StudentNo is null &&
+                after.First(s => s.Id == reuser!.Id).StudentNo == "2026001");
         }
         finally
         {

@@ -279,12 +279,15 @@ public sealed class ExamRepository(Database db)
             ("$norm", s.Normalize ? 1 : 0), ("$now", Clock.NowMs()));
         Database.Exec(conn, tx, "UPDATE schemes SET is_active = 0");
         Database.Exec(conn, tx, "UPDATE schemes SET is_active = 1 WHERE id = $id", ("$id", s.Id));
-        SyncOutbox.Enqueue(conn, tx, $"schemes:{s.Id}", "scheme", new { action = "upsert", scheme = s });
-        tx.Commit();
 
+        // 规整值要先回写到 s 再入队：outbox 的载荷是对 s 的**即时序列化**，
+        // 以前排在入队之后，推上云端的是入参原值（可能超出 0–1），
+        // 本地库里存的却是钳制过的 —— 两台设备从此算出两套成绩。
         s.ExamWeight = examWeight;
         s.DailyWeight = dailyWeight;
         s.IsActive = true;
+        SyncOutbox.Enqueue(conn, tx, $"schemes:{s.Id}", "scheme", new { action = "upsert", scheme = s });
+        tx.Commit();
     }
 
     /// <summary>

@@ -159,6 +159,19 @@ public sealed class Database
         // v7：彻底删除要入队 kind='purge'，outbox 的 CHECK 得再放宽一次（同样只能重建表）。
         RebuildOutboxKinds(conn);
         if (version < 7) SetSetting(conn, null, "schema_note", "v7: 彻底删除（purge）");
+
+        // v8：学号唯一索引不再约束停用（软删）的学生。老库必须重建索引 ——
+        // SQLite 没有"改索引 WHERE 条件"这种操作，只能 DROP 再 CREATE。
+        // 存量库不可能有"停用行与在册行同号"（旧索引两行都管），重建无冲突风险。
+        if (version < 8)
+        {
+            Exec(conn, "DROP INDEX IF EXISTS uq_students_no");
+            Exec(conn, """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_students_no ON students(student_no)
+                    WHERE student_no IS NOT NULL AND deleted_at IS NULL
+                """);
+            SetSetting(conn, null, "schema_note", "v8: 停用学生不再占用学号");
+        }
     }
 
     /// <summary>

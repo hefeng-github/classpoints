@@ -87,6 +87,16 @@ public sealed class StudentRepository(Database db)
         var now = Clock.NowMs();
         using var conn = db.Open();
         using var tx = conn.BeginTransaction();
+        // 停用期间学号可能已经给了别人（索引只约束在册行）。让号要放在恢复**之前**：
+        // 先把 deleted_at 置回 NULL 的话，这行的旧学号立刻回到唯一索引的管辖范围，
+        // 与新人相撞，"恢复"就变成一次没头没尾的失败。让出的号可以在名单页里补。
+        Database.Exec(conn, tx, """
+            UPDATE students SET student_no = NULL, rev = rev + 1
+             WHERE id = $id AND student_no IS NOT NULL AND EXISTS (
+                   SELECT 1 FROM students o
+                    WHERE o.student_no = students.student_no
+                      AND o.id != students.id AND o.deleted_at IS NULL)
+            """, ("$id", id));
         Database.Exec(conn, tx, """
             UPDATE students SET deleted_at = NULL, active = 1, rev = rev + 1, updated_at = $at WHERE id = $id
             """, ("$id", id), ("$at", now));

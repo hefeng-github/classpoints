@@ -142,8 +142,11 @@ public sealed class ConfigService(AppServices services)
     {
         if (bundle.Roster.Count == 0) return 0;
 
+        // 去重口径和名单页/成绩页保持一致（NormalizeKey）：同一个"王 芳"和"王芳"
+        // 是一个人。以前这里用 Clean + Ordinal 精确比对，配置包会把带空格/繁体的
+        // 同一人再建一个挡，积分和成绩从此拆成两份，而且界面上看不出哪里重复。
         var existing = services.Students.ListActive()
-            .Select(s => s.Name)
+            .Select(s => NameNormalizer.NormalizeKey(s.Name))
             .ToHashSet(StringComparer.Ordinal);
 
         var seat = services.Students.ListActive().Select(s => s.SeatNo ?? 0).DefaultIfEmpty(0).Max();
@@ -152,7 +155,8 @@ public sealed class ConfigService(AppServices services)
         foreach (var row in bundle.Roster)
         {
             var name = NameNormalizer.Clean(row.Name);
-            if (name.Length == 0 || !existing.Add(name)) continue;
+            var key = NameNormalizer.NormalizeKey(name);
+            if (key.Length == 0 || !existing.Add(key)) continue;
 
             services.Students.Insert(new Student
             {

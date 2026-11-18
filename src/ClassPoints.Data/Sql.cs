@@ -5,7 +5,7 @@ namespace ClassPoints.Data;
 /// </summary>
 public static class Sql
 {
-    public const int SchemaVersion = 7;
+    public const int SchemaVersion = 8;
 
     public const string Pragmas = """
         PRAGMA journal_mode = WAL;
@@ -28,7 +28,11 @@ public static class Sql
         );
         CREATE INDEX IF NOT EXISTS idx_students_updated ON students(updated_at);
         CREATE INDEX IF NOT EXISTS idx_students_seat ON students(active, seat_no);
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_students_no ON students(student_no) WHERE student_no IS NOT NULL;
+        -- 学号唯一只约束**在册**的行：停用（软删）的还占着号，转学走了就没人能用，
+        -- 新学期导入直接整批失败。恢复时若同号已有人，Restore 会自动让出号。
+        -- 老库由 Migrate 的 v8 段重建索引（SQLite 改不了索引定义，只能删了重建）。
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_students_no ON students(student_no)
+            WHERE student_no IS NOT NULL AND deleted_at IS NULL;
 
         CREATE TABLE IF NOT EXISTS members (
           id           TEXT PRIMARY KEY,

@@ -25,6 +25,15 @@ export interface Env {
   PAIR_MEMBER_SCAN?: string;
   /** 允许跨域读取的来源，逗号分隔。不配就是全都不许，桌面客户端不受影响。 */
   ALLOWED_ORIGINS?: string;
+
+  /**
+   * 平台管理员口令（至少 8 位）。配了之后管理台上可以跨班级查看/改名/清周期/注销，
+   * 不配就整块关闭（503），绝不做一个"空口令也能进"的默认。
+   *
+   * 它和班主任密码是两套东西：这个管"这台部署上有哪些班"，
+   * 班主任密码管"我这个班里谁能进来"。别把两者混用。
+   */
+  PLATFORM_PIN?: string;
 }
 
 /**
@@ -53,6 +62,13 @@ export interface Claims {
    * 还留了升级通道（refresh 时通了就换成全权令牌）。
    */
   ro?: boolean;
+  /**
+   * 平台管理员令牌（部署级，不对应任何班级）。
+   *
+   * 有它就不该走任何班级接口 —— 那种令牌能看所有班，万一哪条班级路由
+   * 只判 role 不判 cid，就成了越权的口子。auth.requireAuth 会直接把它挡掉。
+   */
+  plat?: boolean;
   iat: number;
   exp: number;
 }

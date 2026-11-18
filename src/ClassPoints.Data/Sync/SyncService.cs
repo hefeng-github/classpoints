@@ -255,6 +255,12 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         });
 
         RememberClassCode(code);
+        ResetCursor();
+
+        // 新班是这台机器自己建的，凭据必然是全权的；把上一段会话里可能残留的只读标记清掉。
+        // 不清的后果：从"待审只读"的班退出来、紧接着建自己的班，界面会一直说
+        // "还在等班主任通过"，名单/计数/周期全被导航闸门拦住 —— 而数据其实推得上去。
+        IsReadOnly = false;
 
         // 新班是空的，而本机数据属于**上一个班**：同一个学生在云端只能属于一个班，
         // 把本地这些行再推一遍并不会让新班有数据（云端会拒）。所以这里只重置游标，
@@ -298,6 +304,15 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         _store.Clear();
         // 解除配对就把"拉到哪儿"一起忘掉：下一个班有它自己的序号
         ResetCursor();
+        // 只读是"这台机器在这个班里的状态"，班没了它就不存在。
+        // 不回位会留下一个很别扭的组合：待审设备解除配对、再建自己的班之后，
+        // 界面一直当它是只读（写页面全被拦），而推送其实是正常的（凭据早换成新班的了）。
+        // 走属性而不是改字段，才能把 ReadOnlyChanged 发给各外壳。
+        IsReadOnly = false;
+        // 同上：凭据没了，"需要重新配对"也就不成立了
+        _repairBlockedUntil = DateTime.MinValue;
+        _repairErrorCode = null;
+        _refreshErrorCode = null;
     }
 
     /// <summary>
@@ -1195,30 +1210,47 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
     }
 
     /// <summary>
-    /// 删一行，被外键拦住就算了（本机这条还被引用着，说明它是本机的正本）。
+    /// 删一行，被外键拦住就整组撤回去（本机这条还被引用着，说明它是本机的正本）。
     /// 返回是否真的删掉了。
+    ///
+    /// 为什么必须用 SAVEPOINT：这一步跑在**整页拉取的那个大事务**里，而 SQLite 的
+    /// 外键失败默认只回滚"这一条语句"（ABORT），不会回滚前面已经删掉的子表。于是
+    /// 「先删 exam_scores、再删 exams、被 scheme_weights 拦住」的结果是：考试还在，
+    /// 成绩没了 —— 异常被 catch 吞掉，事务照常提交，老师只看到一场没有分数的考试。
+    /// 有了 SAVEPOINT，被拦时退回这一步之前，什么都当没发生。
     /// </summary>
     private bool TryDelete(SqliteConnection conn, SqliteTransaction tx, string table, string id)
     {
+        Database.Exec(conn, tx, "SAVEPOINT try_delete");
         try
         {
             // 被引用的表要先带走子表，否则外键直接拦住，这张"另一个班彻底删了的事件"
             // 永远删不掉，界面上就留着一个点了几次却查不到名字的幽灵。
-            // 只处理**子表数据完全依附父行**的那两张：打点依附事件、成绩依附考试 ——
+            // 只处理**子表数据完全依附父行**的那几张：打点依附事件、成绩与折算权重依附考试 ——
             // 父行都不存在了，子行没有任何独立意义。
             // 学生与周期不在此列：它们的子表是几百条独立的记分历史，
             // 上面没有对应操作时不该由同步悄悄删掉（真到那一步要单独设计）。
             if (table == "counters")
+            {
                 Database.Exec(conn, tx, "DELETE FROM counter_ticks WHERE counter_id = $id", ("$id", id));
+                // 还没推上去的打点也要退队：事件没了，它们只会永远回 unknown_counter
+                SyncOutbox.DeletePendingTicks(conn, tx, id);
+            }
             else if (table == "exams")
+            {
                 Database.Exec(conn, tx, "DELETE FROM exam_scores WHERE exam_id = $id", ("$id", id));
+                Database.Exec(conn, tx, "DELETE FROM scheme_weights WHERE exam_id = $id", ("$id", id));
+            }
 
             Database.Exec(conn, tx, $"DELETE FROM {table} WHERE id = $id", ("$id", id));
+            Database.Exec(conn, tx, "RELEASE try_delete");
             return true;
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
         {
-            // 19 = SQLITE_CONSTRAINT。记一笔，设置页的「已合并 N 处」能看见
+            // 19 = SQLITE_CONSTRAINT。整组退回去，再记一笔 —— 设置页的「已合并 N 处」能看见
+            Database.Exec(conn, tx, "ROLLBACK TO try_delete");
+            Database.Exec(conn, tx, "RELEASE try_delete");
             Conflicts++;
             return false;
         }

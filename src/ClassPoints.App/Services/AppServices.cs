@@ -172,11 +172,21 @@ public sealed class AppServices
         // 统一在这里落到会话上，顺带刷新外壳 —— 页面不必知道同步的内部细节。
         services.Sync.ReadOnlyChanged += () =>
         {
-            var readOnly = services.Sync.IsReadOnly;
-            services.Session.ReadOnly = readOnly;
-            App.Host?.RefreshChrome();
-            if (!readOnly)
-                App.Host?.Toast("班主任已通过这台设备，记分和改名单恢复了", 8);
+            void Apply()
+            {
+                var readOnly = services.Sync.IsReadOnly;
+                services.Session.ReadOnly = readOnly;
+                App.Host?.RefreshChrome();
+                if (!readOnly)
+                    App.Host?.Toast("班主任已通过这台设备，记分和改名单恢复了", 8);
+            }
+
+            // 回调可能从同步链的续体上来：拉取/续期是一整条 async 链，await 之后
+            // 不保证还在 UI 线程，直接动 XAML 就是 COMException（和 SyncPump.OnUi
+            // 是同一类坑）。窗口的队列一定属于 UI 线程。
+            var queue = App.Window?.DispatcherQueue;
+            if (queue is null || queue.HasThreadAccess) Apply();
+            else queue.TryEnqueue(Apply);
         };
 
         Instance = services;

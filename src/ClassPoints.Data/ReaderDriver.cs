@@ -37,7 +37,11 @@ public static class ReaderDriver
     {
         if (!Bundled) return false;
 
-        var args = $"/d /c pnputil /add-driver \"{InfPath}\" /install & pnputil /scan-devices";
+        // 只跑 add-driver，退出码就是安装结果。以前用 `&` 把 /scan-devices 串在后面，
+        // 而 cmd 的退出码取**最后一条** —— add-driver 被拦、scan 成功，这里照样拿到 0，
+        // 界面说"装好了"但 COM 口根本没出现，老师被引向最难排查的那种盲区。
+        // 装完驱动 Windows 自己会重新枚举设备，单独的 scan 本来就是多余的。
+        var args = $"/d /c pnputil /add-driver \"{InfPath}\" /install";
         var psi = new ProcessStartInfo("cmd.exe", args)
         {
             UseShellExecute = true,

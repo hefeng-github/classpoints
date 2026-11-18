@@ -107,13 +107,46 @@ public sealed class SyncPump(AppServices services)
         services.Sync.AutoRepaired -= OnAutoRepaired;
     }
 
-    private void OnAutoRepaired()
+    private void OnAutoRepaired() => OnUi(() => AutoRepaired?.Invoke());
+
+    /// <summary>
+    /// 把一段要动界面的活送回 UI 线程，并且**永不让它抛出去**。
+    ///
+    /// 两个坑叠在一起就是"同步一失败就闪退"：
+    ///   ① `DispatcherQueue.GetForCurrentThread()` 只在 UI 线程上有值。同步链一旦续在
+    ///      线程池线程上（await 之后不保证回到同一个上下文），这里拿到 null，于是
+    ///      直接改 Session 属性、直接触发 Changed，各页面就在后台线程上动 XAML ——
+    ///      WinUI 抛 COMException（"被编组到另一个线程"），这类异常没经过我们的 catch。
+    ///   ② 抛到 DispatcherQueue 的回调里也算未处理异常，落到 App.UnhandledException，
+    ///      连着三次就把进程干掉 —— 而"被云端频繁拒绝"正是连着三轮失败的最常见场景。
+    ///
+    /// 所以：优先用 Start() 记下的那个队列（它一定属于 UI 线程），回调里再包一层 try。
+    /// </summary>
+    private void OnUi(Action action)
     {
-        // 这个回调可能落在同步那条 async 链的任意一段上（网络续完也可能是后台线程），
-        // 所以用 Start 时记下来的 UI 队列，而不是"当前线程的"。
         var queue = _ui ?? DispatcherQueue.GetForCurrentThread();
-        if (queue is null) AutoRepaired?.Invoke();
-        else queue.TryEnqueue(() => AutoRepaired?.Invoke());
+        if (queue is null)
+        {
+            Run(action);
+            return;
+        }
+
+        // TryEnqueue 自己也可能返回 false（队列已关）；那种情况下不如就地跑，
+        // 反正界面已经不存在了，抛异常只会让退出更难看。
+        if (!queue.TryEnqueue(() => Run(action))) Run(action);
+    }
+
+    private static void Run(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex)
+        {
+            // 这里绝不能往上抛：上面压着的是 DispatcherTimer 和 async void 的调用点
+            App.Services?.LogError("sync-ui", ex);
+        }
     }
 
     private void OnTick(object? sender, object e) => _ = RunAsync();
@@ -138,9 +171,7 @@ public sealed class SyncPump(AppServices services)
             if (NeedsPairing && !wasPairing)
             {
                 // 扔到 UI 线程再喊：这里可能就在 DispatcherTimer 的回调里
-                var queue = DispatcherQueue.GetForCurrentThread();
-                if (queue is null) PairingNeeded?.Invoke(report.Reason);
-                else queue.TryEnqueue(() => PairingNeeded?.Invoke(report.Reason));
+                OnUi(() => PairingNeeded?.Invoke(report.Reason));
             }
 
             LastPushed += report.Pushed;
@@ -150,9 +181,7 @@ public sealed class SyncPump(AppServices services)
             if (report.Relocated > 0)
             {
                 var count = report.Relocated;
-                var queue = _ui ?? DispatcherQueue.GetForCurrentThread();
-                if (queue is null) PeriodRelocated?.Invoke(count);
-                else queue.TryEnqueue(() => PeriodRelocated?.Invoke(count));
+                OnUi(() => PeriodRelocated?.Invoke(count));
             }
 
             // 状态条上的"本机存储 / 已同步 / 离线"不能各页面各猜一套：
@@ -179,24 +208,28 @@ public sealed class SyncPump(AppServices services)
     {
         // 待同步条数也在这里顺手对一次：以前只有记分台会更新它，
         // 只读设备停在别的页面时角标永远是 0，看起来像"什么都没攒"。
-        services.Session.PendingCount = services.Outbox.Count();
-        // 有没有接云端也是同一件事：SyncEnabled 以前只在记分台被硬写成 false，
-        // 于是"已连接云端"和"本机存储"可以同时出现在同一台机器上。
-        services.Session.SyncEnabled = services.Sync.IsConfigured;
-        services.Session.NeedsPairing = NeedsPairing;
-        var queue = DispatcherQueue.GetForCurrentThread();
-        if (queue is null)
+        try
+        {
+            services.Session.PendingCount = services.Outbox.Count();
+            // 有没有接云端也是同一件事：SyncEnabled 以前只在记分台被硬写成 false，
+            // 于是"已连接云端"和"本机存储"可以同时出现在同一台机器上。
+            services.Session.SyncEnabled = services.Sync.IsConfigured;
+            services.Session.NeedsPairing = NeedsPairing;
+        }
+        catch (Exception ex)
+        {
+            // 读库失败不该让一轮同步把进程带走（库被占用、库文件被删都在这一类里）。
+            // 界面上少这一条角标不影响记分，下一轮还会有机会。
+            services.LogError("sync-notify", ex);
+            return;
+        }
+
+        // 一定要用 Start() 记下的队列：这一句以前取的是"当前线程的"队列，
+        // 而它在 await 之后可能已经是线程池线程 —— 见 OnUi 的说明。
+        OnUi(() =>
         {
             services.Session.Refresh();
             Changed?.Invoke();
-        }
-        else
-        {
-            queue.TryEnqueue(() =>
-            {
-                services.Session.Refresh();
-                Changed?.Invoke();
-            });
-        }
+        });
     }
 }

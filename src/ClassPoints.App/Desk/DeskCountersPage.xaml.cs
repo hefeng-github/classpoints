@@ -467,6 +467,9 @@ public sealed partial class DeskCountersPage : Page
 
         var panel = new StackPanel { Spacing = 10 };
         var edits = new List<(Counter Counter, TextBox Box, CheckBox Stop)>();
+        // 「彻底删除」的确认框要在父框收起之后才弹得出（见下面 purge.Click），
+        // 所以这里先留一个引用，等父框建好再回填。
+        ContentDialog? hostDialog = null;
 
         foreach (var counter in counters)
         {
@@ -512,6 +515,14 @@ public sealed partial class DeskCountersPage : Page
                     var tail = ticks > 0
                         ? $"这些学生一共记的 {ticks} 次也会一起删掉，不能恢复。"
                         : "这个事件还没有记过任何一次。";
+
+                    // 确认框必须先把父框收起来再弹：Dialogs 的队列被父框占着（它要等
+                    // 自己关闭才释放），在这里再开一个 ContentDialog 会永远排不上队 ——
+                    // 以前的表现就是「彻底删除」点了没反应，而设置页那个入口是页面级
+                    // 按钮、没有父框，所以只有这里坏。Hide 后父框以「取消」结束，
+                    // 下面的保存逻辑不会跑；想继续改别的，重新点「管理事件」即可。
+                    hostDialog?.Hide();
+
                     if (!await shell.ConfirmAsync($"彻底删除「{counter.Label}」？",
                             $"这条事件会从所有设备上一起消失。{tail}",
                             "彻底删除", "取消")) return;
@@ -554,6 +565,7 @@ public sealed partial class DeskCountersPage : Page
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Primary,
         };
+        hostDialog = dialog;
 
         if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
 

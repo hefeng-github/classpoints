@@ -183,5 +183,10 @@ export async function resetPeriod(env: Env, request: Request): Promise<Response>
     env.DB.prepare('UPDATE classes SET resetting = 0 WHERE id = ?').bind(claims.cid),
   ]);
 
-  return json({ ok: true, periodId: id, committedAt: at });
+  // 和 rollover 同一条规则：换完新周期就裁掉翻篇太久的明细（云端只留最近 4 个）。
+  // 这个分支以前漏了这一步，走 /periods/reset 重置的班，旧周期会一直累在库里 ——
+  // 看起来"没超上限"，其实每轮拉取和索引都在替几年前的数据付钱。
+  const trimmed = await trimOldPeriods(env, claims.cid);
+
+  return json({ ok: true, periodId: id, committedAt: at, trimmed: trimmed.dropped });
 }

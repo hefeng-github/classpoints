@@ -102,6 +102,38 @@ public sealed class SyncOutbox(Database db)
         using var conn = db.Open();
         Database.Exec(conn, Sql.BumpOutboxAttempt, ("$id", item.Id), ("$next", Clock.NowMs() + delay));
     }
+
+    /// <summary>
+    /// 队列里那些引用了某个事件、还没推上去的打点，一起删掉。返回删了几条。
+    ///
+    /// 为什么不能按 id 前缀删：打点在队列里的 id 就是它自己的 id（裸 UUID），
+    /// 和事件 id 没有任何字面关系，只能读载荷里的 counterId 去认。
+    /// 载荷是 camelCase 的 JSON（见上面的 JsonSerializerDefaults.Web）。
+    ///
+    /// 为什么必须删：事件被彻底删除后云端会回 unknown_counter，按"等一等会不会变好"
+    /// 它算可重试 —— 但这条永远等不到（墓碑挡着，事件不会回来了），
+    /// 结果就是「待同步 N 条」永不归零，而老师在界面上完全看不出是怎么回事。
+    /// </summary>
+    public static int DeletePendingTicks(SqliteConnection conn, SqliteTransaction? tx, string counterId)
+    {
+        var needle = $"\"counterId\":\"{counterId}\"";
+        var hit = new List<string>();
+
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = "SELECT id, payload FROM outbox WHERE kind = 'tick'";
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var payload = r.IsDBNull(1) ? "" : r.GetString(1);
+                if (payload.Contains(needle, StringComparison.Ordinal)) hit.Add(r.GetString(0));
+            }
+        }
+
+        foreach (var id in hit) Database.Exec(conn, tx, Sql.DeleteOutbox, ("$id", id));
+        return hit.Count;
+    }
 }
 
 internal static class ReaderExtensions

@@ -250,6 +250,10 @@ public sealed partial class BoardShell : UserControl, IShellHost
         if (Session.ShouldAdminExit(settings.LockTimeoutSec))
         {
             Session.ExitAdmin();
+            // 超时退出也要跟着导航：NeedsAdmin 页（设置/名单/考试/周期/座位）上
+            // 身份条已经显示退出了、按钮全灰，人还站在那页上不知所措 ——
+            // 和「退出身份」回记分台是同一条规则。
+            if (AppNav.NeedsAdmin(_currentIndex)) Navigate(AppNav.Score);
             Toast("已退出管理模式，仍可记分");
         }
 
@@ -406,6 +410,10 @@ public sealed partial class BoardShell : UserControl, IShellHost
 
     private Task<Member?> ShowIdentifyOverlayAsync()
     {
+        // 上一轮的请求还没人应答就先收掉：直接覆盖 _identifyTcs 会让第一个 await
+        // 永远没人应答（卡片 150ms 一刷、页面快速切换都会撞上），调用方挂死在那条链上。
+        if (_identifyTcs is not null) CompleteIdentify(null);
+
         _identifyTcs = new TaskCompletionSource<Member?>();
         IdentifyTitle.Text = "请刷卡或输密码";
         IdentifySub.Text = "谁刷的卡、谁输对了密码，就按谁的身份记。";

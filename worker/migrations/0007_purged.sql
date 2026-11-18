@@ -10,7 +10,9 @@
  * 旧设备的 upsert 会是一条干净的 INSERT，人就这么"复活"了。
  *
  * 这张表就是答案：删过的 id 记在这儿，之后任何写入先查一遍，一律 409 purged。
- * 它只增不减（和 changelog 一起被 trim 掉），因为"能不能复活"这件事没有时效。
+ * **它只增不减** —— 定期任务和 trim.ts 都不许删它。理由是"能不能复活"这件事没有时效：
+ * 一台放假三个月没开的教室电脑，回来照样会把三年前那条记录推上来。
+ * 现在 trim 只清明细（流水/考试/打点/changelog），墓碑一条不动。
  */
 CREATE TABLE IF NOT EXISTS purged (
   class_id TEXT NOT NULL,

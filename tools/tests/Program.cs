@@ -372,6 +372,7 @@ internal static class Program
         Check("合计行会被识别出来", NameNormalizer.IsLikelySummaryRow("合计"));
         Check("平均分行会被识别出来", NameNormalizer.IsLikelySummaryRow("平均分"));
         Check("普通姓名不会被误判", !NameNormalizer.IsLikelySummaryRow("杨欣怡"));
+        Check("超 8 字的长姓名不会被当汇总行", !NameNormalizer.IsLikelySummaryRow("买买提·艾力·买买提明"));
     }
 
     // ---------------- 安全 ----------------

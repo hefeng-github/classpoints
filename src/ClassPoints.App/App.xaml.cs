@@ -140,10 +140,13 @@ public partial class App : Application
     private static DateTime _crashWindowStart = DateTime.MinValue;
 
     /// <summary>
-    /// 未处理异常的处理策略：记日志、提示一句、让进程活着。返回 false 表示"放过它"。
+    /// 未处理异常的处理策略：记日志、提示一句、**永远让进程活着**。
     ///
-    /// 为什么不一概吞掉：如果是渲染循环里每帧都抛的那种，Handled 之后提示会刷屏，
-    /// 进程也走不利索 —— 一分钟内第三次就让它正常崩，至少还能留下 WER 记录。
+    /// 以前这里有一条"一分钟内第三次就不管了"（让进程正常崩，好留下 WER 记录）。
+    /// 代价是它把"能自己扛过去"变成了"闪退"：同步每 45 秒一轮，只要有一处异常
+    /// 反复抛（例如云端连着拒绝时，UI 回调在后台线程上被触发），第三轮就一定退出 ——
+    /// 老师看到的正是"网络一不好，程序就没了"。数据都在本机库里的前提下，
+    /// 活着永远比干净地死掉有用；同一句提示在窗口期内只弹一次就够了。
     /// </summary>
     private static bool NotifyCrash(Exception exception)
     {
@@ -153,7 +156,8 @@ public partial class App : Application
             _crashWindowStart = now;
             _crashCount = 0;
         }
-        if (++_crashCount > 2) return false;
+        // 窗口内只提示一次：连着弹三句"刚才这一步没成功"比不弹更让人慌
+        if (++_crashCount > 1) return true;
 
         try
         {
