@@ -264,6 +264,62 @@ internal static class SyncTests
         check("没配对时同步直接跳过、不抛异常", !offlineReport.Ok && offline.Outbox.Count() == 1);
         check("跳过原因说得清楚", offlineReport.Error is not null, offlineReport.Error ?? "");
 
+        // ---- 重复建班：新班是空的，本机数据**不会**跟着过去，但也绝不能把云端搞脏 ----
+        //
+        // 现场就是这么丢的：老师连点两次「在这台电脑上建班」，第二个班一个人都没有；
+        // 大屏配对上去拉到 0 条，显示"还没有学生"。
+        // 根因是主键全局唯一：同一个学生在云端只能属于一个班，写进第二个班会被守卫挡住。
+        // 该做的是①别把这种写入记成"变更"（否则拉取端会收到一条不存在的行，进而去删本地的人），
+        // ②拒绝时明确告诉客户端（4xx，别无限重试），③把老师领回原来的班。
+        using var c = new Device(Path.Combine(root, "d"));
+        using var e = new Device(Path.Combine(root, "e"));
+
+        var cPeriod = c.Periods.Rollover();
+        var cRule = c.Rules.Save(new Rule { Label = "作业优秀", Delta = 3, Icon = "✍" });
+        var cOwner = c.Members.Save(new Member { DisplayName = "李老师", Role = MemberRole.Owner }, pin: "654321");
+        var cRoster = new[] { "周子涵", "吴一帆" }
+            .Select(n => c.Students.Insert(new Student { Name = n }))
+            .ToList();
+        c.Entries.ApplyBatch(cRoster.Select(x => new AwardLine(x.Id, cRule, 3)).ToList(), cOwner, "pin", cPeriod.Id);
+
+        var firstClass = await c.Sync.CreateClassAsync(baseUrl, "初三 (1) 班", "李老师", "654321", "REC-7777", "desk");
+        var pushFirst = await c.Sync.RunOnceAsync();
+        check("第一次建班：本机数据推上去了", pushFirst.Ok && c.Outbox.Count() == 0,
+            $"ok={pushFirst.Ok} outbox={c.Outbox.Count()}");
+
+        var secondClass = await c.Sync.CreateClassAsync(baseUrl, "初三 (1) 班", "李老师", "654321", "REC-8888", "desk");
+        check("第二次建班拿到的是另一个班级码",
+            secondClass.Ok && secondClass.CreatedCode != firstClass.CreatedCode,
+            $"{firstClass.CreatedCode} / {secondClass.CreatedCode}");
+        check("建班之后记得住上次的码（解除配对后能领回去）",
+            c.Sync.LastClassCode == secondClass.CreatedCode, c.Sync.LastClassCode);
+
+        // 模拟"队列里还躺着上一个班的学生"：把同一条再推一次，云端必须明确拒收
+        c.Outbox.Enqueue($"students:{cRoster[0].Id}", "student",
+            new { action = "upsert", student = cRoster[0] });
+        var crossReplay = await c.Sync.RunOnceAsync();
+        check("跨班重放被云端拒收，而不是无限重试", !crossReplay.Ok && c.Outbox.Count() == 0,
+            $"ok={crossReplay.Ok} outbox={c.Outbox.Count()} err={crossReplay.Error}");
+        check("拒收原因说的是「属于另一个班」",
+            crossReplay.Error?.Contains("另一个班", StringComparison.Ordinal) == true, crossReplay.Error ?? "");
+
+        // 这条被拒的行不能留下"变更记录"，否则另一端会收到一个查不到的行 → 当成被删
+        await e.Sync.PairAsync(baseUrl, secondClass.CreatedCode!, "654321", "desk");
+        var pullEmpty = await e.Sync.RunOnceAsync();
+        // 新班建出来时会自带一个周期（那是真的），但**一条学生变更都不该有** ——
+        // 有的话另一端会把"查不到的学生"当成被删了，进而删本机的人。
+        check("新班里没有假的学生变更", pullEmpty.Ok && e.Students.ListActive().Count == 0,
+            $"ok={pullEmpty.Ok} pulled={pullEmpty.Pulled} students={e.Students.ListActive().Count}");
+
+        // 真正的解法：用**第一个班**的码配上去（本机数据的 id 属于它）
+        await e.Sync.PairAsync(baseUrl, firstClass.CreatedCode!, "654321", "desk");
+        var pullBack = await e.Sync.RunOnceAsync();
+        var namesInE = e.Students.ListActive().Select(x => x.Name).ToList();
+        check("配回原来的班就能拉到名单",
+            pullBack.Ok && namesInE.Contains("周子涵") && namesInE.Contains("吴一帆"),
+            $"ok={pullBack.Ok} pulled={pullBack.Pulled} names={string.Join("/", namesInE)}");
+        check("本机数据一条没少", c.Students.ListActive().Count >= 2, c.Students.ListActive().Count.ToString());
+
         Console.WriteLine($"  . 测试目录：{root}");
     }
 }

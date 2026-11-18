@@ -2047,6 +2047,9 @@ public sealed partial class DeskSettingsPage : Page
             {
                 buttons.Children.Add(Small("解除配对…", () =>
                 {
+                    // 先把码记到表单上：SignOut 之后 sync.json 就没了，而"配回原来那个班"
+                    // 正是解除配对之后最常见的一步。
+                    _repairCode = sync.LastClassCode;
                     sync.SignOut();
                     Shell?.Toast("凭据已清除，可以重新配对", 5);
                     Reload();
@@ -2069,7 +2072,8 @@ public sealed partial class DeskSettingsPage : Page
             PlaceholderText = "8 位班级码",
             Height = 34,
             VerticalContentAlignment = VerticalAlignment.Center,
-            Text = _repairCode,
+            // 上次配对/建班用过的码：解除配对之后最常见的一步就是"配回去"
+            Text = _repairCode.Length > 0 ? _repairCode : sync.LastClassCode,
         };
         var pinBox = new PasswordBox
         {
@@ -2146,6 +2150,22 @@ public sealed partial class DeskSettingsPage : Page
                     return;
                 }
 
+                // 建班 = 在云端新建一个**空**班。而本机这些数据早就属于上一个班了：
+                // 同一个学生在云端只能属于一个班（主键全局唯一，写不进第二个班）。
+                // 所以这一步必须先说清楚，并把上一个班的码摆出来 —— 现场就是这里连点了
+                // 两次建班，第二个班一个人都没有，教室大屏配对上去只看到"还没有学生"。
+                if (Services.StudentCount > 0 && Shell is { } shell)
+                {
+                    var last = Services.Sync.LastClassCode;
+                    var ok = await shell.ConfirmAsync("建一个新班？本机数据不会跟着过去",
+                        $"这台电脑上已经有 {Services.StudentCount} 人的名单和他们的积分记录，它们属于" +
+                        (last.Length > 0 ? $"班级码 {last} 的那个班" : "之前那个班") + "。\n\n" +
+                        "同一个人在云端只能属于一个班，所以新班是空的、这些数据推不过去。" +
+                        "如果你只是想重新连上原来的班：先取消，点「配对到已有班级」，填那个班级码。",
+                        "仍然建一个新班", "取消");
+                    if (!ok) return;
+                }
+
                 var report = await sync.CreateClassAsync(
                     baseUrl, Services.ClassName, Services.DeskOperator.DisplayName, pin,
                     Crypto.RandomHex(4).ToUpperInvariant(), "desk", bootstrapBox.Password);
@@ -2155,7 +2175,8 @@ public sealed partial class DeskSettingsPage : Page
                 Services.AdoptClassCode(report.CreatedCode);
                 Services.Log($"建班成功 {baseUrl} 班级码 {report.CreatedCode}");
                 Services.Pump.Start();
-                Shell?.Toast($"建班成功，班级码 {report.CreatedCode}（大屏配对要用它）", 10);
+
+                Shell?.Toast($"建班成功，班级码 {report.CreatedCode}（大屏配对要用它）", 12);
                 Reload();
             }
             catch (Exception ex)

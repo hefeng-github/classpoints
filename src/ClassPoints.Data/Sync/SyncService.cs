@@ -140,7 +140,28 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
     public const string KeyLastSeq = "last_seq";
     public const string KeyLastPullAt = "last_pull_at";
 
+    /// <summary>拉取游标属于哪个班（settings 里的键）。见 <see cref="EnsureCursorBelongsToClass"/>。</summary>
+    public const string KeyCursorClass = "sync_cursor_class";
+
+    /// <summary>上一次建班/配对用的班级码。**解除配对之后仍然留着**，用来把老师领回原来的班。</summary>
+    public const string KeyLastClassCode = "last_class_code";
+
     public bool IsConfigured => _store.Load() is not null;
+
+    /// <summary>
+    /// 上一次建班/配对用的班级码，解除配对之后还在。
+    ///
+    /// 存在的理由很具体：建班建错了一次（第二个班是空的），老师手里没有第一个班的码，
+    /// 而本机数据全都属于第一个班。留着这个码，至少能在"建一个新班"的确认框里说清
+    /// "你的数据在 X 那个班"，也让「配对到已有班级」的输入框有个默认值。
+    /// </summary>
+    public string LastClassCode => db.GetSetting(KeyLastClassCode) ?? "";
+
+    private void RememberClassCode(string? code)
+    {
+        if (string.IsNullOrWhiteSpace(code)) return;
+        db.SetSetting(KeyLastClassCode, code.Trim());
+    }
 
     /// <summary>
     /// 已配对时 sync.json 里记的班级码 —— **云端认的那一个**。
@@ -224,6 +245,15 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
             Secret = ownerPin,
             Kind = kind,
         });
+
+        RememberClassCode(code);
+
+        // 新班是空的，而本机数据属于**上一个班**：同一个学生在云端只能属于一个班，
+        // 把本地这些行再推一遍并不会让新班有数据（云端会拒）。所以这里只重置游标，
+        // 不做"整份重推"—— 那只会给拉取端留下幻影变更。
+        // 想回到原点：用原来那个班级码「配对到已有班级」，本地数据的 id 与它是一致的。
+        ResetCursor();
+
         return new SyncReport(true, null, 0, outbox.Count(), 0, 0, DateTime.Now) { CreatedCode = code };
     }
 
@@ -239,6 +269,10 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
             Secret = secret,
             Kind = kind,
         });
+        RememberClassCode(code);
+        // 拉到哪儿是**按班**记的：换一个班（或者解除配对后重新配到另一个班），
+        // 旧游标没有任何意义，还会让新班开头那段变更永远拉不到。
+        ResetCursor();
         IsReadOnly = readOnly;
         // 手动配过之后，自动重配的冷却要清零 —— 刚才这一下已经证明口令是对的
         _repairBlockedUntil = DateTime.MinValue;
@@ -251,7 +285,42 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         };
     }
 
-    public void SignOut() => _store.Clear();
+    public void SignOut()
+    {
+        _store.Clear();
+        // 解除配对就把"拉到哪儿"一起忘掉：下一个班有它自己的序号
+        ResetCursor();
+    }
+
+    /// <summary>
+    /// 把拉取游标归零。
+    ///
+    /// 游标是**按班**记账的：云端 changelog 的 seq 每个班各编各的。换班之后
+    /// 拿旧游标去拉，新班序号比它小的那段变更永远拉不到 —— 表现是"已连接、
+    /// 拉取 0 条"，而云端明明有数据。重复建班就是最典型的一次。
+    /// </summary>
+    private void ResetCursor()
+    {
+        WriteState(KeyLastSeq, 0);
+        WriteState(KeyLastPullAt, 0);
+    }
+
+    /// <summary>
+    /// 游标记的是"拉到哪儿"，而序号是**按班**编的。所以每轮开始先确认它属于这个班：
+    /// 对不上（刚建班、刚换班、或者老版本根本没记过这个键）就把游标归零重拉一遍。
+    ///
+    /// 重拉是幂等的（entity 按 rev、流水按 id 去重），代价只是一次几百行的传输。
+    /// 反过来放任旧游标，后果是"云端有数据、这台一条都拉不到"，而且完全没有提示 ——
+    /// 1.3.7 之前重复建班的机器就卡在这上面。
+    /// </summary>
+    private void EnsureCursorBelongsToClass(SyncCredentials credentials)
+    {
+        var known = db.GetSetting(KeyCursorClass);
+        if (string.Equals(known, credentials.ClassId, StringComparison.Ordinal)) return;
+
+        ResetCursor();
+        db.SetSetting(KeyCursorClass, credentials.ClassId);
+    }
 
     /// <summary>
     /// 有待推送的流水时，先把它们引用的周期排进队列。
@@ -322,6 +391,9 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         Conflicts = 0;
         try
         {
+            // 游标是按班编的：换过班（或从没记过）就归零重拉，见方法注释
+            EnsureCursorBelongsToClass(credentials);
+
             _client = new SyncClient(credentials.BaseUrl, credentials.Access);
             var pushed = 0;
             string? pushError = null;
@@ -955,8 +1027,34 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         return n;
     }
 
-    /// <summary>服务端说没有的行，本地也得删 —— 否则会一直留着一份幽灵数据。</summary>
-    private static int ApplyTombstones(SqliteConnection conn, SqliteTransaction tx, JsonObject? deleted)
+    /// <summary>
+    /// 删一行，被外键拦住就算了（本机这条还被引用着，说明它是本机的正本）。
+    /// 返回是否真的删掉了。
+    /// </summary>
+    private bool TryDelete(SqliteConnection conn, SqliteTransaction tx, string table, string id)
+    {
+        try
+        {
+            Database.Exec(conn, tx, $"DELETE FROM {table} WHERE id = $id", ("$id", id));
+            return true;
+        }
+        catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
+        {
+            // 19 = SQLITE_CONSTRAINT。记一笔，设置页的「已合并 N 处」能看见
+            Conflicts++;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 服务端说没有的行，本地也得删 —— 否则会一直留着一份幽灵数据。
+    ///
+    /// 但"删不掉"必须容错：学生/周期被流水引着（外键），硬删会抛 SQLite Error 19，
+    /// 而这是在**整页一个事务**里 —— 于是这一页永远失败、游标永远不动，界面上只有"同步失败"。
+    /// 这种情况只可能是云端把同一条数据算进了另一个班（见 worker 的 foreign_row），
+    /// 本机这份仍然是唯一的一份，留着才对。跳过并计入「已合并」，让人能看见。
+    /// </summary>
+    private int ApplyTombstones(SqliteConnection conn, SqliteTransaction tx, JsonObject? deleted)
     {
         if (deleted is null) return 0;
         var n = 0;
@@ -980,7 +1078,7 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
             {
                 var key = id?.GetValue<string>();
                 if (string.IsNullOrEmpty(key)) continue;
-                Database.Exec(conn, tx, $"DELETE FROM {table} WHERE id = $id", ("$id", key));
+                if (!TryDelete(conn, tx, table, key)) continue;
                 n++;
             }
         }

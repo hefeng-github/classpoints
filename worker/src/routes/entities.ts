@@ -273,6 +273,16 @@ export async function upsertEntity(env: Env, request: Request, rawEntity: string
 
   const results = await write(env, claims.cid, id, at, values, sql, cols, spec);
 
+  // 这个 id 属于别的班：明确回 409（客户端按"永久失败"处理，从队列里移出并显示原因），
+  // 而不是回 200 applied:false —— 那会让客户端以为推成功了，两边都看不出问题。
+  if (results.foreign) {
+    throw new HttpError(
+      409,
+      'foreign_row',
+      '这条记录在云端属于另一个班（同一个数据只能呆在一个班），没有写进这个班',
+    );
+  }
+
   const applied = (results.meta?.changes ?? 0) > 0;
   return json({ ok: true, id, applied, rev: incomingRev, classId: claims.cid, ...results.note });
 }
@@ -297,10 +307,29 @@ async function write(
   sql: string,
   cols: Col[],
   spec: Spec,
-): Promise<{ meta?: { changes?: number }; note: Record<string, unknown> }> {
+): Promise<{ meta?: { changes?: number }; note: Record<string, unknown>; foreign?: boolean }> {
   const change = changeStmt(env.DB, classId, spec.entity, id, 'upsert', at);
   try {
     const out = await env.DB.batch([env.DB.prepare(sql).bind(...values), change]);
+
+    // 一条都没写进去有两种情况，必须分开：
+    //  ① 同一条消息重放（rev 不大于库里的），行**还在本班** —— 正常，变更记录多一条也无害；
+    //  ② 这个 id 属于**另一个班**（主键全局唯一，`class_id = excluded.class_id` 的守卫挡了）。
+    //     这时候变更记录已经写下了，但那行在本班根本查不到 —— 拉取端会按
+    //     "要了却查不到 = 服务端删了" 去删本机的数据（学生、周期都会被删，外键一拦就整页失败）。
+    //     典型来源：老师建了两次班，第一次那个班的数据还在队列里重放。
+    if ((out[0].meta?.changes ?? 0) === 0) {
+      const own = await env.DB.prepare(`SELECT class_id FROM ${spec.table} WHERE id = ?`)
+        .bind(id)
+        .first<{ class_id: string }>();
+      if (own && own.class_id !== classId) {
+        await env.DB.prepare('DELETE FROM changelog WHERE class_id = ? AND entity = ? AND row_id = ?')
+          .bind(classId, spec.entity, id)
+          .run();
+        return { meta: out[0].meta as { changes?: number }, note: {}, foreign: true };
+      }
+    }
+
     return { meta: out[0].meta as { changes?: number }, note: {} };
   } catch (err) {
     const message = String((err as { message?: string })?.message ?? err);
