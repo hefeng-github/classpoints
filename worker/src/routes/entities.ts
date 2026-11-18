@@ -323,6 +323,17 @@ async function write(
         .bind(id)
         .first<{ class_id: string }>();
       if (own && own.class_id !== classId) {
+        // 预设事件（迟到/作业未交/课堂违纪）的 id 是写死的，换过班的机器一定撞：
+        // 那三个 id 早被旧班占了。这个班如果已经有同语义的一份（preset_key 相同），
+        // 就告诉客户端"用那一个"，不需要 409 也不需要第二份"迟到"。
+        const twin = await presetTwin(env, classId, spec, cols, values, id);
+        if (twin) {
+          await env.DB.prepare('DELETE FROM changelog WHERE class_id = ? AND entity = ? AND row_id = ?')
+            .bind(classId, spec.entity, id)
+            .run();
+          return { meta: out[0].meta as { changes?: number }, note: { deduped: true, useCounterId: twin } };
+        }
+
         await env.DB.prepare('DELETE FROM changelog WHERE class_id = ? AND entity = ? AND row_id = ?')
           .bind(classId, spec.entity, id)
           .run();
@@ -351,8 +362,39 @@ async function write(
       return { note: { deduped: true } };
     }
 
+    // 同一个班已经有同语义的预设事件（两台机器各自换过编号，最后落到同一个 preset_key）。
+    // 回 500 会让客户端无限退避，回 422 会让它把这条丢掉 —— 两种都会让"迟到"永远上不了云，
+    // 而引用它的打点只能在旁边一直 unknown_counter。所以给个明确的落点：用本班那一条。
+    const twin = await presetTwin(env, classId, spec, cols, values, id);
+    if (twin) return { note: { deduped: true, useCounterId: twin } };
+
     throw err;
   }
+}
+
+/**
+ * 这个班有没有"同语义"的预设行（counters.preset_key 唯一索引那条路）。
+ * 学生/规则不走这里：学号让位、预设规则本来就按 preset_key 去重。
+ */
+async function presetTwin(
+  env: Env,
+  classId: string,
+  spec: Spec,
+  cols: Col[],
+  values: (string | number | null)[],
+  selfId: string,
+): Promise<string | null> {
+  if (spec.entity !== 'counters') return null;
+  const idx = cols.findIndex((c) => c.col === 'preset_key');
+  if (idx < 0) return null;
+  const preset = values[2 + idx];
+  if (typeof preset !== 'string' || preset.length === 0) return null;
+
+  const twin = await env.DB
+    .prepare('SELECT id FROM counters WHERE class_id = ? AND preset_key = ? AND id <> ?')
+    .bind(classId, preset, selfId)
+    .first<{ id: string }>();
+  return twin?.id ?? null;
 }
 
 /** 各场考试的权重：一次换掉，不是逐条改 */

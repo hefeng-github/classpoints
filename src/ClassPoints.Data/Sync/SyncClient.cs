@@ -21,12 +21,22 @@ public sealed record PushOutcome(
     public IReadOnlyList<string> Dropped { get; init; } = Array.Empty<string>();
 
     /// <summary>
-    /// 云端说"这条记录属于另一个班"的周期条目（outbox id，形如 `periods:{id}`）。
+    /// 云端说"这条记录属于另一个班"的条目（outbox id，形如 `periods:{id}` / `counters:{id}`）。
     ///
     /// 它和其它 Drop 不一样：这条数据本身没坏，只是**编号**在云端被别的班占了 ——
-    /// 换一个编号就能推上去。调用方据此在本地换 id 并重新排队，见 PeriodRelocator。
+    /// 换一个编号（或改用云端已有的那一条）就能推上去。调用方据此在本地改指并重新排队，
+    /// 见 <see cref="PeriodRelocator"/> 与 <see cref="CounterRelocator"/>。
     /// </summary>
-    public IReadOnlyList<string> ForeignPeriods { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> ForeignRows { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// 云端说"这个班已经有同一个事件了，用这个编号"（outbox id → 云端认的 counter id）。
+    ///
+    /// 场景：两台机器各自把出厂的「迟到」换过编号，最后还是同语义（preset_key 相同）。
+    /// 云端不回错，只回一个落点，本机把引用改指过去就行 —— 一个班只能有一条"迟到"。
+    /// </summary>
+    public IReadOnlyDictionary<string, string> CounterAdopt { get; init; } =
+        new Dictionary<string, string>();
 
     public bool HasDropped => Dropped.Count > 0;
 }
@@ -197,24 +207,31 @@ public sealed class SyncClient : IDisposable
             if (item.Kind is "entry" or "reverse") { entries.Add(item); continue; }
             if (item.Kind == "tick") { ticks.Add(item); continue; }
 
-            var (ok, verdict, code, error) = await PushEntityAsync(item, ct);
+            var (ok, verdict, code, error, useCounterId) = await PushEntityAsync(item, ct);
             if (verdict == PushVerdict.Auth)
                 return new PushOutcome(tally.Done, items.Select(i => i.Id).ToList(), true, error)
                 {
                     Dropped = tally.Dropped,
-                    ForeignPeriods = tally.ForeignPeriods,
+                    ForeignRows = tally.ForeignRows,
+                    CounterAdopt = tally.CounterAdopt,
                 };
 
-            if (ok) tally.Done.Add(item.Id);
+            if (ok)
+            {
+                tally.Done.Add(item.Id);
+                if (useCounterId is not null) tally.CounterAdopt[item.Id] = useCounterId;
+            }
             else if (verdict == PushVerdict.Drop)
             {
                 // 以前这里当成"推成功了"直接出队，老师永远不知道哪条没上去
                 tally.Dropped.Add(item.Id);
                 tally.LastError = error;
 
-                // 周期编号在云端属于别的班：不是"这条坏了"，是"编号撞了"。
+                // 编号在云端属于别的班：不是"这条坏了"，是"编号撞了"。
                 // 单独记下来，让 SyncService 在本地换个编号再推一次。
-                if (item.Kind == "period" && code == "foreign_row") tally.ForeignPeriods.Add(item.Id);
+                // 周期与预设事件都会撞 —— 后者的 id 是写死的（c_late 等），换过班必然撞。
+                if (code == "foreign_row" && item.Kind is "period" or "counter")
+                    tally.ForeignRows.Add(item.Id);
             }
             else
             {
@@ -239,7 +256,8 @@ public sealed class SyncClient : IDisposable
         return new PushOutcome(tally.Done, tally.Failed, tally.AuthExpired, tally.LastError)
         {
             Dropped = tally.Dropped,
-            ForeignPeriods = tally.ForeignPeriods,
+            ForeignRows = tally.ForeignRows,
+            CounterAdopt = tally.CounterAdopt,
         };
     }
 
@@ -313,10 +331,11 @@ public sealed class SyncClient : IDisposable
         }
     }
 
-    private async Task<(bool Ok, PushVerdict Verdict, string? Code, string? Error)> PushEntityAsync(OutboxItem item, CancellationToken ct)
+    private async Task<(bool Ok, PushVerdict Verdict, string? Code, string? Error, string? UseCounterId)>
+        PushEntityAsync(OutboxItem item, CancellationToken ct)
     {
         var (path, body) = Route(item);
-        if (path is null) return (true, PushVerdict.Drop, null, null); // 不认识的 kind：丢，别卡队列
+        if (path is null) return (true, PushVerdict.Drop, null, null, null); // 不认识的 kind：丢，别卡队列
         Trace("POST " + path);
 
         try
@@ -330,18 +349,38 @@ public sealed class SyncClient : IDisposable
             var status = (int)res.StatusCode;
 
             Trace($"<- {status}");
-            if (res.IsSuccessStatusCode) return (true, PushVerdict.Retry, null, null);
+            if (res.IsSuccessStatusCode) return (true, PushVerdict.Retry, null, null, UseCounterId(text));
 
             // 403 不要当"这条记录有问题"：它的意思是"这台机器现在不是班主任身份"，
             // 直接丢掉的话老师在界面上做的改动会静默消失。分类器把它归到"等一等会好"。
             var code = ErrorCode(text);
             var message = Describe(text, $"{path} {status} 提交失败");
-            return (false, PushVerdicts.Classify(status, code), code, message);
+            return (false, PushVerdicts.Classify(status, code), code, message, UseCounterId(text));
         }
         catch (Exception ex)
         {
             Trace("!! " + ex.GetType().Name + ": " + ex.Message);
-            return (false, PushVerdict.Retry, null, ex.Message);
+            return (false, PushVerdict.Retry, null, ex.Message, null);
+        }
+    }
+
+    /// <summary>
+    /// 云端去重时给的落点：`{ok:true, deduped:true, useCounterId:"c_late"}`。
+    /// 这条本身算推成功了（云端已经有同语义的一条），本机把引用改指过去即可。
+    /// </summary>
+    private static string? UseCounterId(string text)
+    {
+        if (!text.Contains("useCounterId", StringComparison.Ordinal)) return null;
+        try
+        {
+            return JsonNode.Parse(text) is JsonObject o &&
+                   o["useCounterId"]?.GetValue<string>() is { Length: > 0 } id
+                ? id
+                : null;
+        }
+        catch (Exception)
+        {
+            return null;
         }
     }
 
@@ -387,7 +426,9 @@ public sealed class SyncClient : IDisposable
         public List<string> Done { get; } = [];
         public List<string> Failed { get; } = [];
         public List<string> Dropped { get; } = [];
-        public List<string> ForeignPeriods { get; } = [];
+        public List<string> ForeignRows { get; } = [];
+        /// <summary>云端指定的落点：outbox id → 本班已有的 counter id。</summary>
+        public Dictionary<string, string> CounterAdopt { get; } = new(StringComparer.Ordinal);
         public string? LastError { get; set; }
         public bool AuthExpired { get; set; }
     }

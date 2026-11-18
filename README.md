@@ -385,7 +385,7 @@ npx wrangler deploy --config wrangler.deploy.toml
 | `d1 migrations apply` 报找不到库 | 配置里的 `database_id` 还是占位符 |
 | 教室那台一直"同步失败"，开发机好的 | 用的 `*.workers.dev` 域名被墙，绑自有域名 |
 | 建班/配对报 500，日志里是 `Pbkdf2 failed: iteration counts above 100000` | 迭代数撞了 Workers 的硬上限。见下面「10 万轮这条线」 |
-| 设置页一直显示「云端还没有这个周期（…），等它同步上去后这批计数会自动补推」 | 这个周期编号在云端属于**另一个班**（换过班、或重复建过班）。1.3.9 起客户端会自动换新编号重推；旧版本只能拿**原来那个班**的码重新配对 |
+| 设置页一直显示「云端还没有这个周期 / 这个事件（…），等它同步上去后这批计数会自动补推」 | 这个编号在云端属于**另一个班**（换过班、或重复建过班）。周期与出厂的三个预设事件（迟到/作业未交/课堂违纪）的编号都是跨设备相同的，换班之后必然撞。1.3.9 起客户端会自动换新编号重推；旧版本只能拿**原来那个班**的码重新配对 |
 | 大屏配对上了，可名单是空的、电脑这边「待推送 0 条」 | 多半是这台电脑建过**两次**班：数据属于先那个班。用那个班的班级码「配对到已有班级」（设定页会记着上一次的码），别用后来那个空班 |
 
 ### 10 万轮这条线（PBKDF2）
@@ -461,7 +461,7 @@ worker/                  Cloudflare Worker + D1 同步中枢（TypeScript，不�
   src/admin.ts           网页管理台（单文件页面，零依赖零外链）
   src/routes/grants.ts   设备白名单：指纹闸门、待审队列、审批与撤销
   src/routes/overview.ts 班级总览与管理：统计、改显示名、清理旧周期、注销
-  test/smoke.mjs         接口契约测试（109 项，含多班隔离与安全用例）
+  test/smoke.mjs         接口契约测试（112 项，含多班隔离、预设事件去重与安全用例）
   test/grants.mjs        设备白名单回归（43 项，待审只读 → 批准升级 → 撤销 → 切回 open）
   test/overview.mjs      总览与管理回归（29 项，数字对账、改名校验、注销后配对 404）
 installer/               Inno Setup 安装脚本 + 简体中文语言包
@@ -584,16 +584,16 @@ scripts/prune-cnb-releases.sh    清理 CNB 旧版本（保留 stable）
 ## 七、测试
 
 ```bash
-# 1) Core + Data + 更新单测 474 项（纯内存，无需任何服务）
+# 1) Core + Data + 更新单测 493 项（纯内存，无需任何服务）
 dotnet run --project tools/tests
 
-# 2) Worker 接口契约 109 项 + 设备白名单 43 项 + 总览与管理 29 项（需要本地 wrangler dev 在 8787）
+# 2) Worker 接口契约 112 项 + 设备白名单 43 项 + 总览与管理 29 项（需要本地 wrangler dev 在 8787）
 cd worker && npx wrangler dev --port 8787 --local
 node test/smoke.mjs
 node test/grants.mjs
 node test/overview.mjs
 
-# 3) 端到端同步 537 项（C# 客户端真连 Worker，两台设备互推互拉）
+# 3) 端到端同步 559 项（C# 客户端真连 Worker，两台设备互推互拉）
 dotnet run --project tools/tests -- --sync http://127.0.0.1:8787
 
 # 4) 可选：真连一个更新源，确认清单与安装包能匿名下载、哈希对得上
@@ -602,9 +602,9 @@ dotnet run --project tools/tests -- --sync http://127.0.0.1:8787
 dotnet run --project tools/tests -- --update-feed http://127.0.0.1:8892/demo/dist
 ```
 
-合计 **1192 项断言**（第 4 项另加 3 项，用于发布前核对真实产物）。
+合计 **1236 项断言**（第 4 项另加 3 项，用于发布前核对真实产物）。
 
-Worker 那 109 项里有 17 项专打多班隔离：两个班同时存在，学号 `01` 各算各的，
+Worker 那 112 项里有 17 项专打多班隔离：两个班同时存在，学号 `01` 各算各的，
 B 拉到 A 的学生/流水/周期/考试都是 0 条，B 删 A 的行返回 200 但不改一行，
 B 抢 A 的主键被 `ON CONFLICT` 里的 `class_id` 守卫挡掉，B 撤 A 的批次、改 A 的权重都是 404。
 

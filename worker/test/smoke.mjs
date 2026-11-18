@@ -146,6 +146,25 @@ check('拉取能看到事件定义与打点',
   && (pullTicks.data?.counter_ticks ?? []).some((t) => t.counter_id === counterId),
   `counters=${(pullTicks.data?.counters ?? []).length} ticks=${(pullTicks.data?.counter_ticks ?? []).length}`);
 
+// 预设事件按 preset_key 班内唯一：客户端换过班之后会拿着同一个 preset_key 再来一次。
+// 这里必须回 200 + 一个落点（不是 500，也不是 409）—— 500 会让它无限退避，
+// 409 会让它把这条当成"编号撞了"去换号，两条路最后都会让打点一直推不上去。
+const twinA = await call('POST', '/counters', {
+  token: access,
+  body: { action: 'upsert', counter: { id: uuid(), label: '迟到', icon: '⚑', sort: 10, presetKey: 'std.late', rev: 1, updatedAt: now } },
+});
+check('同 preset_key 的第二条事件不算失败', twinA.status === 200, `status=${twinA.status} ${JSON.stringify(twinA.data)}`);
+const twinB = await call('POST', '/counters', {
+  token: access,
+  body: { action: 'upsert', counter: { id: uuid(), label: '迟到', icon: '⚑', sort: 10, presetKey: 'std.late', rev: 1, updatedAt: now } },
+});
+check('重复的 preset_key 回落到这一班已有的那条',
+  twinB.status === 200 && typeof twinB.data?.useCounterId === 'string' && twinB.data.useCounterId === twinA.data?.id,
+  JSON.stringify(twinB.data));
+check('这个班仍然只有一条 std.late',
+  (await call('GET', '/sync?since=0&limit=500', { token: access })).data?.counters?.filter((c) => c.preset_key === 'std.late').length === 1,
+  'count of std.late');
+
 const tooMany = await call('POST', '/entries', {
   token: access,
   body: { entries: Array.from({ length: 51 }, () => ({ ...entries[0], id: uuid() })) },

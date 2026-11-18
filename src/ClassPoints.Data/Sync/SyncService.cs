@@ -387,6 +387,23 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         }
     }
 
+    /// <summary>本机同语义事件（preset_key 相同）的编号。用于把云端的引用改指过来。</summary>
+    private static string? LocalCounterIdByPreset(SqliteConnection conn, SqliteTransaction tx, string preset)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = "SELECT id FROM counters WHERE preset_key = $preset";
+        cmd.Parameters.AddWithValue("$preset", preset);
+        return cmd.ExecuteScalar() as string;
+    }
+
+    /// <summary>打点引用的 counter：本机换了号就改指本机那份，否则原样。</summary>
+    private static string CounterRef(JsonObject row, Dictionary<string, string> remap)
+    {
+        var id = S(row, "counter_id");
+        return id is not null && remap.TryGetValue(id, out var local) ? local : id;
+    }
+
     private static Counter? ReadCounter(SqliteConnection conn, string id)
     {
         using var cmd = conn.CreateCommand();
@@ -478,25 +495,30 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
                             ? $"有 {outcome.Dropped.Count} 条记录被云端拒收，已从待推送里移出（{outcome.LastError}）"
                             : null;
 
-                    // ---- 周期编号在云端属于别的班：换一个再推 ----
+                    // ---- 编号在云端属于别的班：换一个再推 ----
                     //
-                    // 现场形态：本机周期是从上一个班带过来的，这个 id 在云端已经属于那个班。
-                    // 推它永远被拒（409 foreign_row），引用它的打点一直 unknown_period ——
-                    // 界面上会永远停在「云端还没有这个周期，等它同步上去后这批计数会自动补推」，
-                    // 而它永远等不到，因为周期根本推不上去。
+                    // 现场形态：本机周期与预设事件是从上一个班带过来的，这些 id 在云端
+                    // 已经被那个班占着。推它们永远被拒（409 foreign_row），引用它们的
+                    // 流水/打点一直回 unknown_period / unknown_counter ——
+                    // 界面上会永远停在「云端还没有这个周期（事件），等它同步上去后这批计数会自动补推」，
+                    // 而它永远等不到，因为前置对象根本推不上去。
                     //
-                    // 换编号不丢数据：行还在、引用一起改指、队列载荷也跟着改（见 PeriodRelocator）。
-                    if (outcome.ForeignPeriods.Count > 0)
-                    {
-                        foreach (var key in outcome.ForeignPeriods)
-                        {
-                            var oldId = key.StartsWith("periods:", StringComparison.Ordinal)
-                                ? key["periods:".Length..]
-                                : key;
-                            if (new PeriodRelocator(db).Relocate(oldId) is not null) relocated++;
-                        }
+                    // 换编号不丢数据：行还在、引用一起改指、队列载荷也跟着改
+                    // （见 PeriodRelocator / CounterRelocator）。
+                    var retargeted = RetargetForeignRows(outcome);
+                    relocated += retargeted;
 
-                        if (relocated > 0)
+                    // 云端说"这个班已经有同语义的预设事件了"：并过去就行，一个班只能有一条"迟到"。
+                    foreach (var (outboxId, canonicalId) in outcome.CounterAdopt)
+                    {
+                        var oldId = outboxId.StartsWith("counters:", StringComparison.Ordinal)
+                            ? outboxId["counters:".Length..]
+                            : outboxId;
+                        if (new CounterRelocator(db).Adopt(oldId, canonicalId) is not null) retargeted++;
+                    }
+
+                    if (retargeted > 0)
+                    {
                         {
                             // 刚换完编号正是最该立刻重试的时刻：这些记录还躺在退避窗口里，
                             // 让老师点一下「立即同步」就真的通，而不是再等几分钟。
@@ -516,7 +538,7 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
                                 outbox.MarkSynced(second.Done);
                                 pushed += second.Done.Count;
 
-                                // 刚被拒的那条周期已经救回来了，别再让"被云端拒收"挂在界面上
+                                // 刚被拒的那些已经救回来了，别再让"被云端拒收"挂在界面上
                                 pushError = second.Failed.Count > 0
                                     ? second.LastError ?? pushError
                                     : null;
@@ -735,6 +757,32 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
     public int Conflicts { get; private set; }
 
     /// <summary>
+    /// 云端说"这个编号属于另一个班"的条目，按前缀分派给对应的换号器。
+    ///
+    /// 现在有两类：周期（`periods:{id}`）与出厂的预设事件（`counters:{id}`）。
+    /// 后者尤其容易被忽略：三个预设事件的编号是写死的（c_late 等），
+    /// 一台机器换过班之后必然撞，而引用它们的打点只会一直回 unknown_counter。
+    /// 返回改成功的条数。
+    /// </summary>
+    private int RetargetForeignRows(PushOutcome outcome)
+    {
+        var n = 0;
+        foreach (var key in outcome.ForeignRows)
+        {
+            if (key.StartsWith("periods:", StringComparison.Ordinal))
+            {
+                if (new PeriodRelocator(db).Relocate(key["periods:".Length..]) is not null) n++;
+            }
+            else if (key.StartsWith("counters:", StringComparison.Ordinal))
+            {
+                if (new CounterRelocator(db).Relocate(key["counters:".Length..]) is not null) n++;
+            }
+        }
+
+        return n;
+    }
+
+    /// <summary>
     /// 把一页 /sync 写进本地库。顺序有讲究：先父后子，否则外键会挡。
     /// 整页一个事务：拉到一半断电，游标也不会先跑。
     /// </summary>
@@ -751,14 +799,17 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         applied += ApplyStudents(conn, tx, Ar(batch, "students"));
         applied += ApplyMembers(conn, tx, Ar(batch, "members"));
         applied += ApplyRules(conn, tx, Ar(batch, "rules"));
-        applied += ApplyCounters(conn, tx, Ar(batch, "counters"));
+        // 云端的事件编号与本机可能不同（两台机器各自换过号）：preset_key 一样就是同一件事，
+        // 拉下来的时候把引用改指到本机那份，否则打点会指向一个本机不存在的事件。
+        var counterMap = new Dictionary<string, string>(StringComparer.Ordinal);
+        applied += ApplyCounters(conn, tx, Ar(batch, "counters"), counterMap);
         applied += ApplyNotes(conn, tx, Ar(batch, "note_templates"));
         applied += ApplySchemes(conn, tx, Ar(batch, "schemes"));
         applied += ApplyExams(conn, tx, Ar(batch, "exams"));
         applied += ApplyScores(conn, tx, Ar(batch, "exam_scores"));
         applied += ApplyWeights(conn, tx, Ar(batch, "scheme_weights"));
         applied += ApplyEntries(conn, tx, Ar(batch, "entries"));
-        applied += ApplyTicks(conn, tx, Ar(batch, "counter_ticks"));
+        applied += ApplyTicks(conn, tx, Ar(batch, "counter_ticks"), counterMap);
         applied += ApplyTombstones(conn, tx, batch["deleted"] as JsonObject);
 
         tx.Commit();
@@ -773,6 +824,12 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         foreach (var row in rows)
         {
             if (row is not JsonObject o) continue;
+
+            // 云端这条周期本地没有，而本机还留着一条同名的空壳（出厂种的，或者换号前那条）：
+            // 先收掉它，否则老师会看到两个「第 1 周期」，以为分数被拆到了两处。
+            // **只在完全没有任何引用时才删** —— 有流水/考试/打点的一律留着，
+            // 宁可显示两条也不动数据。
+            ReclaimEmptyNamesake(conn, tx, S(o, "id"), S(o, "name"));
 
             // 本地已有 active 周期时，远端那个 active 进不来（uq_period_active 是全局唯一）。
             // 先把本地的归档掉 —— 远端说谁是当前周期，就以远端为准。
@@ -794,6 +851,21 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
             n++;
         }
         return n;
+    }
+
+    /// <summary>
+    /// 删掉"同名但什么都没引用"的周期。换过编号之后，另一端本机那条旧号周期就是这种空壳。
+    /// </summary>
+    private static void ReclaimEmptyNamesake(SqliteConnection conn, SqliteTransaction tx, string? id, string? name)
+    {
+        if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(name)) return;
+        Database.Exec(conn, tx, """
+            DELETE FROM periods
+             WHERE id <> $id AND name = $name
+               AND NOT EXISTS (SELECT 1 FROM entries WHERE period_id = periods.id)
+               AND NOT EXISTS (SELECT 1 FROM counter_ticks WHERE period_id = periods.id)
+               AND NOT EXISTS (SELECT 1 FROM exams WHERE period_id = periods.id)
+            """, ("$id", id), ("$name", name));
     }
 
     private int ApplyStudents(SqliteConnection conn, SqliteTransaction tx, JsonArray rows)
@@ -895,7 +967,8 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
         return n;
     }
 
-    private int ApplyCounters(SqliteConnection conn, SqliteTransaction tx, JsonArray rows)
+    private int ApplyCounters(SqliteConnection conn, SqliteTransaction tx, JsonArray rows,
+        Dictionary<string, string> remap)
     {
         var n = 0;
         foreach (var row in rows)
@@ -920,7 +993,18 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
             {
                 // 两台机器各自建了同一类事件（预设的 preset_key 一样，id 不一样）。
                 // 和备注模板同理：键一样就是同一件事，留着已有的那条，别让整页拉取翻车。
+                //
+                // 但光跳过不够：这一页里的打点引用的是**云端那个 id**，跳过之后本机没有它，
+                // 打点就成了孤儿（界面上"迟到"点了几次查不到名字）。所以记下映射，
+                // 落打点时改指到本机这一份。
                 Conflicts++;
+                var remoteId = S(o, "id");
+                var preset = S(o, "preset_key");
+                if (!string.IsNullOrEmpty(remoteId) && !string.IsNullOrEmpty(preset) &&
+                    LocalCounterIdByPreset(conn, tx, preset) is { Length: > 0 } localId)
+                {
+                    remap[remoteId] = localId;
+                }
                 continue;
             }
             n++;
@@ -932,7 +1016,8 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
     /// 事件打点：只追加，按 id 幂等（重拉不会重复计数）。
     /// 不写 seq —— 那是本地自增列，把云端的值抄过来必然撞主键。
     /// </summary>
-    private static int ApplyTicks(SqliteConnection conn, SqliteTransaction tx, JsonArray rows)
+    private static int ApplyTicks(SqliteConnection conn, SqliteTransaction tx, JsonArray rows,
+        Dictionary<string, string> remap)
     {
         var n = 0;
         foreach (var row in rows)
@@ -946,7 +1031,7 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
                   (id, counter_id, student_id, period_id, value, note, operator_id, operator_name, occurred_at, created_at)
                 VALUES ($id, $c, $s, $p, $v, $note, $op, $opName, $at, $created)
                 """,
-                ("$id", id), ("$c", S(o, "counter_id")), ("$s", S(o, "student_id")), ("$p", S(o, "period_id")),
+                ("$id", id), ("$c", CounterRef(o, remap)), ("$s", S(o, "student_id")), ("$p", S(o, "period_id")),
                 ("$v", L(o, "value") ?? 0), ("$note", S(o, "note")),
                 ("$op", S(o, "operator_id") ?? "unknown"), ("$opName", S(o, "operator_name") ?? "未知"),
                 ("$at", L(o, "occurred_at")), ("$created", L(o, "created_at")));

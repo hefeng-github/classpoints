@@ -1,4 +1,3 @@
-using System.Text.Json.Nodes;
 using ClassPoints.Core;
 using Microsoft.Data.Sqlite;
 
@@ -79,82 +78,13 @@ public sealed class PeriodRelocator(Database db)
         return reader.Read() ? Mappers.Period(reader) : null;
     }
 
-    /// <summary>队列里所有指向旧编号的载荷改成新编号，并让它们立刻重试。</summary>
+    /// <summary>队列收尾：旧条目作废、载荷改指、退避清零（见 <see cref="OutboxRewriter"/>）。</summary>
     private static void RewriteQueue(SqliteConnection conn, SqliteTransaction tx, string oldId, string newId)
     {
         // 旧周期的推送条目本身没有意义了（推上去只会再被拒一次）；
-        // 新周期的条目下一轮由 QueuePeriodsForPendingEntries 自动补上。
-        Database.Exec(conn, tx, "DELETE FROM outbox WHERE id = $id", ("$id", $"periods:{oldId}"));
-
-        List<(string Id, string Payload)> rows = [];
-        using (var cmd = conn.CreateCommand())
-        {
-            cmd.Transaction = tx;
-            cmd.CommandText = "SELECT id, payload FROM outbox";
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read()) rows.Add((reader.GetString(0), reader.GetString(1)));
-        }
-
-        foreach (var (id, payload) in rows)
-        {
-            if (Replace(payload, oldId, newId) is not { } updated) continue;
-            Database.Exec(conn, tx, "UPDATE outbox SET payload = $payload WHERE id = $id",
-                ("$payload", updated), ("$id", id));
-        }
-
-        // 这些记录大多已经退避到几分钟之后了。编号刚换好正是最该马上重试的时刻，
-        // 让老师点一下「立即同步」就真的通，而不是等下一个退避窗口。
-        Database.Exec(conn, tx, "UPDATE outbox SET next_at = $now, attempts = 0", ("$now", Clock.NowMs()));
-    }
-
-    /// <summary>把 JSON 里所有 periodId / period_id 等于旧值的字段换掉；没改返回 null。</summary>
-    private static string? Replace(string payload, string oldId, string newId)
-    {
-        JsonNode? node;
-        try
-        {
-            node = JsonNode.Parse(payload);
-        }
-        catch (Exception)
-        {
-            return null;
-        }
-
-        if (node is null || !ReplaceIn(node, oldId, newId)) return null;
-        return node.ToJsonString();
-    }
-
-    private static bool ReplaceIn(JsonNode node, string oldId, string newId)
-    {
-        var changed = false;
-        switch (node)
-        {
-            case JsonObject obj:
-                // 先取键快照：循环里会改 obj
-                foreach (var key in obj.Select(pair => pair.Key).ToList())
-                {
-                    var child = obj[key];
-                    if (child is JsonValue value && value.TryGetValue<string>(out var text) &&
-                        (key == "periodId" || key == "period_id") && text == oldId)
-                    {
-                        obj[key] = newId;
-                        changed = true;
-                    }
-                    else if (child is not null && ReplaceIn(child, oldId, newId))
-                    {
-                        changed = true;
-                    }
-                }
-                break;
-
-            case JsonArray array:
-                foreach (var child in array)
-                {
-                    if (child is not null && ReplaceIn(child, oldId, newId)) changed = true;
-                }
-                break;
-        }
-
-        return changed;
+        // 新周期的条目下一轮由 QueueRefsForPendingItems 自动补上。
+        OutboxRewriter.Drop(conn, tx, $"periods:{oldId}");
+        OutboxRewriter.Retarget(conn, tx, ["periodId", "period_id"], oldId, newId);
+        OutboxRewriter.ResetBackoff(conn, tx);
     }
 }

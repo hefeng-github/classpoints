@@ -331,8 +331,15 @@ internal static class SyncTests
 
         var fPeriod = f.Periods.Rollover();
         _ = await f.Sync.CreateClassAsync(baseUrl, "隔壁班", "王老师", "778899", "REC-9999", "desk");
+
+        // 出厂的「迟到」是直接写本地表、从不入队的（这台机器上也不会入队）——
+        // 这里显式推一次，让 f 班在云端占住 c_late 这个编号。
+        // 不占的话这个用例就只在"库里有历史残留"时才触发撞号，干净库上永远假绿。
+        var fLate = f.Counters.ListAll().First(x => x.Id == "c_late");
+        _ = f.Counters.Save(fLate);
+
         var pushF = await f.Sync.RunOnceAsync();
-        check("另一个班先把自己的周期推上去", pushF.Ok && f.Outbox.Count() == 0,
+        check("另一个班先把自己的周期与预设事件推上去", pushF.Ok && f.Outbox.Count() == 0,
             $"ok={pushF.Ok} outbox={f.Outbox.Count()} {pushF.Error}");
 
         await g.Sync.PairAsync(baseUrl, firstClass.CreatedCode!, "654321", "desk");
@@ -376,7 +383,8 @@ internal static class SyncTests
         }
 
         var relocatedReport = await g.Sync.RunOnceAsync();
-        check("撞了编号的周期被识别出来并换了一个", relocatedReport.Relocated == 1,
+        // 两个：那个撞车的周期，以及出厂的「迟到」（旧班先占了 c_late）。
+        check("撞了编号的周期与预设事件都被识别出来并换了号", relocatedReport.Relocated == 2,
             $"relocated={relocatedReport.Relocated} err={relocatedReport.Error}");
         check("换完编号当轮就推完了，不留待推送", relocatedReport.Ok && g.Outbox.Count() == 0,
             $"ok={relocatedReport.Ok} outbox={g.Outbox.Count()} err={relocatedReport.Error}");
@@ -392,6 +400,16 @@ internal static class SyncTests
             "SELECT period_id FROM counter_ticks WHERE id = 'tick-stale'") as string ?? "";
         check("打点也跟着改指到新编号", tickPeriod.Length > 0 && tickPeriod != fPeriod.Id, tickPeriod);
 
+        // 预设事件的编号是写死的（c_late），旧班先占住之后同样推不上去。
+        // 这条钉住"它也换了号"：不换的话上面那条打点永远卡在 unknown_counter。
+        var gLateId = Database.Scalar(connG2,
+            "SELECT id FROM counters WHERE preset_key = 'std.late'") as string ?? "";
+        check("预设事件的编号也换掉了（否则打点永远推不上去）",
+            gLateId.Length > 0 && gLateId != "c_late", gLateId);
+        check("换号后仍然保住 preset_key（出厂种子不会又种一份）",
+            Convert.ToInt32(Database.Scalar(connG2,
+                "SELECT COUNT(*) FROM counters WHERE preset_key = 'std.late'")) == 1);
+
         // 另一端拉一遍：云端确实有了这个周期与那条打点，而不是"本机自己觉得推上去了"
         using var h = new Device(Path.Combine(root, "h"));
         await h.Sync.PairAsync(baseUrl, firstClass.CreatedCode!, "654321", "desk");
@@ -404,9 +422,20 @@ internal static class SyncTests
         var tickInH = Convert.ToInt32(Database.Scalar(connH,
             "SELECT COUNT(*) FROM counter_ticks WHERE id = 'tick-stale'"));
         check("那条打点也真的上云了（说明事件定义被自动补推了）", tickInH == 1, tickInH.ToString());
-        var counterInH = Convert.ToInt32(Database.Scalar(connH,
-            "SELECT COUNT(*) FROM counters WHERE id = 'c_late'"));
-        check("另一端也拿到了出厂的那个事件定义", counterInH == 1, counterInH.ToString());
+        // 另一端本机也有出厂的「迟到」（id 是 c_late），云端那条是换过号的 ——
+        // 拉下来必须按 preset_key 合并成一份，并把打点改指到本机这份。
+        // 不合并的话：本地一条 c_late、云端又进来一条，界面上就是两个"迟到"。
+        var lateInH = Convert.ToInt32(Database.Scalar(connH,
+            "SELECT COUNT(*) FROM counters WHERE preset_key = 'std.late'"));
+        check("另一端只留一条「迟到」（按预设键合并，不重复）", lateInH == 1, lateInH.ToString());
+        var tickCounterInH = Database.Scalar(connH,
+            "SELECT counter_id FROM counter_ticks WHERE id = 'tick-stale'") as string ?? "";
+        check("那条打点指向本机认的那条事件，不是云端那个编号",
+            tickCounterInH.Length > 0 &&
+            Convert.ToInt32(Database.Scalar(connH,
+                "SELECT COUNT(*) FROM counters WHERE id = $id AND preset_key = 'std.late'",
+                ("$id", tickCounterInH))) == 1,
+            tickCounterInH);
 
         Console.WriteLine($"  . 测试目录：{root}");
     }
