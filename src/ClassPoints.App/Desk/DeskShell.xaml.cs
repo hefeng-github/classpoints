@@ -74,6 +74,7 @@ public sealed partial class DeskShell : UserControl, IShellHost
         // 而"待同步 9 条"一直挂着，老师会以为是网络慢
         Services.Pump.PairingNeeded += OnPairingNeeded;
         Services.Pump.AutoRepaired += OnAutoRepaired;
+        Services.Pump.PeriodRelocated += OnPeriodRelocated;
         RefreshUpdateBadge();
 
         if (Services.Settings.UpdateAutoCheck)
@@ -86,6 +87,7 @@ public sealed partial class DeskShell : UserControl, IShellHost
             UpdateCenter.Current.Found -= OnUpdateFound;
             Services.Pump.PairingNeeded -= OnPairingNeeded;
             Services.Pump.AutoRepaired -= OnAutoRepaired;
+            Services.Pump.PeriodRelocated -= OnPeriodRelocated;
             Services.Reader.Stop();
         };
     }
@@ -264,6 +266,14 @@ public sealed partial class DeskShell : UserControl, IShellHost
     /// <summary>自己接上了也要吭一声 —— 否则上一秒"待同步 9 条"、下一秒清零，看着像界面在乱跳。</summary>
     private void OnAutoRepaired() =>
         Toast("同步凭据已自动续上，积压的记录正在补推", 6);
+
+    /// <summary>
+    /// 周期编号在云端属于另一个班（换过班、或重复建班留下的），自动换了个新编号重推。
+    /// 说一句的原因是：老师刚才还在看「云端还没有这个周期」，突然就好了，而且"换编号"关系到
+    /// 他看到的是不是同一个周期 —— 不讲清楚会以为是另一回事。
+    /// </summary>
+    private void OnPeriodRelocated(int count) =>
+        Toast($"有 {count} 个周期的编号与云端另一个班冲突，已自动换新编号并重新推送", 10);
 
     private void OnUpdateFound(UpdateManifest manifest)
     {

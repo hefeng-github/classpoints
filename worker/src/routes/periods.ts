@@ -55,6 +55,22 @@ export async function upsertPeriod(env: Env, request: Request): Promise<Response
     "SELECT id FROM periods WHERE class_id = ? AND status = 'active'",
   ).bind(claims.cid).first<{ id: string }>();
 
+  // 这个 id 已经属于别的班？那就一个字节都别写。
+  //
+  // periods.id 是全局主键，ON CONFLICT 的 `class_id = excluded.class_id` 守卫会把它挡在门外，
+  // 但**挡掉之后照样会写一条 changelog**，拉取端拿到一个查不到的行，会把本地那个周期当成被删了。
+  // 现场就是这么卡住的：本机周期 id 是从上一个班带过来的，推给新班永远写不进去，
+  // 而引用它的打点一直回 unknown_period —— 界面上永远「云端还没有这个周期，等它同步上去」。
+  //
+  // 必须写在归档语句之前：先归档再发现写不进去，这个班就没有当前周期了。
+  const owner = await env.DB.prepare('SELECT class_id FROM periods WHERE id = ?')
+    .bind(id)
+    .first<{ class_id: string }>();
+  if (owner && owner.class_id !== claims.cid) {
+    throw new HttpError(409, 'foreign_row',
+      '这个周期在云端属于另一个班（同一份数据只能呆在一个班），没有写进这个班；客户端会换一个新编号重推');
+  }
+
   const takeOver = body.action === 'rollover' || !existing || existing.id === id;
   const status = dto.status === 'archived' ? 'archived' : takeOver ? 'active' : 'archived';
 

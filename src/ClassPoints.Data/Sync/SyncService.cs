@@ -39,6 +39,14 @@ public sealed record SyncReport(
     /// <summary>拉取时有多少行因为本地唯一项撞车而按云端为准合并了（见 SyncService.Conflicts）。</summary>
     public int Conflicts { get; init; }
 
+    /// <summary>
+    /// 这一轮给几个周期换了新编号（编号在云端属于另一个班）。见 <see cref="PeriodRelocator"/>。
+    ///
+    /// 它不是错误，但必须让老师知道：界面上那些"云端还没有这个周期"的提示
+    /// 是靠换编号才消掉的，不说的话下次看到"待推送 0 条、但历史没上去"会一头雾水。
+    /// </summary>
+    public int Relocated { get; init; }
+
     public static SyncReport Skipped(string reason) => new(false, reason, 0, 0, 0, 0, DateTime.Now);
 }
 
@@ -333,9 +341,10 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
     /// 有流水要推 ⇒ 队列里必须有它的周期。已经在队列里的不重复加（幂等 key），
     /// 所以每批最多多推一条 upsert，云端按 id 覆盖，无副作用。
     /// </summary>
-    private void QueuePeriodsForPendingEntries()
+    private void QueueRefsForPendingItems()
     {
         List<string> periodIds = [];
+        List<string> counterIds = [];
         try
         {
             using var conn = db.Open();
@@ -348,7 +357,8 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
                     if (JsonNode.Parse(reader.GetString(0)) is not JsonObject node) continue;
                     // 流水是 {entry:{…}}，打点是 {tick:{…}}
                     var row = node["entry"] as JsonObject ?? node["tick"] as JsonObject ?? node;
-                    if (row["periodId"]?.GetValue<string>() is { Length: > 0 } id) periodIds.Add(id);
+                    if (row["periodId"]?.GetValue<string>() is { Length: > 0 } pid) periodIds.Add(pid);
+                    if (row["counterId"]?.GetValue<string>() is { Length: > 0 } cid) counterIds.Add(cid);
                 }
             }
 
@@ -359,11 +369,31 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
                 SyncOutbox.EnqueueIfAbsent(conn, null, $"periods:{id}", "period",
                     new { action = "upsert", period });
             }
+
+            // 事件定义也要补：出厂的几个预设事件是直接写进本地表的，没走过 outbox。
+            // 一个人换了班、或者配对之前就已经在记分，云端根本没有这些 counter，
+            // 打点推上去只会一直回 unknown_counter —— 和周期那个坑一模一样。
+            foreach (var id in counterIds.Distinct().ToList())
+            {
+                var counter = ReadCounter(conn, id);
+                if (counter is null) continue;
+                SyncOutbox.EnqueueIfAbsent(conn, null, $"counters:{id}", "counter",
+                    new { action = "upsert", counter });
+            }
         }
         catch (Exception)
         {
-            // 补周期失败不该挡住这一轮推送：entries 那边会拿到明确的 422 再显示给老师
+            // 补前置失败不该挡住这一轮推送：entries 那边会拿到明确的 422 再显示给老师
         }
+    }
+
+    private static Counter? ReadCounter(SqliteConnection conn, string id)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT * FROM counters WHERE id = $id";
+        cmd.Parameters.AddWithValue("$id", id);
+        using var reader = cmd.ExecuteReader();
+        return reader.Read() ? Mappers.Counter(reader) : null;
     }
 
     private static Period? ReadPeriod(SqliteConnection conn, string id)
@@ -396,6 +426,7 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
 
             _client = new SyncClient(credentials.BaseUrl, credentials.Access);
             var pushed = 0;
+            var relocated = 0;
             string? pushError = null;
 
             // ---- 推 ----
@@ -410,7 +441,7 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
             else
             {
                 // 先把流水引用的周期排上队：云端 entries 有外键，周期不在那儿整批都推不上去
-                QueuePeriodsForPendingEntries();
+                QueueRefsForPendingItems();
 
                 var due = outbox.Due(200);
                 if (due.Count > 0)
@@ -446,6 +477,56 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
                         : outcome.Dropped.Count > 0
                             ? $"有 {outcome.Dropped.Count} 条记录被云端拒收，已从待推送里移出（{outcome.LastError}）"
                             : null;
+
+                    // ---- 周期编号在云端属于别的班：换一个再推 ----
+                    //
+                    // 现场形态：本机周期是从上一个班带过来的，这个 id 在云端已经属于那个班。
+                    // 推它永远被拒（409 foreign_row），引用它的打点一直 unknown_period ——
+                    // 界面上会永远停在「云端还没有这个周期，等它同步上去后这批计数会自动补推」，
+                    // 而它永远等不到，因为周期根本推不上去。
+                    //
+                    // 换编号不丢数据：行还在、引用一起改指、队列载荷也跟着改（见 PeriodRelocator）。
+                    if (outcome.ForeignPeriods.Count > 0)
+                    {
+                        foreach (var key in outcome.ForeignPeriods)
+                        {
+                            var oldId = key.StartsWith("periods:", StringComparison.Ordinal)
+                                ? key["periods:".Length..]
+                                : key;
+                            if (new PeriodRelocator(db).Relocate(oldId) is not null) relocated++;
+                        }
+
+                        if (relocated > 0)
+                        {
+                            // 刚换完编号正是最该立刻重试的时刻：这些记录还躺在退避窗口里，
+                            // 让老师点一下「立即同步」就真的通，而不是再等几分钟。
+                            QueueRefsForPendingItems();
+                            var retry = outbox.Due(200);
+                            if (retry.Count > 0)
+                            {
+                                var second = await _client.PushAsync(retry, ct);
+                                outbox.RemoveMany(second.Done);
+                                outbox.RemoveMany(second.Dropped);
+                                foreach (var id in second.Failed)
+                                {
+                                    var item = retry.FirstOrDefault(i => i.Id == id);
+                                    if (item is not null) outbox.Backoff(item);
+                                }
+
+                                outbox.MarkSynced(second.Done);
+                                pushed += second.Done.Count;
+
+                                // 刚被拒的那条周期已经救回来了，别再让"被云端拒收"挂在界面上
+                                pushError = second.Failed.Count > 0
+                                    ? second.LastError ?? pushError
+                                    : null;
+                            }
+                            else
+                            {
+                                pushError = null;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -487,6 +568,7 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
             {
                 ReadOnly = IsReadOnly,
                 Conflicts = Conflicts,
+                Relocated = relocated,
             };
         }
         catch (SyncException ex) when (ex.IsAuthFailure)

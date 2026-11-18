@@ -78,6 +78,7 @@ public sealed partial class BoardShell : UserControl, IShellHost
         Session.Changed += OnSessionChanged;
         Services.Pump.PairingNeeded += OnPairingNeeded;
         Services.Pump.AutoRepaired += OnAutoRepaired;
+        Services.Pump.PeriodRelocated += OnPeriodRelocated;
         _tick.Tick += OnTick;
         _tick.Start();
 
@@ -116,6 +117,9 @@ public sealed partial class BoardShell : UserControl, IShellHost
     /// <summary>凭据自己接上了也留一句：教室里没人守着，出过什么事都要能从这块屏上看出来。</summary>
     private void OnAutoRepaired() => Toast("同步凭据已自动续上", 5);
 
+    /// <summary>周期编号与云端另一个班撞了，已自动换新编号重推。大屏只留一句短的。</summary>
+    private void OnPeriodRelocated(int count) => Toast($"周期编号冲突，已自动换新编号重新同步（{count} 个）", 6);
+
     /// <summary>有新版本就弹一次（同一版只弹一次）。大屏前面通常没人守着，弹窗比角标靠谱。</summary>
     private void OnUpdateFound(UpdateManifest manifest) => UpdatePrompt.NotifyIfNew(manifest);
 
@@ -125,6 +129,7 @@ public sealed partial class BoardShell : UserControl, IShellHost
         Session.Changed -= OnSessionChanged;
         Services.Pump.PairingNeeded -= OnPairingNeeded;
         Services.Pump.AutoRepaired -= OnAutoRepaired;
+        Services.Pump.PeriodRelocated -= OnPeriodRelocated;
         UpdateCenter.Current.Found -= OnUpdateFound;
         Services.Reader.CardDetected -= OnCardDetected;
         Services.Reader.Stop();

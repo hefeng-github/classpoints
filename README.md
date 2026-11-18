@@ -338,6 +338,17 @@ curl -i https://classpoints.你的域名.com/api/v1/ping
   重装系统会变，换 Windows 用户不会变。
 - 管理台是 Worker 直接吐的一个页面，没有外链、没有第三方脚本，token 只放在标签页里。
 
+管理台顶上还有一块「总览」：在册学生、本周期与累计流水、考试、事件打点、在线设备，
+底下一行是周期数（云端只留最近 4 个）、云端变更条数与最近一条流水/设备活动的时间。
+数据不对时先看这里 —— "云端明明有，页面说 0"与"本机记了、云端没有"是两件事。
+
+再往下的「班级管理」有三件事：
+
+- **改云端显示名**：只影响管理台与接口返回的名字。客户端里的班名在「设置 → 常用 → 班级信息」改，两台各自独立。
+- **清理更早的周期**：平时换周期时会自动清，这里给不想等的人一个按钮。删的是云端副本，每台设备的本地历史各自保留。
+- **注销这个班**：要重新输入班级码确认。云端标记注销并立刻断开所有设备，业务数据留在库里（可人工恢复）。
+  建重了、建错了一个班时用它收掉多余的那个；注销之后这个班级码再也配不上对。
+
 ### 关于免费额度
 
 一个 45 人的班，一学年大约 3000 条流水，边写边同步：
@@ -374,6 +385,7 @@ npx wrangler deploy --config wrangler.deploy.toml
 | `d1 migrations apply` 报找不到库 | 配置里的 `database_id` 还是占位符 |
 | 教室那台一直"同步失败"，开发机好的 | 用的 `*.workers.dev` 域名被墙，绑自有域名 |
 | 建班/配对报 500，日志里是 `Pbkdf2 failed: iteration counts above 100000` | 迭代数撞了 Workers 的硬上限。见下面「10 万轮这条线」 |
+| 设置页一直显示「云端还没有这个周期（…），等它同步上去后这批计数会自动补推」 | 这个周期编号在云端属于**另一个班**（换过班、或重复建过班）。1.3.9 起客户端会自动换新编号重推；旧版本只能拿**原来那个班**的码重新配对 |
 | 大屏配对上了，可名单是空的、电脑这边「待推送 0 条」 | 多半是这台电脑建过**两次**班：数据属于先那个班。用那个班的班级码「配对到已有班级」（设定页会记着上一次的码），别用后来那个空班 |
 
 ### 10 万轮这条线（PBKDF2）
@@ -448,8 +460,10 @@ worker/                  Cloudflare Worker + D1 同步中枢（TypeScript，不�
   migrations/            D1 迁移（上过线之后只能加 0002_xxx.sql）
   src/admin.ts           网页管理台（单文件页面，零依赖零外链）
   src/routes/grants.ts   设备白名单：指纹闸门、待审队列、审批与撤销
-  test/smoke.mjs         接口契约测试（92 项，含多班隔离与安全用例）
+  src/routes/overview.ts 班级总览与管理：统计、改显示名、清理旧周期、注销
+  test/smoke.mjs         接口契约测试（109 项，含多班隔离与安全用例）
   test/grants.mjs        设备白名单回归（43 项，待审只读 → 批准升级 → 撤销 → 切回 open）
+  test/overview.mjs      总览与管理回归（29 项，数字对账、改名校验、注销后配对 404）
 installer/               Inno Setup 安装脚本 + 简体中文语言包
 tools/
   seed/                  演示数据生成器
@@ -570,15 +584,16 @@ scripts/prune-cnb-releases.sh    清理 CNB 旧版本（保留 stable）
 ## 七、测试
 
 ```bash
-# 1) Core + Data + 更新单测 449 项（纯内存，无需任何服务）
+# 1) Core + Data + 更新单测 474 项（纯内存，无需任何服务）
 dotnet run --project tools/tests
 
-# 2) Worker 接口契约 109 项 + 设备白名单 43 项（需要本地 wrangler dev 在 8787）
+# 2) Worker 接口契约 109 项 + 设备白名单 43 项 + 总览与管理 29 项（需要本地 wrangler dev 在 8787）
 cd worker && npx wrangler dev --port 8787 --local
 node test/smoke.mjs
 node test/grants.mjs
+node test/overview.mjs
 
-# 3) 端到端同步 39 项（C# 客户端真连 Worker，两台设备互推互拉）
+# 3) 端到端同步 537 项（C# 客户端真连 Worker，两台设备互推互拉）
 dotnet run --project tools/tests -- --sync http://127.0.0.1:8787
 
 # 4) 可选：真连一个更新源，确认清单与安装包能匿名下载、哈希对得上
@@ -587,7 +602,7 @@ dotnet run --project tools/tests -- --sync http://127.0.0.1:8787
 dotnet run --project tools/tests -- --update-feed http://127.0.0.1:8892/demo/dist
 ```
 
-合计 **640 项断言**（第 4 项另加 3 项，用于发布前核对真实产物）。
+合计 **1192 项断言**（第 4 项另加 3 项，用于发布前核对真实产物）。
 
 Worker 那 109 项里有 17 项专打多班隔离：两个班同时存在，学号 `01` 各算各的，
 B 拉到 A 的学生/流水/周期/考试都是 0 条，B 删 A 的行返回 200 但不改一行，

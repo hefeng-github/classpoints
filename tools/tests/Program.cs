@@ -87,6 +87,8 @@ internal static class Program
         SyncPushTests.Run(Check);
         Section("同步凭据");
         SyncStoreTests.Run(Check);
+        Section("周期换编号");
+        PeriodRelocatorTests.Run(Check);
         Section("本机重置");
         ResetTests.Run(Check);
         Section("数据目录");

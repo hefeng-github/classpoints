@@ -27,6 +27,17 @@ public sealed class SyncPump(AppServices services)
     /// <summary>拉取时按云端为准合并掉的行数（学号/标签重名）。只在设置页露出来，不打扰记分。</summary>
     public int Conflicts { get; private set; }
 
+    /// <summary>这一轮给几个周期换了新编号（编号在云端属于另一个班）。0 表示没有这回事。</summary>
+    public int LastRelocated { get; private set; }
+
+    /// <summary>
+    /// 周期编号撞上别的班、已经自动换新编号重推。带的是换了几个。
+    ///
+    /// 必须说一句：老师上一眼看到的是「云端还没有这个周期，等它同步上去」，
+    /// 过一会儿自己好了却不说，很像系统在抽风；而且"换编号"这件事关乎他的周期还是不是同一个。
+    /// </summary>
+    public event Action<int>? PeriodRelocated;
+
     /// <summary>云端不认这台机器的凭据了。界面据此给"重新配对"的入口 —— 这条路只能人来走。</summary>
     public bool NeedsPairing { get; private set; }
 
@@ -135,6 +146,14 @@ public sealed class SyncPump(AppServices services)
             LastPushed += report.Pushed;
             LastPulled += report.Pulled;
             Conflicts += report.Conflicts;
+            LastRelocated = report.Relocated;
+            if (report.Relocated > 0)
+            {
+                var count = report.Relocated;
+                var queue = _ui ?? DispatcherQueue.GetForCurrentThread();
+                if (queue is null) PeriodRelocated?.Invoke(count);
+                else queue.TryEnqueue(() => PeriodRelocated?.Invoke(count));
+            }
 
             // 状态条上的"本机存储 / 已同步 / 离线"不能各页面各猜一套：
             // 以前三处各存一份判断，结果设置页说"已连接"、侧栏说"本机存储"。

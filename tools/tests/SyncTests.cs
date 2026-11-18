@@ -320,6 +320,94 @@ internal static class SyncTests
             $"ok={pullBack.Ok} pulled={pullBack.Pulled} names={string.Join("/", namesInE)}");
         check("本机数据一条没少", c.Students.ListActive().Count >= 2, c.Students.ListActive().Count.ToString());
 
+        // ---- 周期编号在云端属于另一个班：自动换编号重推 ----
+        //
+        // 现场形态：老师换过班，本机周期 id 是从上一个班带过来的。推它永远被云端挡住
+        // （409 foreign_row），引用它的打点一直 unknown_period —— 设置页上永远挂着
+        // 「云端还没有这个周期，等它同步上去后这批计数会自动补推」，而它永远等不到。
+        // 这里把那条路整段走一遍：换成新编号、载荷跟着改、当轮就重推成功。
+        using var f = new Device(Path.Combine(root, "f"));   // 拥有那个编号的"另一个班"
+        using var g = new Device(Path.Combine(root, "g"));   // 换过班之后这台机器
+
+        var fPeriod = f.Periods.Rollover();
+        _ = await f.Sync.CreateClassAsync(baseUrl, "隔壁班", "王老师", "778899", "REC-9999", "desk");
+        var pushF = await f.Sync.RunOnceAsync();
+        check("另一个班先把自己的周期推上去", pushF.Ok && f.Outbox.Count() == 0,
+            $"ok={pushF.Ok} outbox={f.Outbox.Count()} {pushF.Error}");
+
+        await g.Sync.PairAsync(baseUrl, firstClass.CreatedCode!, "654321", "desk");
+        var gPull = await g.Sync.RunOnceAsync();
+        check("换过班的那台配对上来、先拉到名单", gPull.Ok && g.Students.ListActive().Count > 0,
+            $"ok={gPull.Ok} students={g.Students.ListActive().Count}");
+
+        // 用出厂预设的事件（c_late）：它是直接写进本地表、从没走过 outbox 的那种 ——
+        // 换班之后云端根本没有它，打点推上去只会一直回 unknown_counter。
+        // 这条也在验证"前置对象由补推负责"这件事。
+        var gCounter = g.Counters.ListAll().First(x => x.Id == "c_late");
+        check("预设事件确实没在待推送里（它从没走过 outbox）",
+            g.Outbox.Count() == 0, g.Outbox.Count().ToString());
+
+        var gStudent = g.Students.ListActive().First();
+        var staleNow = Clock.NowMs();
+        using (var connG = g.Db.Open())
+        using (var txG = connG.BeginTransaction())
+        {
+            // 这条周期的编号在云端已经属于 f 班 —— 正是现场那种"从上一个班带过来的数据"
+            Database.Exec(connG, txG, """
+                INSERT INTO periods (id, name, term_key, start_at, end_at, status, created_at)
+                VALUES ($id, '旧班周期', '2026-AUT', $now, NULL, 'archived', $now)
+                """, ("$id", fPeriod.Id), ("$now", staleNow));
+
+            Database.Exec(connG, txG, """
+                INSERT INTO counter_ticks (id, counter_id, student_id, period_id, value, operator_id, operator_name, occurred_at, created_at)
+                VALUES ('tick-stale', $counter, $student, $period, 1, 'm1', '老师', $now, $now)
+                """, ("$counter", gCounter.Id), ("$student", gStudent.Id), ("$period", fPeriod.Id), ("$now", staleNow));
+
+            Database.Exec(connG, txG, """
+                INSERT INTO outbox (id, kind, payload, attempts, next_at, created_at)
+                VALUES ('tick-stale', 'tick', $payload, 4, $now, $now)
+                """,
+                ("$payload", "{\"action\":\"tick\",\"tick\":{\"id\":\"tick-stale\",\"counterId\":\"" + gCounter.Id +
+                            "\",\"studentId\":\"" + gStudent.Id + "\",\"periodId\":\"" + fPeriod.Id +
+                            "\",\"value\":1,\"operatorId\":\"m1\",\"operatorName\":\"老师\",\"occurredAt\":" + staleNow +
+                            ",\"createdAt\":" + staleNow + "}}"),
+                ("$now", staleNow));
+            txG.Commit();
+        }
+
+        var relocatedReport = await g.Sync.RunOnceAsync();
+        check("撞了编号的周期被识别出来并换了一个", relocatedReport.Relocated == 1,
+            $"relocated={relocatedReport.Relocated} err={relocatedReport.Error}");
+        check("换完编号当轮就推完了，不留待推送", relocatedReport.Ok && g.Outbox.Count() == 0,
+            $"ok={relocatedReport.Ok} outbox={g.Outbox.Count()} err={relocatedReport.Error}");
+
+        using var connG2 = g.Db.Open();
+        var staleRows = Convert.ToInt32(Database.Scalar(connG2,
+            "SELECT COUNT(*) FROM periods WHERE id = $id", ("$id", fPeriod.Id)));
+        check("本地不再留着那个撞车的周期编号", staleRows == 0, staleRows.ToString());
+        var renamed = Convert.ToInt32(Database.Scalar(connG2,
+            "SELECT COUNT(*) FROM periods WHERE name = '旧班周期' AND id <> $id", ("$id", fPeriod.Id)));
+        check("周期本身还在（只换了编号）", renamed == 1, renamed.ToString());
+        var tickPeriod = Database.Scalar(connG2,
+            "SELECT period_id FROM counter_ticks WHERE id = 'tick-stale'") as string ?? "";
+        check("打点也跟着改指到新编号", tickPeriod.Length > 0 && tickPeriod != fPeriod.Id, tickPeriod);
+
+        // 另一端拉一遍：云端确实有了这个周期与那条打点，而不是"本机自己觉得推上去了"
+        using var h = new Device(Path.Combine(root, "h"));
+        await h.Sync.PairAsync(baseUrl, firstClass.CreatedCode!, "654321", "desk");
+        await h.Sync.RunOnceAsync();
+        var hPeriods = h.Periods.Archived().Concat(h.Periods.Active() is { } act ? [act] : Array.Empty<Period>()).ToList();
+        var hasRenamedPeriod = hPeriods.Any(p => p.Name == "旧班周期");
+        check("另一台机器拉到了换过编号的周期", hasRenamedPeriod,
+            string.Join("/", hPeriods.Select(p => p.Name)));
+        using var connH = h.Db.Open();
+        var tickInH = Convert.ToInt32(Database.Scalar(connH,
+            "SELECT COUNT(*) FROM counter_ticks WHERE id = 'tick-stale'"));
+        check("那条打点也真的上云了（说明事件定义被自动补推了）", tickInH == 1, tickInH.ToString());
+        var counterInH = Convert.ToInt32(Database.Scalar(connH,
+            "SELECT COUNT(*) FROM counters WHERE id = 'c_late'"));
+        check("另一端也拿到了出厂的那个事件定义", counterInH == 1, counterInH.ToString());
+
         Console.WriteLine($"  . 测试目录：{root}");
     }
 }

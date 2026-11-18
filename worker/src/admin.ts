@@ -102,6 +102,15 @@ export const ADMIN_HTML = `<!doctype html>
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   code.k { background: #f2f5fa; padding: 1px 5px; border-radius: 5px; }
 
+  /* 总览：数字比句子快。格子用 auto-fit，手机上两列、桌面上四列，不用写断点。 */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 10px; margin-top: 12px; }
+  .stat { background: #f8fafd; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .stat b { display: block; font-size: 19px; font-weight: 600; letter-spacing: .2px; }
+  .stat span { color: var(--muted); font-size: 12.5px; }
+  .stat em { display: block; color: var(--muted); font-size: 12px; font-style: normal; margin-top: 2px; }
+  .danger { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 14px; }
+  .danger strong { color: var(--bad); }
+
   /* 手机：老师多半是在走廊里掏手机点通过。窄屏下把按钮铺满一行，
      手指好点；留白也收一点，不然一张卡片就占满一屏。 */
   @media (max-width: 480px) {
@@ -150,6 +159,15 @@ export const ADMIN_HTML = `<!doctype html>
 
     <div class="card">
       <div class="row spread">
+        <h2>总览</h2>
+        <span class="hint" id="ovHint"></span>
+      </div>
+      <div class="grid" id="ovGrid"></div>
+      <div class="meta" id="ovFoot"></div>
+    </div>
+
+    <div class="card">
+      <div class="row spread">
         <h2>待审核</h2>
         <span class="hint" id="pendingHint"></span>
       </div>
@@ -183,6 +201,47 @@ export const ADMIN_HTML = `<!doctype html>
         <button class="primary" id="addBtn">加入白名单</button>
       </div>
       <div class="err" id="addErr"></div>
+    </div>
+
+    <div class="card">
+      <h2>班级管理</h2>
+
+      <label for="nameInput">云端显示名</label>
+      <div class="row">
+        <input id="nameInput" type="text" style="flex:1 1 260px" placeholder="例如 高二 (3) 班">
+        <button class="primary" id="renameBtn">保存</button>
+      </div>
+      <p class="hint" style="margin:6px 0 0">
+        只改云端与管理台显示的名字。客户端里的班名在「设置 → 常用 → 班级信息」里改，两台各自独立。
+      </p>
+      <div class="err" id="renameErr"></div>
+
+      <div class="row spread" style="margin-top:16px">
+        <div class="grow">
+          <strong>周期留存</strong>
+          <div class="meta" id="trimHint">—</div>
+        </div>
+        <button id="trimBtn">清理更早的周期</button>
+      </div>
+      <p class="hint" style="margin:6px 0 0">
+        云端只留最近 4 个周期（含当前）的流水、考试与事件打点。清理删的是云端副本，
+        每台设备的本地历史各自保留。平时换周期时会自动清，这里只是不想等的时候手动点一下。
+      </p>
+      <div class="err" id="trimErr"></div>
+
+      <div class="danger">
+        <strong>注销这个班</strong>
+        <div class="meta">
+          云端把班级标记为注销，并立刻断开所有设备。业务数据留在库里（可人工恢复），
+          本机数据不受影响；注销后这个班级码再也配不上对。
+          建重了、建错了一个班时用这里收掉多余的那个。
+        </div>
+        <div class="row" style="margin-top:10px">
+          <input id="closeCode" type="text" placeholder="重新输入班级码确认" style="flex:0 1 240px" autocomplete="off" spellcheck="false">
+          <button class="bad" id="closeBtn">注销</button>
+        </div>
+        <div class="err" id="closeErr"></div>
+      </div>
     </div>
   </div>
 
@@ -348,9 +407,64 @@ export const ADMIN_HTML = `<!doctype html>
     grants.forEach(function (g) { box.appendChild(render(g)); });
   }
 
+  function stat(label, value, note) {
+    var box = el('div', 'stat');
+    box.appendChild(el('b', null, String(value)));
+    box.appendChild(el('span', null, label));
+    if (note) box.appendChild(el('em', null, note));
+    return box;
+  }
+
+  function renderOverview(o) {
+    state.overview = o;
+    var c = o.counts;
+    var grid = $('ovGrid');
+    grid.textContent = '';
+
+    var studentsNote = c.studentsRemoved
+      ? '另有 ' + c.studentsRemoved + ' 人已删除'
+      : (c.members ? c.members + ' 位成员' : '');
+    grid.appendChild(stat('在册学生', c.students, studentsNote));
+
+    grid.appendChild(stat('本周期流水', o.current ? o.current.entries : 0,
+      o.current ? o.current.name : '还没有当前周期'));
+
+    var entryNote = '近 7 天 ' + c.entriesWeek + ' 条';
+    if (c.entriesDay) entryNote += ' · 今天 ' + c.entriesDay;
+    if (c.entriesReversed) entryNote += ' · 已撤销 ' + c.entriesReversed;
+    grid.appendChild(stat('累计流水', c.entries, entryNote));
+
+    grid.appendChild(stat('考试', c.exams, c.scores ? c.scores + ' 条成绩' : '还没导入成绩'));
+    grid.appendChild(stat('事件打点', c.ticks, c.counters + ' 种事件'));
+
+    var deviceNote = c.pending ? c.pending + ' 台待审核' : (c.approved ? '白名单 ' + c.approved + ' 台' : '白名单空着');
+    if (c.devicesLegacy) deviceNote += ' · ' + c.devicesLegacy + ' 台升级前配的';
+    grid.appendChild(stat('在线设备', c.devices, deviceNote));
+
+    $('ovHint').textContent = '建于 ' + fmt(o.class.createdAt);
+    $('ovFoot').textContent = [
+      '周期 ' + c.periods + ' 个（云端留 ' + o.keepPeriods + ' 个）',
+      '云端变更 ' + c.changes + ' 条',
+      '最近一条流水 ' + ago(o.activity.lastEntryAt),
+      '最近设备活动 ' + ago(o.activity.lastDeviceAt),
+    ].join(' · ');
+
+    var clearable = Math.max(0, c.periods - o.keepPeriods);
+    $('trimHint').textContent = c.periods + ' 个周期' + (clearable > 0
+      ? '，可清掉最早 ' + clearable + ' 个'
+      : '，还没到留存上限');
+    $('trimBtn').disabled = clearable === 0;
+    $('trimBtn').textContent = '清理更早的周期';
+
+    // 15 秒刷新一次，不能把老师正在改的名字刷掉
+    if (document.activeElement !== $('nameInput')) $('nameInput').value = o.class.name;
+  }
+
   function load() {
     state.busy = true;
-    return api('/devices').then(function (data) {
+    return Promise.all([api('/overview'), api('/devices')]).then(function (both) {
+      renderOverview(both[0]);
+      var data = both[1];
       state.info = { classId: data.classId, className: data.className, code: data.code, joinMode: data.joinMode };
       sessionStorage.setItem(KEY, JSON.stringify({ token: state.token, info: state.info }));
 
@@ -459,6 +573,68 @@ export const ADMIN_HTML = `<!doctype html>
   });
 
   $('logout').addEventListener('click', function () { signOut(''); });
+
+  // ---------------- 班级管理 ----------------
+
+  $('renameBtn').addEventListener('click', function () {
+    var name = $('nameInput').value.trim();
+    if (!name) { $('renameErr').textContent = '班名不能为空。'; return; }
+    $('renameErr').textContent = '';
+    $('renameBtn').disabled = true;
+    api('/class', { method: 'PATCH', body: { name: name } }).then(function () {
+      toast('已改为 ' + name);
+      load();
+    }).catch(function (e) {
+      $('renameErr').textContent = e.message || '保存失败';
+    }).then(function () {
+      $('renameBtn').disabled = false;
+    });
+  });
+
+  // 清理是不可逆的（云端副本），但点两下就能确认已经够了 —— 弹窗在这里反而挡路。
+  var trimArmedAt = 0;
+  $('trimBtn').addEventListener('click', function () {
+    var btn = $('trimBtn');
+    $('trimErr').textContent = '';
+
+    if (!trimArmedAt) {
+      trimArmedAt = Date.now();
+      btn.textContent = '再点一次确认';
+      setTimeout(function () {
+        if (trimArmedAt) { trimArmedAt = 0; btn.textContent = '清理更早的周期'; }
+      }, 5000);
+      return;
+    }
+
+    trimArmedAt = 0;
+    btn.disabled = true;
+    btn.textContent = '清理中…';
+    api('/class/trim', { method: 'POST' }).then(function (r) {
+      var entries = Math.max(0, (r.before.entries || 0) - (r.after.entries || 0));
+      toast(r.dropped
+        ? '清掉 ' + r.dropped + ' 个周期、' + entries + ' 条流水'
+        : '没有可清理的周期');
+      load();
+    }).catch(function (e) {
+      $('trimErr').textContent = e.message || '清理失败';
+      btn.disabled = false;
+      btn.textContent = '清理更早的周期';
+    });
+  });
+
+  $('closeBtn').addEventListener('click', function () {
+    var code = $('closeCode').value.trim().toUpperCase();
+    if (!code) { $('closeErr').textContent = '先输入班级码。'; return; }
+    $('closeErr').textContent = '';
+    $('closeBtn').disabled = true;
+    api('/class/close', { method: 'POST', body: { code: code } }).then(function () {
+      toast('已注销');
+      signOut('这个班已在云端注销，所有设备都已断开');
+    }).catch(function (e) {
+      $('closeErr').textContent = e.message || '注销失败';
+      $('closeBtn').disabled = false;
+    });
+  });
 
   var saved = sessionStorage.getItem(KEY);
   if (saved) {

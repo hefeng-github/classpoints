@@ -23,6 +23,10 @@
  *   POST  /api/v1/admin/devices/:id/approve|reject|revoke
  *   POST  /api/v1/admin/devices     手动预置一台
  *   DELETE /api/v1/admin/devices/:id
+ *   GET   /api/v1/admin/overview    班级总览（人数、流水、周期、考试、设备、留存）
+ *   PATCH /api/v1/admin/class       改云端显示名
+ *   POST  /api/v1/admin/class/trim  手动清理更早的周期
+ *   POST  /api/v1/admin/class/close 注销这个班（软删 + 撤销全部设备，要重输班级码）
  *   PATCH /api/v1/admin/settings    切 join_mode
  * 它存在的原因见 routes/grants.ts 开头：口令会传开，机器要单独放行。
  *
@@ -48,6 +52,7 @@ import { putSchemeWeights, resolveEntity, upsertEntity } from './routes/entities
 import { upsertExam } from './routes/exams';
 import { resetPeriod, upsertPeriod } from './routes/periods';
 import { addGrant, decideGrant, listGrants, removeGrant, setJoinMode } from './routes/grants';
+import { classOverview, closeClass, renameClass, trimClass } from './routes/overview';
 import { assertNotResetting, pull } from './sync';
 
 /**
@@ -274,6 +279,21 @@ async function adminRoute(env: Env, request: Request, rest: string[]): Promise<R
       throw new HttpError(404, 'not_found', `没有这个动作：${action}`);
     }
     throw new HttpError(405, 'method_not_allowed', `${method} 用不到这个路径`);
+  }
+
+  if (head === 'overview' && !id) {
+    const claims = await requireManager(env, request);
+    if (method === 'GET') return classOverview(env, claims.cid);
+    throw new HttpError(405, 'method_not_allowed', `overview 不支持 ${method}`);
+  }
+
+  // /class 与 /class/trim、/class/close 共用首段，所以看第二段（id）而不是 action
+  if (head === 'class') {
+    const claims = await requireManager(env, request);
+    if (!id && method === 'PATCH') return renameClass(env, request, claims.cid);
+    if (id === 'trim' && !action && method === 'POST') return trimClass(env, claims.cid);
+    if (id === 'close' && !action && method === 'POST') return closeClass(env, request, claims.cid);
+    throw new HttpError(404, 'not_found', `管理台没有这个动作：${method} /class/${id ?? ''}`);
   }
 
   if (head === 'settings' && !id) {

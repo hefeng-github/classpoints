@@ -357,11 +357,15 @@ const crossDelete = await call('POST', '/students', {
   body: { action: 'delete', student: { id: studentIds[1] } },
 });
 check('B 班拿 A 班 id 删除不报错但也不生效', crossDelete.status === 200);
+// 1.3.8 起这里改成明确拒收（409 foreign_row），不再是"200 + applied:false"：
+// 静默返回成功会让客户端以为推上去了、把这条出队，而云端其实一行没写。
+// 同一个 id 属于别的班时，只有说出来才能让人把机器配回原来那个班。
 const crossHijack = await call('POST', '/students', {
   token: accessB,
   body: { action: 'upsert', student: { id: studentIds[1], name: '被串改的名字', rev: 99, createdAt: now, updatedAt: now } },
 });
-check('B 班抢同一个主键 id 被 guard 挡下', crossHijack.status === 200 && crossHijack.data?.applied === false, JSON.stringify(crossHijack.data));
+check('B 班抢同一个主键 id 被 guard 挡下（409 foreign_row）',
+  crossHijack.status === 409 && crossHijack.data?.error === 'foreign_row', JSON.stringify(crossHijack.data));
 
 const checkA = await call('GET', '/sync?since=0&limit=500', { token: access });
 const victim = (checkA.data?.students ?? []).find((s) => s.id === studentIds[1]);
