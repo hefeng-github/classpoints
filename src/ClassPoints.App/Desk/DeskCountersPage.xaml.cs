@@ -477,14 +477,61 @@ public sealed partial class DeskCountersPage : Page
             var box = new TextBox { Text = counter.Label, Height = 34 };
             row.Children.Add(box);
 
+            var right = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 8,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+
             var stop = new CheckBox
             {
                 Content = "停用",
                 IsChecked = counter.IsArchived,
                 VerticalAlignment = VerticalAlignment.Center,
             };
-            Grid.SetColumn(stop, 1);
-            row.Children.Add(stop);
+            right.Children.Add(stop);
+
+            // 停用只是"新记录不再用它"，用久了会攒下一排只能看不能清的项。
+            // 「彻底删除」立即生效（不等底下的保存）：它删的是这条事件本身，
+            // 点完就从列表里拿掉，也就不会在保存时又被写回来。
+            if (counter.IsArchived)
+            {
+                var purge = new Button
+                {
+                    Content = "彻底删除",
+                    Style = (Style)Application.Current.Resources["DeskButton"],
+                    Height = 30,
+                    MinWidth = 76,
+                    FontSize = 13,
+                };
+                purge.Click += async (_, _) =>
+                {
+                    if (Shell is not { } shell) return;
+                    var ticks = Services.Purge.CascadeCount("counter", counter.Id);
+                    var tail = ticks > 0
+                        ? $"这些学生一共记的 {ticks} 次也会一起删掉，不能恢复。"
+                        : "这个事件还没有记过任何一次。";
+                    if (!await shell.ConfirmAsync($"彻底删除「{counter.Label}」？",
+                            $"这条事件会从所有设备上一起消失。{tail}",
+                            "彻底删除", "取消")) return;
+                    if (!await shell.AskPinAsync("彻底删除", "删掉之后无法恢复，需要管理密码", requireManager: true)) return;
+
+                    var removed = Services.Purge.Purge("counter", counter.Id);
+                    Services.Log($"彻底删除事件 {counter.Label}（{counter.Id}）removed={removed} ticks={ticks}");
+
+                    // 从弹窗里当场拿掉，也从待保存列表里拿掉 ——
+                    // 否则点「保存」会 Save 一个刚删掉的对象，等于又造回来一份。
+                    panel.Children.Remove(row);
+                    edits.RemoveAll(e => e.Counter.Id == counter.Id);
+                    Refresh();
+                    Shell?.Toast(removed > 0 ? $"「{counter.Label}」已彻底删除" : "这条已经不在了", 4);
+                };
+                right.Children.Add(purge);
+            }
+
+            Grid.SetColumn(right, 1);
+            row.Children.Add(right);
 
             panel.Children.Add(row);
             edits.Add((counter, box, stop));
@@ -492,7 +539,8 @@ public sealed partial class DeskCountersPage : Page
 
         panel.Children.Add(new TextBlock
         {
-            Text = "停用后新记录不再显示它，已有的次数仍然保留、仍然计入统计。",
+            Text = "停用后新记录不再显示它，已有的次数仍然保留、仍然计入统计。" +
+                   "「彻底删除」立即生效，会连那些次数一起删掉，不受下面「保存 / 取消」影响。",
             Style = (Style)Application.Current.Resources["DeskSecondaryText"],
             TextWrapping = TextWrapping.Wrap,
         });

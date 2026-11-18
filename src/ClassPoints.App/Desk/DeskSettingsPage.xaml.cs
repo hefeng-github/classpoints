@@ -1134,7 +1134,12 @@ public sealed partial class DeskSettingsPage : Page
 
     // ---------------- 加分项 ----------------
 
-    private bool _showArchivedRules;
+    /// <summary>
+    /// 默认只看启用中的；点「查看已归档」翻过来。
+    /// 验收用 CP_SNAP_ARCHIVED=1 时直接展开 —— 归档项平时藏在一次点击后面，截不到。
+    /// </summary>
+    private bool _showArchivedRules =
+        Environment.GetEnvironmentVariable("CP_SNAP_ARCHIVED") == "1";
 
     private void BuildRuleSection()
     {
@@ -1238,6 +1243,24 @@ public sealed partial class DeskSettingsPage : Page
                 actions.Children.Add(Small("恢复", () =>
                 {
                     Services.Rules.Restore(rule.Id);
+                    Reload();
+                }));
+
+                // 归档只是"不用了"，一年下来能攒十几条只能看不能清的项。
+                // 彻底删除要两道门：先确认后果（历史记分不受影响），再验管理密码 ——
+                // 它删的不是一行配置，是"这条以后再也改不回来了"。
+                actions.Children.Add(Async("彻底删除", async () =>
+                {
+                    if (Shell is not { } shell) return;
+                    if (!await shell.ConfirmAsync($"彻底删除「{rule.Label}」？",
+                            "这条加分项会从所有设备上一起消失，不能恢复。\n" +
+                            "已经记过的分数不受影响：历史记录里仍然看得到这条的名字和分值。",
+                            "彻底删除", "取消")) return;
+                    if (!await shell.AskPinAsync("彻底删除", "删掉之后无法恢复，需要管理密码", requireManager: true)) return;
+
+                    var removed = Services.Purge.Purge("rule", rule.Id);
+                    Services.Log($"彻底删除加分项 {rule.Label}（{rule.Id}）removed={removed}");
+                    Shell?.Toast(removed > 0 ? $"「{rule.Label}」已彻底删除" : "这条已经不在了", 4);
                     Reload();
                 }));
             }

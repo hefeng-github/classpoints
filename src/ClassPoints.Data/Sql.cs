@@ -5,7 +5,7 @@ namespace ClassPoints.Data;
 /// </summary>
 public static class Sql
 {
-    public const int SchemaVersion = 6;
+    public const int SchemaVersion = 7;
 
     public const string Pragmas = """
         PRAGMA journal_mode = WAL;
@@ -229,7 +229,7 @@ public static class Sql
 
         CREATE TABLE IF NOT EXISTS outbox (
           id         TEXT PRIMARY KEY,
-          kind       TEXT NOT NULL CHECK (kind IN ('entry','reverse','tick','student','rule','period','exam','member','note','scheme','counter')),
+          kind       TEXT NOT NULL CHECK (kind IN ('entry','reverse','tick','purge','student','rule','period','exam','member','note','scheme','counter')),
           payload    TEXT NOT NULL,
           attempts   INTEGER NOT NULL DEFAULT 0,
           next_at    INTEGER NOT NULL,

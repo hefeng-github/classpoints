@@ -468,6 +468,8 @@ public sealed class SyncClient : IDisposable
             "exam" => "/api/v1/exams",
             "scheme" => "/api/v1/schemes",
             "counter" => "/api/v1/counters",
+            // 彻底删除走自己的口：云端要物理删 + 记墓碑，不是 entities 那种软删
+            "purge" => "/api/v1/purge",
             _ => null,
         };
         return (path, node.ToJsonString());

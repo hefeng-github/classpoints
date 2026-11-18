@@ -26,6 +26,7 @@ internal static class SyncTests
             Entries = new EntryService(Db, new AuditRepository(Db));
             Exams = new ExamRepository(Db);
             Counters = new CounterRepository(Db);
+            Purge = new PurgeService(Db);
             Store = new SyncStore(Path.Combine(dir, "sync.json"));
             Sync = new SyncService(Db, Outbox, Store);
         }
@@ -40,6 +41,7 @@ internal static class SyncTests
         public EntryService Entries { get; }
         public ExamRepository Exams { get; }
         public CounterRepository Counters { get; }
+        public PurgeService Purge { get; }
         public SyncService Sync { get; }
 
         /// <summary>落盘的凭据。测试要故意把它弄坏，模拟"续期在别处被换掉"。</summary>
@@ -436,6 +438,52 @@ internal static class SyncTests
                 "SELECT COUNT(*) FROM counters WHERE id = $id AND preset_key = 'std.late'",
                 ("$id", tickCounterInH))) == 1,
             tickCounterInH);
+
+        // ---- 彻底删除：一台删了，另一台必须跟着删 ----
+        //
+        // 归档是"不用了但留着"，彻底删除是"不要再出现"。这里要盯住的是**另一半**：
+        // 删完只推一条本地删除，另一台下次同步就会把旧行推回来 —— 规则就这么复活了。
+        // 所以删完要推 purge（云端物理删 + 记墓碑），对面拉到 deleted 数组后本地也删。
+        using var i = new Device(Path.Combine(root, "i"));
+        using var j = new Device(Path.Combine(root, "j"));
+
+        var purgeClass = await i.Sync.CreateClassAsync(baseUrl, "删除测试班", "赵老师", "246810", "REC-PURGE", "desk");
+        var doomed = i.Rules.Save(new Rule { Label = "录错的项", Delta = 5, Icon = "⭐" });
+        i.Rules.Archive(doomed.Id);
+        var pushI = await i.Sync.RunOnceAsync();
+        check("建班并推上去（含那条要删的规则）", pushI.Ok && i.Outbox.Count() == 0,
+            $"ok={pushI.Ok} outbox={i.Outbox.Count()} {pushI.Error}");
+
+        await j.Sync.PairAsync(baseUrl, purgeClass.CreatedCode!, "246810", "desk");
+        await j.Sync.RunOnceAsync();
+        check("另一端先拿到了这条规则（在归档里）",
+            j.Rules.ListAll(includeArchived: true).Any(x => x.Id == doomed.Id),
+            string.Join("/", j.Rules.ListAll(includeArchived: true).Select(x => x.Label)));
+
+        var removedLocal = i.Purge.Purge("rule", doomed.Id);
+        check("本机真删掉了（不是打标记）", removedLocal == 1 &&
+            !i.Rules.ListAll(includeArchived: true).Any(x => x.Id == doomed.Id), removedLocal.ToString());
+
+        var pushPurge = await i.Sync.RunOnceAsync();
+        check("彻底删除推上去了", pushPurge.Ok && i.Outbox.Count() == 0,
+            $"ok={pushPurge.Ok} outbox={i.Outbox.Count()} {pushPurge.Error}");
+
+        var pullJ = await j.Sync.RunOnceAsync();
+        check("另一端也把它删掉了（不是留在归档里）",
+            pullJ.Ok && !j.Rules.ListAll(includeArchived: true).Any(x => x.Id == doomed.Id),
+            string.Join("/", j.Rules.ListAll(includeArchived: true).Select(x => x.Label)));
+
+        // 另一边如果手里还有旧数据（离线时改过），推回来必须被墓碑挡住，不能复活
+        j.Outbox.Enqueue($"rules:{doomed.Id}", "rule",
+            new { action = "upsert", rule = new { id = doomed.Id, label = "复活试试", delta = 5, rev = 9 } });
+        var revive = await j.Sync.RunOnceAsync();
+        // 这里 Ok 会是 false —— 项目的语义是"有记录没上去就要说出来"，不是"进程失败"。
+        // 被拒是**预期行为**：那条已经在别处彻底删了，这边的改动本来就不该生效。
+        check("另一端把旧数据推回来被拒，且直接出队（不无限重试）",
+            j.Outbox.Count() == 0 && revive.Error?.Contains("彻底删除", StringComparison.Ordinal) == true,
+            $"ok={revive.Ok} outbox={j.Outbox.Count()} err={revive.Error}");
+        check("拒了之后另一端库里也没有这条",
+            !j.Rules.ListAll(includeArchived: true).Any(x => x.Id == doomed.Id), "after revive");
 
         Console.WriteLine($"  . 测试目录：{root}");
     }

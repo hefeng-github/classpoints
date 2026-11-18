@@ -14,6 +14,7 @@
  *   POST /api/v1/exams              一场考试 + 全部成绩
  *   POST|PATCH /api/v1/:entity      新增 / 修改（students / rules / members / note_templates / schemes）
  *   POST /api/v1/periods/reset      两阶段重置
+ *   POST /api/v1/purge              彻底删除（归档项/回收站项，硬删 + 墓碑）
  * 另加 GET /api/v1/ping 给唤醒探测用（一体机休眠后 TCP 假活，这个端点比任何离线逻辑都先写）。
  *
  * 管理台是第二摊，和上面十个不是一类东西：它服务的是"人"，不是客户端。
@@ -54,6 +55,7 @@ import { resetPeriod, upsertPeriod } from './routes/periods';
 import { addGrant, decideGrant, listGrants, removeGrant, setJoinMode } from './routes/grants';
 import { classOverview, closeClass, renameClass, trimClass } from './routes/overview';
 import { assertNotResetting, pull } from './sync';
+import { purgeEntity } from './routes/purge';
 
 /**
  * 入口。这里只做三件事，然后全部交给 route：
@@ -169,6 +171,16 @@ async function route(request: Request, env: Env): Promise<Response> {
           name: typeof body.operatorName === 'string' && body.operatorName ? body.operatorName : '未知',
         };
         return reverseBatch(env, request, claims.cid, decodeURIComponent(third), operator);
+      }
+      break;
+    }
+
+    // 彻底删除：比软删重，门槛和"改这条规则"一致（管理态）
+    case 'purge': {
+      if (!second && method === 'POST') {
+        const claims = await requireManager(env, request);
+        await assertNotResetting(env, claims.cid);
+        return purgeEntity(env, request, claims.cid);
       }
       break;
     }

@@ -1202,6 +1202,17 @@ public sealed class SyncService(Database db, SyncOutbox outbox, SyncStore? store
     {
         try
         {
+            // 被引用的表要先带走子表，否则外键直接拦住，这张"另一个班彻底删了的事件"
+            // 永远删不掉，界面上就留着一个点了几次却查不到名字的幽灵。
+            // 只处理**子表数据完全依附父行**的那两张：打点依附事件、成绩依附考试 ——
+            // 父行都不存在了，子行没有任何独立意义。
+            // 学生与周期不在此列：它们的子表是几百条独立的记分历史，
+            // 上面没有对应操作时不该由同步悄悄删掉（真到那一步要单独设计）。
+            if (table == "counters")
+                Database.Exec(conn, tx, "DELETE FROM counter_ticks WHERE counter_id = $id", ("$id", id));
+            else if (table == "exams")
+                Database.Exec(conn, tx, "DELETE FROM exam_scores WHERE exam_id = $id", ("$id", id));
+
             Database.Exec(conn, tx, $"DELETE FROM {table} WHERE id = $id", ("$id", id));
             return true;
         }

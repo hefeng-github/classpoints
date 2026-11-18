@@ -156,18 +156,20 @@ public sealed class Database
 
         // v6：事件计数进云同步 —— outbox 要接纳两种新 kind（tick / counter）。
         // outbox.kind 上有 CHECK 约束，SQLite 改不了 CHECK，只能重建表。
-        if (RebuildOutboxKinds(conn))
-            SetSetting(conn, null, "schema_note", "v6: 事件计数参与同步");
+        // v7：彻底删除要入队 kind='purge'，outbox 的 CHECK 得再放宽一次（同样只能重建表）。
+        RebuildOutboxKinds(conn);
+        if (version < 7) SetSetting(conn, null, "schema_note", "v7: 彻底删除（purge）");
     }
 
     /// <summary>
-    /// 把 outbox 的 kind 约束换成宽的那一版（加 tick / counter）。
+    /// 把 outbox 的 kind 约束换成宽的那一版（加 tick / counter / purge）。
     ///
     /// SQLite 没有"改 CHECK"，只能建新表、搬数据、改名。老库升级必须走过这一步，
     /// 否则打点入队直接抛约束错误 —— 而那个异常发生在"点一下计数"的路径上，
     /// 老师看到的会是"点了没反应"。
     ///
-    /// 幂等：先看 sqlite_master 里那条建表语句有没有 'tick'，有就什么都不做。
+    /// 幂等：先看 sqlite_master 里那条建表语句有没有 'purge'，有就什么都不做。
+    /// 判的是**最新的那个 kind**，不是 'tick' —— 否则 v6 的库（有 tick、没 purge）会被跳过。
     /// </summary>
     private static bool RebuildOutboxKinds(SqliteConnection conn)
     {
@@ -177,13 +179,13 @@ public sealed class Database
             cmd.CommandText = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'outbox'";
             sql = cmd.ExecuteScalar() as string;
         }
-        if (sql is null || sql.Contains("'tick'", StringComparison.Ordinal)) return false;
+        if (sql is null || sql.Contains("'purge'", StringComparison.Ordinal)) return false;
 
         using var tx = conn.BeginTransaction();
         Exec(conn, tx, """
             CREATE TABLE outbox_new (
               id         TEXT PRIMARY KEY,
-              kind       TEXT NOT NULL CHECK (kind IN ('entry','reverse','tick','student','rule','period','exam','member','note','scheme','counter')),
+              kind       TEXT NOT NULL CHECK (kind IN ('entry','reverse','tick','purge','student','rule','period','exam','member','note','scheme','counter')),
               payload    TEXT NOT NULL,
               attempts   INTEGER NOT NULL DEFAULT 0,
               next_at    INTEGER NOT NULL,

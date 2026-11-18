@@ -216,6 +216,17 @@ export async function upsertEntity(env: Env, request: Request, rawEntity: string
   const id = requireString(data.id ?? body.id, 'id', 40);
   const at = now();
 
+  // 这个 id 已经被"彻底删除"过（见 routes/purge.ts）。硬删之后行没了，
+  // 离线设备手里那份旧数据再推上来就是一条干净的 INSERT —— 人/规则就这么复活了。
+  // 所以墓碑要挡在所有写入之前：upsert、软删、恢复，一律不认。
+  const dead = await env.DB
+    .prepare('SELECT 1 AS x FROM purged WHERE class_id = ? AND entity = ? AND row_id = ?')
+    .bind(claims.cid, spec.entity, id)
+    .first();
+  if (dead) {
+    throw new HttpError(409, 'purged', '这条已经在所有设备上彻底删除了，不能再写回来');
+  }
+
   if (action === 'delete' || action === 'restore') {
     let stmt: D1PreparedStatement;
     // 每条 UPDATE 都带 class_id：否则拿到别的班某个 id 就能把别人的记录删掉

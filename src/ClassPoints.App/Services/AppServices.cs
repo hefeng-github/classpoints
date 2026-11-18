@@ -73,6 +73,7 @@ public sealed class AppServices
         Counters = new CounterRepository(db);
         Members = new MemberRepository(db);
         Notes = new NoteTemplateRepository(db);
+        Purge = new PurgeService(db);
         Periods = new PeriodRepository(db);
         Entries = new EntryService(db, Audit);
         Exams = new ExamRepository(db);
@@ -104,6 +105,8 @@ public sealed class AppServices
     public CounterRepository Counters { get; }
     public MemberRepository Members { get; }
     public NoteTemplateRepository Notes { get; }
+    /// <summary>彻底删除：归档项与停用项真删（连带子表），并推一条 purge 让所有设备跟着删。</summary>
+    public PurgeService Purge { get; }
     public PeriodRepository Periods { get; }
     public EntryService Entries { get; }
     public ExamRepository Exams { get; }

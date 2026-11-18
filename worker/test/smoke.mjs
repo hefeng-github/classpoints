@@ -165,6 +165,61 @@ check('这个班仍然只有一条 std.late',
   (await call('GET', '/sync?since=0&limit=500', { token: access })).data?.counters?.filter((c) => c.preset_key === 'std.late').length === 1,
   'count of std.late');
 
+// 彻底删除：行真的没了，其它设备靠 deleted 数组跟着删。
+// 它和软删是两条路 —— 软删留行、能恢复；这里删完还会记墓碑，防止离线设备把它推回来。
+console.log('\n9b) 彻底删除');
+
+const purgeRuleId = uuid();
+await call('POST', '/rules', {
+  token: access,
+  body: { action: 'upsert', rule: { id: purgeRuleId, label: '要删的项', delta: 5, icon: '⭐', sort: 99, rev: 1, updatedAt: now } },
+});
+const purgeRule = await call('POST', '/purge', { token: access, body: { kind: 'rule', id: purgeRuleId } });
+check('彻底删除返回删掉的行数', purgeRule.status === 200 && purgeRule.data?.removed === 1, JSON.stringify(purgeRule.data));
+
+const afterPurge = await call('GET', '/sync?since=0&limit=500', { token: access });
+check('拉取的 deleted 里能看到它（别的设备据此把本地那份也删掉）',
+  (afterPurge.data?.deleted?.rules ?? []).includes(purgeRuleId),
+  JSON.stringify(afterPurge.data?.deleted?.rules));
+check('规则表里确实没有这一行了',
+  !(afterPurge.data?.rules ?? []).some((r) => r.id === purgeRuleId), 'rules');
+
+const revive = await call('POST', '/rules', {
+  token: access,
+  body: { action: 'upsert', rule: { id: purgeRuleId, label: '复活试试', delta: 5, icon: '⭐', sort: 99, rev: 5, updatedAt: now } },
+});
+check('删掉之后再推同一条会被墓碑挡住', revive.status === 409 && revive.data?.error === 'purged', JSON.stringify(revive.data));
+
+const missing = await call('POST', '/purge', { token: access, body: { kind: 'rule', id: uuid() } });
+check('删一个不存在的 id 不算失败', missing.status === 200 && missing.data?.removed === 0, JSON.stringify(missing.data));
+
+const badKind = await call('POST', '/purge', { token: access, body: { kind: 'students_typo', id: uuid() } });
+check('不认识的类型回 404，不静默成功', badKind.status === 404, `${badKind.status} ${JSON.stringify(badKind.data)}`);
+
+// 事件：打点依附它。云端 D1 外键没开，光删事件会留下"未知事件，点了 3 次"这种孤儿行
+const purgeCounterId = uuid();
+await call('POST', '/counters', {
+  token: access,
+  body: { action: 'upsert', counter: { id: purgeCounterId, label: '要删的事件', icon: '⚑', sort: 99, rev: 1, updatedAt: now } },
+});
+await call('POST', '/counter_ticks', {
+  token: access,
+  body: {
+    ticks: [{
+      id: uuid(), counterId: purgeCounterId, studentId: studentIds[0], periodId, value: 1,
+      operatorId: 'm1', operatorName: '张老师', occurredAt: now, createdAt: now,
+    }],
+  },
+});
+const purgeCounter = await call('POST', '/purge', { token: access, body: { kind: 'counter', id: purgeCounterId } });
+check('彻底删除事件返回 1 行', purgeCounter.data?.removed === 1, JSON.stringify(purgeCounter.data));
+
+const afterCounter = await call('GET', '/sync?since=0&limit=500', { token: access });
+check('它的打点一起删掉了（不留孤儿）',
+  !(afterCounter.data?.counter_ticks ?? []).some((t) => t.counter_id === purgeCounterId), 'ticks');
+check('拉取的 deleted 里有这个事件',
+  (afterCounter.data?.deleted?.counters ?? []).includes(purgeCounterId), JSON.stringify(afterCounter.data?.deleted?.counters));
+
 const tooMany = await call('POST', '/entries', {
   token: access,
   body: { entries: Array.from({ length: 51 }, () => ({ ...entries[0], id: uuid() })) },

@@ -90,6 +90,8 @@ internal static class Program
         Section("周期换编号");
         PeriodRelocatorTests.Run(Check);
         CounterRelocatorTests.Run(Check);
+        Section("彻底删除");
+        PurgeTests.Run(Check);
         Section("本机重置");
         ResetTests.Run(Check);
         Section("数据目录");
