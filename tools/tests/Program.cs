@@ -75,6 +75,8 @@ internal static class Program
         UndoTests.Run(Check);
         Section("名单软删除");
         StudentListTests.Run(Check);
+        Section("班主任唯一");
+        MemberTests.Run(Check);
         Section("座位图与自动排座");
         SeatLayoutTests.Run(Check);
         Section("座位约束（区域 / 同桌 / 偏好）");

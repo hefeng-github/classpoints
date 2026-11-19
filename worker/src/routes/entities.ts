@@ -294,8 +294,82 @@ export async function upsertEntity(env: Env, request: Request, rawEntity: string
     );
   }
 
+  // 班主任只能有一个：老客户端（≤1.3.11）在"本机还没同步到班主任"时会自建一行
+  // 「班主任」推上来，两台设备先后开机就是两个。这里按创建时间认正本，
+  // 把第二个写成"已删除"（行还在、changelog 也写了，好让发起端那份跟着消失）。
+  const ownerNote = await settleOwner(env, claims.cid, id, at, values, cols, spec);
+
   const applied = (results.meta?.changes ?? 0) > 0;
-  return json({ ok: true, id, applied, rev: incomingRev, classId: claims.cid, ...results.note });
+  return json({ ok: true, id, applied, rev: incomingRev, classId: claims.cid, ...results.note, ...ownerNote });
+}
+
+/**
+ * 一个班只留一个班主任。
+ *
+ * 判据是 created_at（并列按 id）—— 建班时那行最早，兜底自建的一定更晚，
+ * 所以"先建的就是正本"这条规则在现实里不会误伤。
+ *
+ * 两种收法：
+ * - 这次推上来的不是正本：把刚写的行标成已删除（行保留，pull 端才知道要删本机那份）；
+ * - 这次推上来的是正本（离线设备补推了一条更早的）：把其余 owner 一并软删，
+ *   各自写 changelog，别的设备拉一轮就都只剩一个了。
+ *
+ * 只在实体是 members 且 role='owner' 时动手；其余实体原样返回。
+ */
+async function settleOwner(
+  env: Env,
+  classId: string,
+  id: string,
+  at: number,
+  values: (string | number | null)[],
+  cols: Col[],
+  spec: Spec,
+): Promise<Record<string, unknown>> {
+  if (spec.entity !== 'members') return {};
+  const roleIdx = cols.findIndex((c) => c.col === 'role');
+  if (roleIdx < 0 || values[2 + roleIdx] !== 'owner') return {};
+
+  const createdIdx = cols.findIndex((c) => c.col === 'created_at');
+  const mine = createdIdx >= 0 ? Number(values[2 + createdIdx] ?? 0) : 0;
+
+  const others = (
+    await env.DB.prepare(
+      `SELECT id, created_at FROM members
+        WHERE class_id = ? AND role = 'owner' AND deleted_at IS NULL AND id <> ?`,
+    )
+      .bind(classId, id)
+      .all<{ id: string; created_at: number }>()
+  ).results ?? [];
+  if (others.length === 0) return {};
+
+  const earliest = others.reduce((a, b) =>
+    b.created_at < a.created_at || (b.created_at === a.created_at && b.id < a.id) ? b : a,
+  );
+  // 客户端没带 createdAt（0/缺省）时一律按"不是正本"处理 —— 宁可把这条并掉，
+  // 也不能凭一个 0 去把真正的班主任删掉。
+  const iAmKeeper =
+    mine > 0 && (mine < earliest.created_at || (mine === earliest.created_at && id < earliest.id));
+
+  if (iAmKeeper) {
+    await env.DB.batch(
+      others.flatMap((o) => [
+        env.DB.prepare(
+          'UPDATE members SET deleted_at = ?, rev = rev + 1, updated_at = ? WHERE id = ? AND class_id = ?',
+        ).bind(at, at, o.id, classId),
+        changeStmt(env.DB, classId, 'members', o.id, 'delete', at),
+      ]),
+    );
+    return { ownerMerged: others.length };
+  }
+
+  // 不是正本：把这次写进去的那行改为已删除（rev 加一，让别的设备也接受这次变更）
+  await env.DB.batch([
+    env.DB.prepare(
+      'UPDATE members SET deleted_at = ?, rev = rev + 1, updated_at = ? WHERE id = ? AND class_id = ?',
+    ).bind(at, at, id, classId),
+    changeStmt(env.DB, classId, 'members', id, 'delete', at),
+  ]);
+  return { deduped: true, useMemberId: earliest.id };
 }
 
 /**

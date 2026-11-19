@@ -503,6 +503,29 @@ const roleCode = roleClass.data?.code;
 const ownerAccess = roleClass.data?.access;
 check('建班令牌带 role=owner', claimsOf(ownerAccess ?? '').role === 'owner', claimsOf(ownerAccess ?? '').role);
 
+// 第二个班主任：老客户端（≤1.3.11）开机取操作人时，本机还没同步到班主任行
+// 就会自建一行「班主任」推上来；两台设备先后触发，云端就是两个 owner，
+// 再同步回所有设备 —— 认人列表里谁都有两个班主任。云端必须按创建时间认正本。
+const lateOwnerId = uuid();
+const lateOwner = await call('POST', '/members', {
+  token: ownerAccess,
+  body: {
+    action: 'upsert',
+    member: { id: lateOwnerId, displayName: '班主任', role: 0, rev: 1, createdAt: now + 60_000, updatedAt: now + 60_000 },
+  },
+});
+check('第二个班主任被合并（不报错、明确回 deduped）',
+  lateOwner.status === 200 && lateOwner.data?.deduped === true,
+  `status=${lateOwner.status} ${JSON.stringify(lateOwner.data)}`);
+
+const ownerPull = await call('GET', '/sync?since=0&limit=500', { token: ownerAccess });
+const liveOwners = (ownerPull.data?.members ?? []).filter((m) => m.role === 'owner' && !m.deleted_at);
+check('云端只剩一个班主任', liveOwners.length === 1, `owners=${liveOwners.length}`);
+check('留下的是建班时那位老师', liveOwners[0]?.display_name === '李老师', liveOwners[0]?.display_name);
+check('多余的班主任被软删（行还在，卡不受影响）',
+  (ownerPull.data?.members ?? []).some((m) => m.id === lateOwnerId && m.deleted_at),
+  JSON.stringify((ownerPull.data?.members ?? []).find((m) => m.id === lateOwnerId)));
+
 const monitorId = uuid();
 const officerId = uuid();
 const mkMember = await call('POST', '/members', {

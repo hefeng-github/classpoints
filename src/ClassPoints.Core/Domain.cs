@@ -128,6 +128,14 @@ public sealed class Student
 
 public sealed class Member
 {
+    /// <summary>
+    /// 本机占位班主任的 id。只在"还没同步到真班主任行"时用，**永远不落库、不进同步**。
+    ///
+    /// 以前这种情况会真的建一行「班主任」推上云端，多台设备先后触发就变成多个班主任；
+    /// 现在占位只活在内存里，流水上的 operator_id 记这个值，真身到了之后接着记真身。
+    /// </summary>
+    public const string PlaceholderOwnerId = "local-owner";
+
     public string Id { get; set; } = "";
     public string DisplayName { get; set; } = "";
     public MemberRole Role { get; set; } = MemberRole.Officer;

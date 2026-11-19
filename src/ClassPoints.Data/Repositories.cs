@@ -311,11 +311,20 @@ public sealed class MemberRepository(Database db)
         return r.Read() ? Mappers.Member(r) : null;
     }
 
+    /// <summary>
+    /// 班主任那一行。**只认最早创建的那个**。
+    ///
+    /// 以前这里是 `LIMIT 1` 随便挑一行：兜底逻辑曾经在"本机还没同步到班主任"时
+    /// 自建一行「班主任」，两台设备先后触发，云端就有两个班主任，同步回来谁的
+    /// 认人列表里都多一个。现在按 created_at 定正本，历史遗留的多余行由 v9 迁移
+    /// 和云端 0008 迁移一起收掉。
+    /// </summary>
     public Member? Owner()
     {
         using var conn = db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT * FROM members WHERE role = 'owner' AND deleted_at IS NULL LIMIT 1";
+        cmd.CommandText =
+            "SELECT * FROM members WHERE role = 'owner' AND deleted_at IS NULL ORDER BY created_at, id LIMIT 1";
         using var r = cmd.ExecuteReader();
         return r.Read() ? Mappers.Member(r) : null;
     }
@@ -324,6 +333,15 @@ public sealed class MemberRepository(Database db)
     {
         var now = Clock.NowMs();
         var isNew = string.IsNullOrEmpty(m.Id);
+
+        // 一个班只能有一个班主任。新建第二个 owner 时不落库，直接并到已有的那一个上 ——
+        // 这是最后一道闸：调用方（电脑端开机取操作人、大屏没密码时进管理）都不该
+        // 因为"本机还没同步到班主任"就在云端多长出一个班主任。
+        if (isNew && m.Role == MemberRole.Owner)
+        {
+            var existing = Owner();
+            if (existing is not null) return existing;
+        }
         if (isNew) m.Id = Ids.NewUuid7();
         m.UpdatedAt = now;
         if (!string.IsNullOrEmpty(pin)) m.PinHash = PasswordHasher.Hash(pin);

@@ -283,12 +283,17 @@ public sealed class AppServices
             var owner = Members.Owner();
             if (owner is not null) return _deskOperator = owner;
 
-            _deskOperator = Members.Save(new Member
+            // 还没同步到班主任行（新配对的机器在第一轮拉取之前就是这样）：
+            // 只给一个**不落库**的占位。以前这里会 Save 一行「班主任」并推上云端，
+            // 两台设备先后开机就在云端长出两个班主任，同步回来每个设备的认人列表里
+            // 都多一个 —— 而成员行没有彻底删除入口，多出来的那个不会自己消失。
+            // 占位也不缓存：真身一到，下一次取就是它。
+            return new Member
             {
+                Id = Member.PlaceholderOwnerId,
                 DisplayName = "班主任",
                 Role = MemberRole.Owner,
-            }, pin: null);
-            return _deskOperator;
+            };
         }
     }
 

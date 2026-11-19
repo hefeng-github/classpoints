@@ -377,8 +377,10 @@ public sealed partial class BoardShell : UserControl, IShellHost
 
         if (!Services.HasAnyCredential)
         {
-            var owner = Services.Members.Owner() ?? Services.Members.Save(
-                new Member { DisplayName = "班主任", Role = MemberRole.Owner });
+            // 没有班主任行时只给内存占位，不落库：落库就会推到云端，
+            // 多台设备先后进来一次就是多个班主任（见 Member.PlaceholderOwnerId）。
+            var owner = Services.Members.Owner()
+                ?? new Member { Id = Member.PlaceholderOwnerId, DisplayName = "班主任", Role = MemberRole.Owner };
             Session.Identify(owner, asAdmin: true);
             Toast("还没设过密码，先以班主任身份进来；到「设置 → 密码与恢复码」补一个", 8);
             return true;

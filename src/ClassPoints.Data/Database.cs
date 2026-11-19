@@ -172,6 +172,29 @@ public sealed class Database
                 """);
             SetSetting(conn, null, "schema_note", "v8: 停用学生不再占用学号");
         }
+
+        // v9：一个班只留一个班主任。
+        //
+        // 旧版电脑端开机取操作人时，如果本机成员表里还没有班主任行（新配对的机器
+        // 在第一轮拉取之前就是这样），会自建一行「班主任」并推上云端。两台设备先后
+        // 开机，云端就有两个班主任，同步回来每个设备的认人列表里都多一个。
+        //
+        // 只留创建最早的那行（并列时按 id），其余软删 —— 不硬删：identities 有
+        // member_id 外键，硬删会连带把卡也弄坏；软删之后 Owner() 自然只剩一个。
+        // 云端同一条规则写在 migrations/0008_single_owner.sql。
+        if (version < 9)
+        {
+            var at = Clock.NowMs();
+            Exec(conn, """
+                UPDATE members SET deleted_at = $at, rev = rev + 1, updated_at = $at
+                 WHERE role = 'owner' AND deleted_at IS NULL AND EXISTS (
+                       SELECT 1 FROM members o
+                        WHERE o.role = 'owner' AND o.deleted_at IS NULL
+                          AND (o.created_at < members.created_at
+                               OR (o.created_at = members.created_at AND o.id < members.id)))
+                """, ("$at", at));
+            SetSetting(conn, null, "schema_note", "v9: 一个班只留一个班主任");
+        }
     }
 
     /// <summary>

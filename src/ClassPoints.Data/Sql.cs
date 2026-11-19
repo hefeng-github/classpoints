@@ -5,7 +5,7 @@ namespace ClassPoints.Data;
 /// </summary>
 public static class Sql
 {
-    public const int SchemaVersion = 8;
+    public const int SchemaVersion = 9;
 
     public const string Pragmas = """
         PRAGMA journal_mode = WAL;
