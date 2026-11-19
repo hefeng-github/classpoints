@@ -56,13 +56,18 @@ jobs:
       - name: 发布成可整目录拷走的文件夹
         run: pwsh scripts/publish.ps1 -Runtime win-x64 -Configuration Release
 
-      - name: 上传发布包
+      # 这个包只是给人临时下载看的：正式版走 release.yml，挂 CNB。
+      # GitHub 的 artifact 配额很小（每次 200MB 上下，仓库级还有总上限），
+      # 配额一满这一步就红，看起来像"代码挂了"，实际编译/单测/发布全都过了。
+      # 所以它失败不算本次失败 —— 否则真出问题时没人再会去点开红色那一行。
+      - name: 上传发布包（可选，配额满了不算失败）
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: ClassPoints-win-x64
           path: dist/ClassPoints-win-x64/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
 
       # 可选步骤：GitHub 的 artifact 要登录才能下、14 天就过期、国内还经常连不上。
       # 配了 CNB 的话，同一份 zip 往那边的「版本」里也挂一份，链接固定不过期。
