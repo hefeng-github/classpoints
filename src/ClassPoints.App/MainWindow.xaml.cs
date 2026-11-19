@@ -26,6 +26,10 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         Root.Loaded += OnRootLoaded;
         Closed += OnClosed;
+
+        // 关窗口 = 老师那节课结束了。45 秒的心跳不一定刚好赶上，
+        // 这一步把"还没推上去的"补一次（见 OnAppWindowClosing）。
+        AppWindow.Closing += OnAppWindowClosing;
     }
 
     public MainWindow(ContentDialog dialog) : this()
@@ -612,6 +616,78 @@ public sealed partial class MainWindow : Window
             bar.ButtonInactiveForegroundColor = Pal.Secondary.Color;
             bar.ButtonHoverBackgroundColor = Color.FromArgb(0x14, 0x00, 0x00, 0x00);
             bar.ButtonPressedBackgroundColor = Color.FromArgb(0x22, 0x00, 0x00, 0x00);
+        }
+    }
+
+    /// <summary>退出前那次同步是否已经跑过；<see cref="_exitSyncStarted"/> 防重复进来。</summary>
+    private bool _exitSyncDone;
+    private bool _exitSyncStarted;
+
+    /// <summary>
+    /// 关窗口时补一次同步。
+    ///
+    /// 为什么值得为它挡一下关闭：记分台一节课能点几十下，而心跳是 45 秒一轮 ——
+    /// 老师点完最后几下就关窗口，那几条要等到下次开机才上云，中间换教室用大屏
+    /// 就看不到；如果这台机器以后不再开（借出去、搬走），那几条永远补不上。
+    ///
+    /// 四条边界：
+    /// ① 没配同步 / 只读设备 / 没有待推送 —— 立刻放行。关云端不该让退出变慢；
+    /// ② 最多等 4 秒（含等在跑的那一轮），超时照常退出：数据在本机，丢不了；
+    /// ③ 只挡一次，第二次进 Closing 必须放行，否则窗口关不掉；
+    /// ④ 全程不弹提示 —— 窗口正在消失，弹什么都看不到，只写日志。
+    /// </summary>
+    private async void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
+    {
+        if (_exitSyncDone) return;
+
+        // 已经在同步了：把这次关闭也拦下，等第一趟跑完一起走
+        if (_exitSyncStarted)
+        {
+            args.Cancel = true;
+            return;
+        }
+
+        var services = App.Services;
+        if (services is null || !services.Sync.IsConfigured || services.Sync.IsReadOnly) return;
+
+        int pending;
+        try
+        {
+            pending = services.Outbox.Count();
+        }
+        catch (Exception ex)
+        {
+            services.LogError("exit-sync-count", ex);
+            return;
+        }
+
+        // 没有待推送就不打扰退出：这一趟唯一的收益是"顺手拉一次"，
+        // 不值得让每次关窗口都多等一两秒。
+        if (pending == 0) return;
+
+        _exitSyncStarted = true;
+        args.Cancel = true;
+        try
+        {
+            // 先让在跑的那一轮收尾（超时就别再等），再把剩下的一次推完
+            await services.Pump.WaitIdleAsync(TimeSpan.FromSeconds(1));
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            var report = await services.Pump.RunAsync(cts.Token);
+            services.Log(report is null
+                ? $"退出前同步：未执行（还有 {pending} 条待推送）"
+                : $"退出前同步：推送 {report.Pushed} 条，剩 {services.Outbox.Count()} 条" +
+                  (report.Ok ? "" : "，" + report.Error));
+        }
+        catch (Exception ex)
+        {
+            services.LogError("exit-sync", ex);
+        }
+        finally
+        {
+            _exitSyncDone = true;
+            // 回到队列里关窗：这里已经 await 过，在 Closing 的回调栈里直接 Close()
+            // 会重入同一个事件。
+            if (!DispatcherQueue.TryEnqueue(Close)) Close();
         }
     }
 

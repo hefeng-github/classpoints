@@ -154,14 +154,24 @@ public sealed class SyncPump(AppServices services)
     /// <summary>窗口重新激活时调一次：一体机休眠醒来后 TCP 是假活的，光靠定时器会撞上挂死的连接。</summary>
     public void Wake() => _ = RunAsync();
 
-    public async Task<SyncReport?> RunAsync()
+    /// <summary>
+    /// 等正在跑的那一轮结束（最多等 timeout）。退出时用：直接再喊一次会被 _busy 挡回来，
+    /// 结果是"关了窗口，这一轮还没推完就跟着进程没了"。
+    /// </summary>
+    public async Task WaitIdleAsync(TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (_busy && DateTime.UtcNow < deadline) await Task.Delay(100);
+    }
+
+    public async Task<SyncReport?> RunAsync(CancellationToken ct = default)
     {
         if (!services.Sync.IsConfigured || _busy) return null;
         _busy = true;
         Notify();
         try
         {
-            var report = await services.Sync.RunOnceAsync();
+            var report = await services.Sync.RunOnceAsync(ct: ct);
             LastAttempt = DateTime.Now;
             LastError = report.Ok ? "" : report.Error ?? "";
 
