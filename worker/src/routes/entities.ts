@@ -299,8 +299,93 @@ export async function upsertEntity(env: Env, request: Request, rawEntity: string
   // 把第二个写成"已删除"（行还在、changelog 也写了，好让发起端那份跟着消失）。
   const ownerNote = await settleOwner(env, claims.cid, id, at, values, cols, spec);
 
+  // 名单被整份推两遍：配置包/备份导入过的设备，本机名单有自己的一套 id，
+  // 一配对就整份推上来，云端没有"同名同座位"的约束 —— 51 人变 102 人。
+  const studentNote = await settleStudent(env, claims.cid, id, at, values, cols, spec);
+
   const applied = (results.meta?.changes ?? 0) > 0;
-  return json({ ok: true, id, applied, rev: incomingRev, classId: claims.cid, ...results.note, ...ownerNote });
+  return json({
+    ok: true,
+    id,
+    applied,
+    rev: incomingRev,
+    classId: claims.cid,
+    ...results.note,
+    ...ownerNote,
+    ...studentNote,
+  });
+}
+
+/**
+ * 同一个人在名单里只能有一条。
+ *
+ * 现场：老师按"家里配好配置包 → 到学校配对"的流程又配了两台设备。配置包里的名单
+ * 是导入时新建的行（自己的 id），配对后整份推上来，云端就多出一整套同名同座位的学生；
+ * 再同步回所有设备，名单页每人都出现两次，看板/统计也跟着乱。
+ *
+ * 判据刻意窄：**name 相同 + seat_no 相同且非空**。只靠姓名不行 —— 一个班里两个
+ * 「张伟」很常见；座位号是名单自带的，同名的两个人不会坐同一个位置。
+ *
+ * 收法跟 settleOwner 一样：按 created_at 认正本（建班/最早那份），晚到的写成
+ * "已删除"，行留着一份、changelog 写一条 delete，发起端拉一轮就把自己那份清掉。
+ */
+async function settleStudent(
+  env: Env,
+  classId: string,
+  id: string,
+  at: number,
+  values: (string | number | null)[],
+  cols: Col[],
+  spec: Spec,
+): Promise<Record<string, unknown>> {
+  if (spec.entity !== 'students') return {};
+
+  const nameIdx = cols.findIndex((c) => c.col === 'name');
+  const seatIdx = cols.findIndex((c) => c.col === 'seat_no');
+  const createdIdx = cols.findIndex((c) => c.col === 'created_at');
+  if (nameIdx < 0 || seatIdx < 0) return {};
+
+  const name = values[2 + nameIdx];
+  const seat = values[2 + seatIdx];
+  // 没座位号的名单（只导了姓名）不做合并：那样只能靠姓名认人，会把同名的两个人并掉
+  if (typeof name !== 'string' || name.length === 0 || seat === null || seat === undefined) return {};
+
+  const mine = createdIdx >= 0 ? Number(values[2 + createdIdx] ?? 0) : 0;
+  const others =
+    (
+      await env.DB.prepare(
+        `SELECT id, created_at FROM students
+          WHERE class_id = ? AND name = ? AND seat_no = ? AND deleted_at IS NULL AND id <> ?`,
+      )
+        .bind(classId, name, seat, id)
+        .all<{ id: string; created_at: number }>()
+    ).results ?? [];
+  if (others.length === 0) return {};
+
+  const earliest = others.reduce((a, b) =>
+    b.created_at < a.created_at || (b.created_at === a.created_at && b.id < a.id) ? b : a,
+  );
+  // created_at 缺失（0）一律按"不是正本"处理，别凭一个 0 把正主删掉
+  const iAmKeeper =
+    mine > 0 && (mine < earliest.created_at || (mine === earliest.created_at && id < earliest.id));
+
+  const softDelete = (rowId: string) =>
+    env.DB.prepare(
+      'UPDATE students SET deleted_at = ?, rev = rev + 1, updated_at = ? WHERE id = ? AND class_id = ?',
+    ).bind(at, at, rowId, classId);
+
+  if (iAmKeeper) {
+    await env.DB.batch(
+      others.flatMap((o) => [softDelete(o.id), changeStmt(env.DB, classId, 'students', o.id, 'delete', at)]),
+    );
+    return { studentMerged: others.length };
+  }
+
+  await env.DB.batch([
+    softDelete(id),
+    changeStmt(env.DB, classId, 'students', id, 'delete', at),
+  ]);
+  return { deduped: true, useStudentId: earliest.id };
 }
 
 /**

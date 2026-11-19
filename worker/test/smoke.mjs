@@ -526,6 +526,46 @@ check('多余的班主任被软删（行还在，卡不受影响）',
   (ownerPull.data?.members ?? []).some((m) => m.id === lateOwnerId && m.deleted_at),
   JSON.stringify((ownerPull.data?.members ?? []).find((m) => m.id === lateOwnerId)));
 
+// 名单被整份推两遍：配置包导入过的设备自己有一套学生 id，一配对就整份推上来。
+// 云端要按"同名 + 同座位号"认成同一个人，否则名单里每人都出现两次。
+const twinStudentA = uuid();
+const twinStudentB = uuid();
+const mkTwinA = await call('POST', '/students', {
+  token: ownerAccess,
+  body: { action: 'upsert', student: { id: twinStudentA, name: '侯星宇', studentNo: null, seatNo: 1, active: true, rev: 1, createdAt: now, updatedAt: now } },
+});
+check('先建一个学生', mkTwinA.status === 200 && mkTwinA.data?.applied === true, JSON.stringify(mkTwinA.data));
+
+const mkTwinB = await call('POST', '/students', {
+  token: ownerAccess,
+  body: { action: 'upsert', student: { id: twinStudentB, name: '侯星宇', studentNo: null, seatNo: 1, active: true, rev: 1, createdAt: now + 60_000, updatedAt: now + 60_000 } },
+});
+check('同名同座位的第二份被合并（回 deduped）',
+  mkTwinB.status === 200 && mkTwinB.data?.deduped === true && mkTwinB.data?.useStudentId === twinStudentA,
+  JSON.stringify(mkTwinB.data));
+
+const twinPull = await call('GET', '/sync?since=0&limit=500', { token: ownerAccess });
+const twins = (twinPull.data?.students ?? []).filter((s) => s.name === '侯星宇' && !s.deleted_at);
+check('名单里同名同座位只剩一条', twins.length === 1, `got=${twins.length}`);
+check('留下的是先建的那条', twins[0]?.id === twinStudentA, twins[0]?.id);
+
+// 同名但不同座位是两个人（一个班两个「张伟」很常见），不能并掉
+const zhangA = uuid();
+const zhangB = uuid();
+await call('POST', '/students', {
+  token: ownerAccess,
+  body: { action: 'upsert', student: { id: zhangA, name: '张伟', seatNo: 11, active: true, rev: 1, createdAt: now, updatedAt: now } },
+});
+const zhangMk = await call('POST', '/students', {
+  token: ownerAccess,
+  body: { action: 'upsert', student: { id: zhangB, name: '张伟', seatNo: 12, active: true, rev: 1, createdAt: now + 1000, updatedAt: now + 1000 } },
+});
+const zhangPull = await call('GET', '/sync?since=0&limit=500', { token: ownerAccess });
+check('同名不同座位不会被误并',
+  zhangMk.status === 200 && zhangMk.data?.deduped !== true &&
+  (zhangPull.data?.students ?? []).filter((s) => s.name === '张伟' && !s.deleted_at).length === 2,
+  JSON.stringify(zhangMk.data));
+
 const monitorId = uuid();
 const officerId = uuid();
 const mkMember = await call('POST', '/members', {
