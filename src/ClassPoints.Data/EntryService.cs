@@ -376,10 +376,11 @@ public sealed class EntryService(Database db, AuditRepository audit)
     }
 
     /// <summary>
-    /// 累计积分：所有周期相加。总评用这个，不是当前周期。
+    /// 累计积分：所有周期相加。
     ///
     /// 以前按"学期编号"过滤，等于把学期这条线也带进了产品；现在周期是唯一的
-    /// 时间单位，累计就是全部相加 —— 重置周期不会让总评掉下来。
+    /// 换周期时云端会给旧周期补等额负分（结转清零），所以换过周期之后，
+    /// 累计与"当前周期总分"是同一个数 —— 那是给总评用的（见 worker/src/carryover.ts）。
     /// </summary>
     public Dictionary<string, int> CumulativeTotals()
     {

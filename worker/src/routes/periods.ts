@@ -10,6 +10,7 @@
  */
 import type { Env } from '../types';
 import { requireAuth } from '../auth';
+import { carryOverOldPeriods } from '../carryover';
 import { trimOldPeriods } from '../trim';
 import {
   HttpError,
@@ -107,11 +108,15 @@ export async function upsertPeriod(env: Env, request: Request): Promise<Response
 
   await env.DB.batch(stmts);
 
-  // 归档了旧周期之后，把翻篇太久的周期明细清掉（云端只留最近 4 个）。
-  // 放在这里而不是定时任务：教室电脑没人保证一直开着，而"重置"是唯一能确定边界事件。
+  // 归档了旧周期之后，先把旧周期的分数结转清零（总评只看当前周期），
+  // 再裁掉翻篇太久的周期明细（云端只留最近 4 个）。
+  //
+  // 顺序不能反：trim 之后旧流水在云端就没了，算不出每人该抹多少；
+  // 而客户端本地还留着原行 + 结转行，两边合计正好是 0。
+  const carried = archivesOthers ? await carryOverOldPeriods(env, claims.cid, at) : 0;
   const trimmed = archivesOthers ? await trimOldPeriods(env, claims.cid) : { dropped: [] };
 
-  return json({ ok: true, id, status, classId: claims.cid, trimmed: trimmed.dropped });
+  return json({ ok: true, id, status, classId: claims.cid, carried, trimmed: trimmed.dropped });
 }
 
 export async function resetPeriod(env: Env, request: Request): Promise<Response> {
@@ -183,10 +188,11 @@ export async function resetPeriod(env: Env, request: Request): Promise<Response>
     env.DB.prepare('UPDATE classes SET resetting = 0 WHERE id = ?').bind(claims.cid),
   ]);
 
-  // 和 rollover 同一条规则：换完新周期就裁掉翻篇太久的明细（云端只留最近 4 个）。
-  // 这个分支以前漏了这一步，走 /periods/reset 重置的班，旧周期会一直累在库里 ——
+  // 和 rollover 同一条规则：先把旧周期结转清零，再裁掉翻篇太久的明细。
+  // 这个分支以前漏了 trim，走 /periods/reset 重置的班，旧周期会一直累在库里 ——
   // 看起来"没超上限"，其实每轮拉取和索引都在替几年前的数据付钱。
+  const carried = await carryOverOldPeriods(env, claims.cid, at);
   const trimmed = await trimOldPeriods(env, claims.cid);
 
-  return json({ ok: true, periodId: id, committedAt: at, trimmed: trimmed.dropped });
+  return json({ ok: true, periodId: id, committedAt: at, carried, trimmed: trimmed.dropped });
 }

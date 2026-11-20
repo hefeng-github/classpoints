@@ -436,7 +436,7 @@ public sealed class Scheme
     /// <summary>给界面/导出用的一句公式原文，永远现算，不写死字符串。</summary>
     public string FormulaText => Normalize
         ? $"总评 = 考试百分制 × {ExamPercent}% + 平时百分制 × {DailyPercent}%（已归一）"
-        : $"总评 = 考试总分加权和 × {ExamPercent}% + 累计积分 × {DailyPercent}%（原值加权，未归一）";
+        : $"总评 = 考试总分加权和 × {ExamPercent}% + 本周期积分 × {DailyPercent}%（原值加权，未归一）";
 }
 
 public sealed class SchemeWeight

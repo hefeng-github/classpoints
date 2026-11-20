@@ -279,7 +279,7 @@ public static class Sql
         GROUP BY s.id
         """;
 
-    /// <summary>累计总分（所有周期相加），总评用这个。</summary>
+    /// <summary>累计总分（所有周期相加）。换周期时云端结转清零，所以它等于当前周期总分。</summary>
     public const string CumulativeTotals = """
         SELECT s.id AS id, COALESCE(SUM(e.delta), 0) AS pts
         FROM students s

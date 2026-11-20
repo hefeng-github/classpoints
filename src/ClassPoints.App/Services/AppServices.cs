@@ -337,7 +337,7 @@ public sealed class AppServices
     /// <summary>当前周期总分。</summary>
     public Dictionary<string, int> PeriodTotals() => Entries.PeriodTotals(CurrentPeriod.Id);
 
-    /// <summary>累计积分（总评用这个，不是当前周期）。</summary>
+    /// <summary>累计积分（名单页/看板/明细里显示用）。总评已经改成只算当前周期，见 <see cref="PeriodTotals"/>。</summary>
     public Dictionary<string, int> CumulativeTotals() => Entries.CumulativeTotals();
 
     /// <summary>导出/打印需要的整包材料。</summary>
@@ -346,13 +346,14 @@ public sealed class AppServices
         var period = CurrentPeriod;
         var scheme = Exams.ActiveScheme();
         var students = Students.ListActive();
-        var termPoints = Entries.CumulativeTotals();
+        // 总评只看当前周期：平时分取本周期总分，考试也只取本周期录入的场次。
+        var termPoints = PeriodTotals();
         var usePolicy = policy ?? Settings.AbsencePolicy;
         var ranking = Exams.BuildRanking(students, termPoints, scheme, usePolicy);
 
-        // 排名用累计口径（全部考试），成绩明细与参数说明也必须用同一份场次，
-        // 否则表里只有一个周期的考试，"总评"却把它们加在一起 —— 数字对不上。
-        var exams = Exams.ListAllExams();
+        // 成绩明细与参数说明必须和排名用同一份场次：都给本周期，
+        // 否则表里只有一场考试，"总评"却把旧周期的也算进去 —— 数字对不上。
+        var exams = Exams.ListExams(period.Id);
 
         return new ExportBundle(
             ranking,

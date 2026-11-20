@@ -40,7 +40,7 @@ public sealed class ExamRepository(Database db)
     /// <summary>
     /// 本机录入过的全部考试，不分周期。
     ///
-    /// 总评是"累计"口径（周期只决定榜单），所以考试与总评页必须列全部场次：
+    /// 考试与总评页必须列全部场次（旧周期也要能删、能查）：
     /// 只列当前周期的话，开过一次新周期之后，成绩卡片会说"还没有成绩"，
     /// 而下面的排名预览却仍然把这些考试算进去了。
     /// </summary>
@@ -321,8 +321,8 @@ public sealed class ExamRepository(Database db)
     };
 
     /// <summary>
-    /// 总评排名。平时分用累计积分，考试用全部已录入的场次 ——
-    /// 周期只决定"这一周的榜单"，不决定总评：重置周期不该让总评归零。
+    /// 总评排名。平时分与考试场次都由调用方给定：现在是"本周期总分 + 本周期场次"
+    /// （见 DeskExamsPage / BuildExportBundle），旧周期的数据只作历史。
     /// </summary>
     public RankingResult BuildRanking(
         IReadOnlyList<Student> students,

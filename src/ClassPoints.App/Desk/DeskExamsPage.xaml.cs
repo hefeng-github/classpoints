@@ -25,6 +25,9 @@ public sealed partial class DeskExamsPage : Page
     private List<Student> _students = [];
     private Dictionary<string, int> _termPoints = [];
 
+    /// <summary>本周期录入的场次。总评只用这些；<see cref="_exams"/> 仍列全部（旧周期要能删）。</summary>
+    private List<Exam> _periodExams = [];
+
     private bool _loading;
     private bool _showAll;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _debounce;
@@ -44,11 +47,17 @@ public sealed partial class DeskExamsPage : Page
         try
         {
             _loading = true;
-            // 列全部场次：总评按"累计"算，开过新周期后旧考试仍然参与排名。
+            // 总评只看**当前周期**：平时分取本周期总分，考试也只取本周期录入的场次。
+            // 以前是"累计积分 + 全部场次"，开过新周期之后旧分数还压在总评里；
+            // 老师的口径是每个周期各评一次（云端在换周期时也会把旧周期结转清零，
+            // 见 worker/src/carryover.ts —— 两边保持同一个口径）。
+            //
+            // 列表仍列全部场次：旧周期的考试要能删、能看，只是不参与这次总评。
             _exams = Services.Exams.ListAllExams();
+            _periodExams = _exams.Where(e => e.PeriodId == Services.CurrentPeriod.Id).ToList();
+            _termPoints = Services.PeriodTotals();
             _scheme = Services.Exams.ActiveScheme();
             _students = Services.Students.ListActive();
-            _termPoints = Services.Entries.CumulativeTotals();
 
             // 滑块代表「平时分的占比」：填充段就是平时那一段，剩下的才是考试。
             // 以前这里存的是考试占比，于是"平时 20%"旁边却拉着一条 80% 长的填充 ——
@@ -259,11 +268,11 @@ public sealed partial class DeskExamsPage : Page
 
         // 考试那部分不再让人一场一场填百分比：只有一场就是 100%，
         // 多场自动平分 —— 这一行只负责把"现在怎么分"说出来，谁也改不了它。
-        ExamShareHint.Text = _exams.Count switch
+        ExamShareHint.Text = _periodExams.Count switch
         {
-            0 => "还没有考试。导入成绩后，考试成绩那部分才会算进总评。",
-            1 => $"只有 1 场考试：考试部分 100% 计入「{_exams[0].Name}」。",
-            _ => $"共 {_exams.Count} 场考试：考试部分按场次平均计入（每场 {100.0 / _exams.Count:0.#}%）。",
+            0 => "这个周期还没有考试。导入成绩后，考试成绩那部分才会算进总评。",
+            1 => $"只有 1 场考试：考试部分 100% 计入「{_periodExams[0].Name}」。",
+            _ => $"共 {_periodExams.Count} 场考试：考试部分按场次平均计入（每场 {100.0 / _periodExams.Count:0.#}%）。",
         };
 
         _loading = false;
@@ -286,13 +295,13 @@ public sealed partial class DeskExamsPage : Page
             ? _ranking.Rows.Average(r => (double)r.Points)
             : 0;
 
-        ImpactText.Text = _exams.Count == 0
+        ImpactText.Text = _periodExams.Count == 0
             ? ""
             : examMean <= 0
                 ? "还没有成绩。"
                 : SchemeMath.ImpactText(examMean, pointsMean, _scheme);
 
-        FormulaText.Text = _scheme.FormulaText + " · 平时分 = 累计积分";
+        FormulaText.Text = _scheme.FormulaText + " · 平时分 = 本周期积分";
     }
 
     private void OnWeightSliderChanged(object sender, RangeBaseValueChangedEventArgs e)
@@ -337,8 +346,9 @@ public sealed partial class DeskExamsPage : Page
     {
         try
         {
+            // 只算本周期的场次：旧周期的考试是历史，不再参与这次总评
             _ranking = Services.Exams.BuildRanking(_students, _termPoints, _scheme,
-                Services.Settings.AbsencePolicy);
+                Services.Settings.AbsencePolicy, _periodExams);
 
             if (resetBaseline || _baseline is null) _baseline = _ranking;
 
@@ -810,9 +820,9 @@ public sealed partial class DeskExamsPage : Page
         var issues = new List<string>();
 
         if (_students.Count == 0) issues.Add("名单是空的，导出的表只有表头。");
-        if (_exams.Count == 0) issues.Add("没有导入任何考试成绩，总评等于平时分。");
+        if (_periodExams.Count == 0) issues.Add("本周期没有导入考试成绩，总评等于平时分。");
 
-        var missing = _exams.Sum(e =>
+        var missing = _periodExams.Sum(e =>
         {
             var scores = Services.Exams.Scores(e.Id);
             return System.Math.Max(0, _students.Count - scores.Count);
@@ -820,7 +830,7 @@ public sealed partial class DeskExamsPage : Page
         if (missing > 0) issues.Add($"{missing} 人次没有成绩记录（缺考或未导入）。");
 
         var zero = _ranking?.Rows.Count(r => r.Points == 0) ?? 0;
-        if (zero > 0) issues.Add($"{zero} 人累计积分为 0。");
+        if (zero > 0) issues.Add($"{zero} 人本周期积分为 0。");
 
         return issues;
     }

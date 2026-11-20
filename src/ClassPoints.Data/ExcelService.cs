@@ -328,7 +328,7 @@ public static class WorkbookBuilder
             ("归一基准", s.Normalize
                 ? $"班内最高 {b.Ranking.MaxPoints} 分（{b.Ranking.MaxPointsWho}）"
                 : "—（未归一）"),
-            ("平时分口径", "累计积分（历次周期相加，不封顶、不保底，加分扣分都原样保留）"),
+            ("平时分口径", $"本周期积分（{b.Period.TitleText}；不封顶、不保底，加分扣分都原样保留）"),
             ("考试权重合计", $"{weights.Values.Sum() * 100:0.#}%"),
             ("缺考政策", PolicyLong(b.Policy)),
             ("统计周期", $"{b.Period.TitleText}（{b.Period.RangeText}）"),

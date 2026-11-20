@@ -273,7 +273,7 @@ public sealed partial class DeskPeriodsPage : Page
         panel.Children.Add(new TextBlock
         {
             Text = $"「{period.TitleText}」会归档，{count} 条记录一条不删，随时能在下面的历史里查看和导出。" +
-                   "累计积分不清零，总评照常连续。",
+                   "总评只看当前周期：新周期从 0 开始算，上一周期的分数不再计入。",
             Style = Styled("DeskSecondaryText"),
             TextWrapping = TextWrapping.Wrap,
         });

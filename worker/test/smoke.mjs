@@ -339,6 +339,21 @@ const committed = await call('POST', '/periods/reset', {
 });
 check('提交成功', committed.status === 200 && committed.data?.periodId === newPeriodId, JSON.stringify(committed.data));
 
+// 换周期时把旧周期的分数结转清零：总评用的是「累计积分」，不清零的话
+// 上一周期那 15 分会一直算在总评里，老师的口径却是"总评只看这个周期"。
+const carryPull = await call('GET', '/sync?since=0&limit=500', { token: access });
+const carryRows = (carryPull.data?.entries ?? []).filter(
+  (e) => e.period_id === periodId && e.rule_label === '周期重置',
+);
+check('旧周期每人补一条结转负分', carryRows.length >= 1 && carryRows.every((r) => r.delta < 0),
+  JSON.stringify(carryRows.map((r) => r.delta)));
+const oldTotal = (carryPull.data?.entries ?? [])
+  .filter((e) => e.period_id === periodId)
+  .reduce((sum, e) => sum + Number(e.delta), 0);
+check('旧周期合计归零（累计 = 当期）', oldTotal === 0, `total=${oldTotal}`);
+check('当前周期不会被结转（分数不能被抹掉）',
+  (carryPull.data?.entries ?? []).filter((e) => e.period_id === newPeriodId && e.rule_label === '周期重置').length === 0);
+
 const writeAfter = await call('POST', '/entries', { token: access, body: { entries: [{ ...entries[0], id: uuid(), periodId: newPeriodId }] } });
 check('提交后写入恢复', writeAfter.status === 200 && writeAfter.data?.inserted === 1, JSON.stringify(writeAfter.data));
 

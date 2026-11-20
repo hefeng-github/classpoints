@@ -5,6 +5,7 @@
  */
 import type { Env } from '../types';
 import { requireAuth } from '../auth';
+import { carryOverTouched } from '../carryover';
 import {
   HttpError,
   bit,
@@ -165,6 +166,15 @@ export async function postEntries(env: Env, request: Request): Promise<Response>
   // 所以先把插入语句的下标记下来，再按 changes 判断这条是新写入还是被 IGNORE 的重传
   const inserted = insertAt.filter((i) => (results[i].meta?.changes ?? 0) > 0).length;
 
+  // 补推进来的流水可能落在**已归档**的周期里（大屏离线，教室那边先换了周期）。
+  // 旧周期的分数是要结转清零的，这一批进去就得重新抹平，否则总评又鼓起来。
+  if (inserted > 0) {
+    const periods = list
+      .map((e) => e.periodId)
+      .filter((v): v is string => typeof v === 'string' && v.length > 0);
+    await carryOverTouched(env, claims.cid, periods, at);
+  }
+
   return json({ accepted: list.length, inserted, duplicates: list.length - inserted }, 200);
 }
 
@@ -207,5 +217,10 @@ export async function reverseBatch(
   }
 
   await env.DB.batch(stmts);
+
+  // 撤销落在旧周期里时，那一桶又变成非零了（原行 + 冲销行抵掉，但结转行还在），
+  // 重新抹平一次，别让撤销把总评抬高。
+  await carryOverTouched(env, classId, originals.map((o) => o.period_id), at);
+
   return json({ reversed: originals.length, at });
 }
